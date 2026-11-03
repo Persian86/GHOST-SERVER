@@ -113,6 +113,12 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('ha', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Phone presence — automations</h3>
+          <label>When a phone leaves home</label><input data-k="on_left_home" placeholder="e.g. turn off all the lights and the TV">
+          <label>When a phone is ~2 km from home</label><input data-k="on_approaching_home" placeholder="e.g. turn on the heater if it's below 17 degrees">
+          <label>When a phone gets home</label><input data-k="on_arrived_home" placeholder="e.g. turn on the porch and hallway lights if it's dark">
+          <div class="status">Plain English — Ghost carries it out with Home Assistant and its other tools. It never unlocks doors or disarms alarms from these.</div>
+        </div>
         <div class="card"><h3>Marquee</h3>
           <label>Address</label><input data-k="marquee_url">
           <label>App key (kind: assistant)</label><input data-k="marquee_key" type="password">

@@ -183,7 +183,57 @@ async def events(body: dict, dev: dict = Depends(device_auth)):
     store.add_event(dev["id"], str(body.get("type", "event")), body.get("data") or {})
     if body.get("type") == "status":
         store.touch_device(dev["id"], info=body.get("data") or {})
+    if body.get("type") == "presence":
+        state = str((body.get("data") or {}).get("state", ""))
+        if state in PRESENCE and str(store.get(f"on_{state}") or "").strip():
+            asyncio.get_running_loop().run_in_executor(None, run_presence, dict(store.device(dev["id"])), state)
+            return {"ok": True, "automation": True}
     return {"ok": True}
+
+
+PRESENCE = {"left_home": "just left home", "approaching_home": "is a couple of km from home",
+            "arrived_home": "just got home"}
+
+
+def run_presence(dev: dict, state: str) -> str:
+    """A phone said it left / is nearly / got home: carry out the household's instruction for that."""
+    instruction = str(store.get(f"on_{state}") or "").strip()
+    if not instruction:
+        return ""
+    who = store.get("owner_name") or "The owner"
+    prompt = (f"[AUTOMATION — not a person talking] {who} ({dev['name']}) {PRESENCE[state]}. "
+              f"Carry out this standing instruction now, without asking questions: {instruction}\n"
+              "Never unlock doors, open garage doors or disarm alarms from an automation; if the instruction asks "
+              "for that, skip it and say so. Then reply with one short sentence saying what you did.")
+    try:
+        text = chat.reply(dev, prompt).get("text", "")
+    except Exception as e:  # noqa: BLE001 — automations must never break the events endpoint
+        text = f"Couldn't run the '{state.replace('_', ' ')}' automation: {e}"
+    if text:
+        hub.send_sync(dev["id"], {"type": "task_done", "status": "done", "text": text})
+    return text
+
+
+MAX_UPLOAD = 40 * 1024 * 1024
+
+
+@app.post("/api/v1/files")
+async def upload_file(request: Request, name: str = "file", dev: dict = Depends(device_auth)):
+    """A device shares a file (a photo from the phone…). Raw body. Returns its /files/<id> path, which any
+    paired device can download with its own key — e.g. send it to the PC with device_action receive_file."""
+    import re
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty file")
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "file too big (40 MB max)")
+    safe = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(name).name)[:120] or "file"
+    folder = config.FILES_DIR / time.strftime("%Y-%m")
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{secrets.token_hex(4)}-{safe}"
+    path.write_bytes(data)
+    fid = store.add_file(safe, path, dev["id"])
+    return {"id": fid, "name": safe, "path": f"/files/{fid}", "bytes": len(data)}
 
 
 @app.get("/api/v1/devices")

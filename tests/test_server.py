@@ -227,3 +227,43 @@ def test_away_mode_shares_key_with_phones_only(server, admin, tmp_path):
     assert off["api_key"] == "AIza-test-key" and off["model"]
     assert "offline" not in pc.session()                   # desktops stay at home
     admin.put("/admin/api/settings", json={"away_mode": False, "gemini_api_key": ""})
+
+
+def test_presence_automation_runs_instruction(server, admin, tmp_path, monkeypatch):
+    import time as _t
+    from ghost_server import app as app_mod
+    seen = []
+
+    def fake_reply(dev, text):
+        seen.append((dev["name"], text))
+        return {"text": "Turned off the lights.", "tools": ["home_assistant"]}
+    monkeypatch.setattr(app_mod.chat, "reply", fake_reply)
+    phone = _agent(server, admin, "Presence Phone", "phone", tmp_path)
+    # nothing configured → just logged
+    r = httpx.post(server + "/api/v1/events", headers={"Authorization": "Bearer " + phone.key},
+                   json={"type": "presence", "data": {"state": "left_home"}}).json()
+    assert r == {"ok": True} and not seen
+    admin.put("/admin/api/settings", json={"on_left_home": "turn off all the lights"})
+    r = httpx.post(server + "/api/v1/events", headers={"Authorization": "Bearer " + phone.key},
+                   json={"type": "presence", "data": {"state": "left_home"}}).json()
+    assert r.get("automation") is True
+    for _ in range(50):
+        if seen:
+            break
+        _t.sleep(0.05)
+    assert seen and seen[0][0] == "Presence Phone"
+    assert "turn off all the lights" in seen[0][1] and "Never unlock doors" in seen[0][1]
+    admin.put("/admin/api/settings", json={"on_left_home": ""})
+
+
+def test_upload_file_and_download_from_another_device(server, admin, tmp_path):
+    phone = _agent(server, admin, "Upload Phone", "phone", tmp_path)
+    pc = _agent(server, admin, "Upload PC", "desktop", tmp_path)
+    jpg = b"\xff\xd8\xff\xe0" + b"x" * 1000
+    r = httpx.post(server + "/api/v1/files?name=../../IMG 1.jpg", content=jpg,
+                   headers={"Authorization": "Bearer " + phone.key}).json()
+    assert r["path"].startswith("/files/") and r["name"] == "IMG 1.jpg" and r["bytes"] == len(jpg)
+    got = httpx.get(server + r["path"], headers={"Authorization": "Bearer " + pc.key})
+    assert got.status_code == 200 and got.content == jpg
+    assert httpx.get(server + r["path"]).status_code in (401, 403)
+    assert httpx.post(server + "/api/v1/files", content=b"x").status_code == 401
