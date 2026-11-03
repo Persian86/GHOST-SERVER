@@ -2,16 +2,17 @@
 # Data (database, documents) lives in /volume1/Docker/ghost-server — back that folder up.
 services:
   ghost-server:
-    # Built by GitHub Actions (.github/workflows/build.yml). To build on the NAS
-    # instead, comment out `image:` and uncomment `build: .`
     image: ghcr.io/persian86/ghost-server:latest
     # build: .
     container_name: ghost-server
     restart: unless-stopped
-    ports:
-      - "8780:8780"          # 8000/8001 are ADM, 8123 is Home Assistant
+    # Host networking: the container uses the NAS's own network. Asustor's default
+    # Docker bridge often has no route to the internet ("Network is unreachable").
+    # Ghost Server listens on port 8780 directly (8000/8001 = ADM, 8123 = Home Assistant).
+    network_mode: host
     environment:
       - TZ=Australia/Melbourne
       - GHOST_DATA=/data
+      - GHOST_PORT=8780
     volumes:
       - /volume1/Docker/ghost-server:/data

@@ -35,7 +35,8 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(_app):
-    store.init()
+    if store._db_path is None:          # tests (and embedders) may have opened another database
+        store.init()
     tools.load()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
@@ -136,6 +137,28 @@ async def chat_ep(body: dict, dev: dict = Depends(device_auth)):
         return await asyncio.to_thread(chat.reply, dev, text)
     except RuntimeError as e:
         return {"text": str(e), "tools": []}
+
+
+@app.post("/api/v1/llm")
+async def llm(body: dict, dev: dict = Depends(device_auth)):
+    """One-shot generation on the server's Claude, for an agent's background
+    work (reading a screenshot, writing code, summarising a file). Messages use
+    the OpenAI shape; images as data-URI image_url parts are accepted."""
+    from .tools.brain import claude
+    messages = body.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "messages is empty")
+    fast = str(body.get("tier", "")).lower() == "fast"
+    max_tokens = max(16, min(int(body.get("max_tokens") or 4096), 16000))
+
+    def run():
+        text, _ = claude(fast=fast).complete(messages, timeout=float(body.get("timeout") or 180),
+                                             temperature=body.get("temperature"), max_tokens=max_tokens)
+        return text
+    try:
+        return {"text": await asyncio.to_thread(run)}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 
 @app.post("/api/v1/turns")

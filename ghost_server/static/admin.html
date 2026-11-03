@@ -209,12 +209,7 @@ async function refresh() {
         <button class="b" onclick="sayTo('${d.id}')">Say…</button>
         <button class="b danger" onclick="revoke('${d.id}','${esc(d.name)}')">Remove</button></div></div>`).join("")
     || '<div class="muted">No devices yet — make a pairing code.</div>';
-  if (!document.activeElement || !document.activeElement.dataset.k) {
-    document.querySelectorAll("[data-k]").forEach(el => {
-      const v = data.settings[el.dataset.k];
-      if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
-    });
-  }
+  if (!formFilled) fillForm();
   $("#facts").innerHTML = data.facts.map(f => `<tr><td class="muted" style="width:110px">${esc(f.section)}</td><td>${esc(f.text)}</td><td style="width:60px"><button class="b danger" onclick="mem({delete_fact:${f.id}})">✕</button></td></tr>`).join("") || "<tr><td class='muted'>Nothing yet.</td></tr>";
   $("#rules").innerHTML = data.rules.map(r => `<tr><td>${esc(r.text)}</td><td style="width:60px"><button class="b danger" onclick="mem({delete_rule:${r.id}})">✕</button></td></tr>`).join("") || "<tr><td class='muted'>No rules.</td></tr>";
   const names = Object.fromEntries(data.devices.map(d => [d.id, d.name]));
@@ -223,12 +218,34 @@ async function refresh() {
   $("#turns").innerHTML = data.turns.slice().reverse().map(t => `<tr><td class="muted" style="width:140px">${esc(names[t.device_id]||"?")}</td><td style="width:70px">${t.role}</td><td>${esc(t.text.slice(0,240))}</td></tr>`).join("") || "<tr><td class='muted'>Quiet so far.</td></tr>";
   $("#events").innerHTML = data.events.map(e => `<tr><td class="muted" style="width:140px">${esc(names[e.device_id]||"?")}</td><td style="width:110px">${esc(e.type)}</td><td class="muted">${esc(JSON.stringify(e.data).slice(0,200))}</td><td class="muted" style="width:90px">${ago(e.at)}</td></tr>`).join("") || "<tr><td class='muted'>Nothing reported.</td></tr>";
 }
+// The settings form is filled ONCE (on load and after saving) — never by the
+// 8-second refresh, which used to wipe whatever was typed but not yet saved.
+let formFilled = false, dirty = false;
+function fillForm() {
+  document.querySelectorAll("[data-k]").forEach(el => {
+    const v = data.settings[el.dataset.k];
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+  });
+  formFilled = true; dirty = false; markDirty(false);
+}
+function markDirty(on) {
+  dirty = on;
+  const st = document.getElementById("saveStatus");
+  if (st) st.innerHTML = on ? '<span style="color:var(--warn)">Unsaved changes</span>' : st.innerHTML;
+}
+document.addEventListener("input", e => { if (e.target.dataset && e.target.dataset.k) markDirty(true); });
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 async function makeCode() { const r = await api("/admin/api/pair-code", {method: "POST"}); $("#pairCode").textContent = r.code; }
 async function saveSettings() {
   const body = {};
   document.querySelectorAll("[data-k]").forEach(el => body[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value);
-  await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(body)});
-  $("#saveStatus").innerHTML = '<span class="ok">Saved.</span>'; refresh();
+  try {
+    const r = await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(body)});
+    data.settings = r.settings; fillForm();
+    $("#saveStatus").innerHTML = '<span class="ok">Saved.</span>';
+  } catch (e) {
+    $("#saveStatus").innerHTML = `<span class="bad">Not saved: ${esc(e.message)}</span>`;
+  }
 }
 async function test(what, btn) {
   const st = btn.closest(".card").querySelector(".status");

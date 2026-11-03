@@ -199,3 +199,19 @@ def test_calendar_and_ha_matching():
     states = [{"entity_id": "light.lounge_lamp", "state": "on", "attributes": {"friendly_name": "Lounge Lamp"}},
               {"entity_id": "light.kitchen", "state": "off", "attributes": {"friendly_name": "Kitchen"}}]
     assert match_entities(states, "kitchen light")[0]["entity_id"] == "light.kitchen"
+
+
+def test_llm_endpoint(server, admin, tmp_path, monkeypatch):
+    from ghost_server.tools import brain
+    seen = {}
+
+    class Fake:
+        def complete(self, messages, **kw):
+            seen["messages"], seen["kw"] = messages, kw
+            return "a cat on a keyboard", []
+    monkeypatch.setattr(brain, "claude", lambda *a, **k: Fake())
+    a = _agent(server, admin, "Vision PC", "desktop", tmp_path)
+    r = httpx.post(server + "/api/v1/llm", headers={"Authorization": f"Bearer {a.key}"}, timeout=10,
+                   json={"messages": [{"role": "user", "content": "what is this?"}], "tier": "fast", "max_tokens": 50})
+    assert r.json() == {"text": "a cat on a keyboard"} and seen["kw"]["max_tokens"] == 50
+    assert httpx.post(server + "/api/v1/llm", json={"messages": []}).status_code == 401
