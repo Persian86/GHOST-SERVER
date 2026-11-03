@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Server</title>
+<style>
+  :root { --bg:#07060d; --panel:#0f0c1b; --panel2:#151126; --line:#262040; --line2:#3a3166;
+          --pri:#b8a6ff; --pri-d:#6e60b0; --text:#e6e0ff; --dim:#7a70a6; --ok:#6ff5c2; --bad:#ff5c7a; --warn:#ffd27a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:18px 28px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; letter-spacing:.14em; color:var(--pri); font-weight:700; }
+  header .sub { color:var(--dim); font-size:13px; }
+  header .right { margin-left:auto; color:var(--dim); font-size:13px; }
+  nav { display:flex; gap:4px; padding:0 22px; border-bottom:1px solid var(--line); overflow-x:auto; }
+  nav button { background:none; border:0; color:var(--dim); padding:12px 14px; font:inherit; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.on { color:var(--text); border-color:var(--pri); }
+  main { max-width:1100px; margin:0 auto; padding:24px 22px 60px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .card h3 { margin:0 0 8px; font-size:15px; }
+  .muted { color:var(--dim); font-size:13px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--dim); }
+  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .chips span { display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:99px; padding:2px 9px; margin:3px 4px 0 0; font-size:12px; color:var(--dim); }
+  button.b, .b { background:var(--panel2); color:var(--text); border:1px solid var(--line2); border-radius:8px; padding:7px 12px; font:inherit; font-size:13px; cursor:pointer; }
+  button.b:hover { border-color:var(--pri); }
+  button.p { background:var(--pri); color:#120e22; border-color:var(--pri); font-weight:600; }
+  button.danger { color:var(--bad); }
+  input, textarea, select { width:100%; background:#0b0916; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; }
+  input:focus, textarea:focus { outline:none; border-color:var(--pri-d); }
+  label { display:block; font-size:12px; color:var(--dim); margin:12px 0 4px; text-transform:uppercase; letter-spacing:.06em; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .code { font-size:44px; letter-spacing:.3em; color:var(--pri); font-weight:700; text-align:center; padding:10px 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:7px 6px; border-top:1px solid var(--line); vertical-align:top; }
+  .msg { padding:10px 13px; border-radius:12px; margin:8px 0; max-width:80%; white-space:pre-wrap; }
+  .msg.u { background:var(--panel2); margin-left:auto; }
+  .msg.a { background:#1a1530; border:1px solid var(--line2); }
+  .status { font-size:13px; margin-top:8px; min-height:18px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  #login { max-width:360px; margin:12vh auto; }
+  .hidden { display:none !important; }
+  h2 { font-size:17px; margin:26px 0 10px; }
+</style>
+</head>
+<body>
+<div id="login" class="card hidden">
+  <h1 style="color:var(--pri);letter-spacing:.14em;margin:0 0 4px">GHOST</h1>
+  <div class="muted" id="loginHint">Home server</div>
+  <label>Password</label>
+  <input id="pw" type="password" autofocus>
+  <div class="row" style="margin-top:14px"><button class="b p" onclick="login()">Continue</button></div>
+  <div class="status bad" id="loginErr"></div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>GHOST</h1><span class="sub">home server</span>
+    <span class="right" id="hdr"></span>
+  </header>
+  <nav id="tabs"></nav>
+  <main>
+    <section data-tab="Devices">
+      <div class="grid">
+        <div class="card">
+          <h3>Add a device</h3>
+          <div class="muted">Make a code, then enter it in the new agent within 10 minutes.</div>
+          <div class="code" id="pairCode">— — —</div>
+          <button class="b p" onclick="makeCode()">New pairing code</button>
+          <div class="muted" style="margin-top:10px">Server address for agents: <b id="srvAddr"></b></div>
+        </div>
+        <div class="card">
+          <h3>Say something everywhere</h3>
+          <textarea id="annText" rows="2" placeholder="Dinner's ready!"></textarea>
+          <div class="row" style="margin-top:8px"><button class="b" onclick="say('all')">Announce on all devices</button></div>
+          <div class="status" id="annStatus"></div>
+        </div>
+      </div>
+      <h2>Devices</h2>
+      <div class="grid" id="devList"></div>
+    </section>
+
+    <section data-tab="Brain & keys">
+      <div class="grid">
+        <div class="card"><h3>Household</h3>
+          <label>Your name</label><input data-k="owner_name">
+          <label>Assistant name</label><input data-k="assistant_name">
+          <label>City (weather + local highlights)</label><input data-k="city">
+          <label>News country</label><input data-k="news_country">
+          <label>Time zone</label><input data-k="timezone">
+        </div>
+        <div class="card"><h3>Claude — the brain</h3>
+          <label>Anthropic API key</label><input data-k="anthropic_api_key" type="password">
+          <label>Main model</label><input data-k="claude_model">
+          <label>Fast model</label><input data-k="claude_fast_model">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('claude', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
+        <div class="card"><h3>Gemini Live — device voices</h3>
+          <label>Gemini API key (stays on the server)</label><input data-k="gemini_api_key" type="password">
+          <label>Live model</label><input data-k="gemini_live_model">
+          <label>Voice</label><input data-k="gemini_voice">
+          <label><input type="checkbox" data-k="share_gemini_key" style="width:auto"> Share the key if session tokens fail</label>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('gemini', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
+        <div class="card"><h3>Home Assistant</h3>
+          <label>Address</label><input data-k="ha_url">
+          <label>Long-lived token</label><input data-k="ha_token" type="password">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('ha', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
+        <div class="card"><h3>Marquee</h3>
+          <label>Address</label><input data-k="marquee_url">
+          <label>App key (kind: assistant)</label><input data-k="marquee_key" type="password">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('marquee', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
+        <div class="card"><h3>Calendar</h3>
+          <label>iCal links (separate with ;)</label><input data-k="calendars" type="password">
+          <div class="muted" style="margin-top:6px">Google Calendar → Settings → your calendar → Secret address in iCal format.</div>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('briefing', this)">Test briefing</button></div>
+          <div class="status"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:16px"><button class="b p" onclick="saveSettings()">Save settings</button><span class="status" id="saveStatus"></span></div>
+    </section>
+
+    <section data-tab="Memory">
+      <div class="grid">
+        <div class="card"><h3>Add a fact</h3>
+          <input id="factText" placeholder="Zoey's birthday is 12 May">
+          <div class="row" style="margin-top:8px"><input id="factSec" placeholder="Section (People, Home…)" style="max-width:220px">
+          <button class="b" onclick="mem({add_fact:val('factText'), section:val('factSec')})">Add</button></div>
+        </div>
+        <div class="card"><h3>Add a standing rule</h3>
+          <input id="ruleText" placeholder="Always use Celsius">
+          <div class="row" style="margin-top:8px"><button class="b" onclick="mem({add_rule:val('ruleText')})">Add</button></div>
+        </div>
+      </div>
+      <h2>What Ghost knows</h2><div class="card"><table id="facts"></table></div>
+      <h2>Standing rules</h2><div class="card"><table id="rules"></table></div>
+    </section>
+
+    <section data-tab="Activity">
+      <h2>Tasks</h2><div class="card"><table id="tasks"></table></div>
+      <h2>Files Ghost made</h2><div class="card"><table id="files"></table></div>
+      <h2>Recent conversation</h2><div class="card"><table id="turns"></table></div>
+      <h2>Device events</h2><div class="card"><table id="events"></table></div>
+    </section>
+
+    <section data-tab="Talk">
+      <div class="card">
+        <div id="chatLog" style="min-height:260px"></div>
+        <div class="row" style="margin-top:10px">
+          <input id="chatIn" placeholder="Ask Ghost anything…" onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="b p" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const TABS = ["Devices", "Brain & keys", "Memory", "Activity", "Talk"];
+let tab = "Devices", data = null;
+const $ = s => document.querySelector(s), val = id => document.getElementById(id).value.trim();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ago = t => { const s = Date.now()/1000 - t; return s < 90 ? "just now" : s < 3600 ? Math.round(s/60)+" min ago" : s < 86400 ? Math.round(s/3600)+" h ago" : Math.round(s/86400)+" d ago"; };
+async function api(path, opts = {}) {
+  const r = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
+  if (r.status === 401 && !path.startsWith("/admin/login")) { show("login"); throw new Error("login"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+function show(which) { $("#login").classList.toggle("hidden", which !== "login"); $("#app").classList.toggle("hidden", which !== "app"); }
+async function boot() {
+  const s = await api("/admin/state");
+  if (!s.logged_in) {
+    $("#loginHint").textContent = s.needs_setup ? "First run — choose an admin password." : "Home server";
+    show("login"); return;
+  }
+  show("app"); drawTabs(); await refresh(); setInterval(refresh, 8000);
+}
+async function login() {
+  try { await api("/admin/login", {method: "POST", body: JSON.stringify({password: $("#pw").value})}); boot(); }
+  catch (e) { $("#loginErr").textContent = e.message; }
+}
+$("#pw").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+function drawTabs() {
+  $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
+}
+function go(t) { tab = t; drawTabs(); }
+async function refresh() {
+  data = await api("/admin/api/overview");
+  const on = data.devices.filter(d => d.online).length;
+  $("#hdr").textContent = `v${data.version} · ${on}/${data.devices.length} devices online · ${data.tools.length} tools`;
+  $("#srvAddr").textContent = location.origin;
+  $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => `
+    <div class="card"><h3><span class="dot ${d.online?'on':''}"></span>${esc(d.name)}</h3>
+      <div class="muted">${esc(d.kind)} · ${d.online ? "online" : "last seen " + ago(d.last_seen)}${d.info && d.info.battery!=null ? " · battery " + d.info.battery + "%" : ""}</div>
+      <div class="chips">${(d.capabilities||[]).map(c => `<span>${esc(c.name)}</span>`).join("") || '<span>no device tools yet</span>'}</div>
+      <div class="row" style="margin-top:10px">
+        <button class="b" onclick="rename('${d.id}')">Rename</button>
+        <button class="b" onclick="sayTo('${d.id}')">Say…</button>
+        <button class="b danger" onclick="revoke('${d.id}','${esc(d.name)}')">Remove</button></div></div>`).join("")
+    || '<div class="muted">No devices yet — make a pairing code.</div>';
+  if (!document.activeElement || !document.activeElement.dataset.k) {
+    document.querySelectorAll("[data-k]").forEach(el => {
+      const v = data.settings[el.dataset.k];
+      if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+    });
+  }
+  $("#facts").innerHTML = data.facts.map(f => `<tr><td class="muted" style="width:110px">${esc(f.section)}</td><td>${esc(f.text)}</td><td style="width:60px"><button class="b danger" onclick="mem({delete_fact:${f.id}})">✕</button></td></tr>`).join("") || "<tr><td class='muted'>Nothing yet.</td></tr>";
+  $("#rules").innerHTML = data.rules.map(r => `<tr><td>${esc(r.text)}</td><td style="width:60px"><button class="b danger" onclick="mem({delete_rule:${r.id}})">✕</button></td></tr>`).join("") || "<tr><td class='muted'>No rules.</td></tr>";
+  const names = Object.fromEntries(data.devices.map(d => [d.id, d.name]));
+  $("#tasks").innerHTML = data.tasks.slice().reverse().map(t => `<tr><td>${esc(t.goal)}</td><td style="width:90px" class="${t.status==='done'?'ok':t.status==='failed'?'bad':''}">${t.status}</td><td class="muted">${esc((t.result||"").slice(0,160))}</td></tr>`).join("") || "<tr><td class='muted'>No tasks yet.</td></tr>";
+  $("#files").innerHTML = data.files.map(f => `<tr><td><a style="color:var(--pri)" href="/files/${f.id}">${esc(f.name)}</a></td><td class="muted">${esc(names[f.device_id]||"")}</td><td class="muted">${ago(f.created_at)}</td></tr>`).join("") || "<tr><td class='muted'>None yet.</td></tr>";
+  $("#turns").innerHTML = data.turns.slice().reverse().map(t => `<tr><td class="muted" style="width:140px">${esc(names[t.device_id]||"?")}</td><td style="width:70px">${t.role}</td><td>${esc(t.text.slice(0,240))}</td></tr>`).join("") || "<tr><td class='muted'>Quiet so far.</td></tr>";
+  $("#events").innerHTML = data.events.map(e => `<tr><td class="muted" style="width:140px">${esc(names[e.device_id]||"?")}</td><td style="width:110px">${esc(e.type)}</td><td class="muted">${esc(JSON.stringify(e.data).slice(0,200))}</td><td class="muted" style="width:90px">${ago(e.at)}</td></tr>`).join("") || "<tr><td class='muted'>Nothing reported.</td></tr>";
+}
+async function makeCode() { const r = await api("/admin/api/pair-code", {method: "POST"}); $("#pairCode").textContent = r.code; }
+async function saveSettings() {
+  const body = {};
+  document.querySelectorAll("[data-k]").forEach(el => body[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value);
+  await api("/admin/api/settings", {method: "PUT", body: JSON.stringify(body)});
+  $("#saveStatus").innerHTML = '<span class="ok">Saved.</span>'; refresh();
+}
+async function test(what, btn) {
+  const st = btn.closest(".card").querySelector(".status");
+  await saveSettings(); st.textContent = "Testing…"; st.className = "status";
+  const r = await api("/admin/api/test/" + what, {method: "POST"});
+  st.textContent = r.message; st.className = "status " + (r.ok ? "ok" : "bad");
+}
+async function mem(body) { await api("/admin/api/memory", {method: "POST", body: JSON.stringify(body)}); ["factText","ruleText"].forEach(i => document.getElementById(i).value = ""); refresh(); }
+async function rename(id) { const n = prompt("New name"); if (n) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({name: n})}); refresh(); } }
+async function revoke(id, name) { if (confirm(`Remove ${name}? It will need pairing again.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
+async function say(id, text) {
+  text = text ?? val("annText"); if (!text) return;
+  const r = await api(`/admin/api/devices/${id}/say`, {method: "POST", body: JSON.stringify({text})});
+  if (id === "all") $("#annStatus").innerHTML = r.ok ? '<span class="ok">Sent.</span>' : '<span class="bad">No devices online.</span>';
+}
+function sayTo(id) { const t = prompt("What should it say?"); if (t) say(id, t); }
+async function sendChat() {
+  const text = val("chatIn"); if (!text) return;
+  $("#chatIn").value = "";
+  const log = $("#chatLog");
+  log.insertAdjacentHTML("beforeend", `<div class="msg u">${esc(text)}</div><div class="msg a muted" id="pending">Thinking…</div>`);
+  try {
+    const r = await api("/admin/api/chat", {method: "POST", body: JSON.stringify({text})});
+    $("#pending").outerHTML = `<div class="msg a">${esc(r.text)}${r.tools && r.tools.length ? `<div class="muted" style="margin-top:6px">used: ${esc(r.tools.join(", "))}</div>` : ""}</div>`;
+  } catch (e) { $("#pending").outerHTML = `<div class="msg a bad">${esc(e.message)}</div>`; }
+}
+boot();
+</script>
+</body>
+</html>
