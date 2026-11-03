@@ -97,6 +97,7 @@ DEFAULTS: dict[str, Any] = {
     "gemini_live_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Fenrir",
     "share_gemini_key": False,          # fallback when ephemeral tokens fail
+    "away_mode": False,                 # give phones/tablets the Gemini key so they keep working away from home
     "ha_url": "http://192.168.80.244:8123",
     "ha_token": "",
     "marquee_url": "http://192.168.80.45:8420",

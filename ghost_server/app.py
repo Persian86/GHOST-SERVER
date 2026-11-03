@@ -109,7 +109,7 @@ async def pair(body: dict):
 async def session(dev: dict = Depends(device_auth)):
     d = dict(store.device(dev["id"]))
     creds = await asyncio.to_thread(live.credentials)
-    return {
+    out = {
         "device": {"id": d["id"], "name": d["name"], "kind": d["kind"]},
         "assistant_name": store.get("assistant_name"),
         "owner_name": store.get("owner_name"),
@@ -118,6 +118,13 @@ async def session(dev: dict = Depends(device_auth)):
         "gemini": creds,
         "server_time": time.time(),
     }
+    # Away mode: phones and tablets keep a copy of the Gemini key so they can still
+    # talk (with their own tools + web search) when they can't reach the server.
+    key = str(store.get("gemini_api_key") or "").strip()
+    if store.get("away_mode") and key and d.get("kind") in ("phone", "tablet"):
+        out["offline"] = {"api_key": key, "model": store.get("gemini_live_model"),
+                          "voice": store.get("gemini_voice")}
+    return out
 
 
 @app.post("/api/v1/tools/call")

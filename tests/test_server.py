@@ -215,3 +215,15 @@ def test_llm_endpoint(server, admin, tmp_path, monkeypatch):
                    json={"messages": [{"role": "user", "content": "what is this?"}], "tier": "fast", "max_tokens": 50})
     assert r.json() == {"text": "a cat on a keyboard"} and seen["kw"]["max_tokens"] == 50
     assert httpx.post(server + "/api/v1/llm", json={"messages": []}).status_code == 401
+
+
+def test_away_mode_shares_key_with_phones_only(server, admin, tmp_path):
+    phone = _agent(server, admin, "Adam Phone", "phone", tmp_path)
+    pc = _agent(server, admin, "Study PC", "desktop", tmp_path)
+    admin.put("/admin/api/settings", json={"gemini_api_key": "AIza-test-key"})
+    assert "offline" not in phone.session()               # off by default
+    admin.put("/admin/api/settings", json={"away_mode": True})
+    off = phone.session()["offline"]
+    assert off["api_key"] == "AIza-test-key" and off["model"]
+    assert "offline" not in pc.session()                   # desktops stay at home
+    admin.put("/admin/api/settings", json={"away_mode": False, "gemini_api_key": ""})
