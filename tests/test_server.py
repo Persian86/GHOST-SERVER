@@ -311,10 +311,19 @@ def test_dashboard_and_home_switch(server, admin, tmp_path, monkeypatch):
 def test_cameras_rtsp_view_stream_and_show(server, admin, tmp_path, monkeypatch):
     import functools
     import http.server
+    import shutil
+    import subprocess
     import threading
     from ghost_server import cameras
-    # a stand-in "camera": a test video served over http, read by ffmpeg like an RTSP feed
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="/tmp/camtest")
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg isn't installed here (it is in the Docker image)")
+    # a stand-in "camera": a test video made here, served over http, read by ffmpeg like an RTSP feed
+    camdir = tmp_path / "cam"
+    camdir.mkdir()
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=size=640x360:rate=10", "-t", "20", "-c:v", "mpeg2video", "-q:v", "5",
+                    "-f", "mpegts", str(camdir / "test.ts")], check=True, timeout=60)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(camdir))
     handler.log_message = lambda *a: None
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
