@@ -36,6 +36,11 @@ def build(device: dict) -> str:
         "- Never claim you did something a tool did not confirm. Keep spoken replies short and natural.",
         "[OTHER DEVICES]\n" + describe_devices(exclude=device.get("id", "")),
     ]
+    if device.get("kind") == "tablet":
+        parts.insert(2, "[SHARED TABLET]\nThis is the family's shared tablet in a common room, so anyone in the "
+                        "household (or a guest) may be talking. Don't assume it's the owner unless they say so; "
+                        "ask a name if it matters. Don't read out anyone's private messages, money or health "
+                        "details here. Be friendly and brief; children may use it too.")
     facts = store.facts()
     if facts:
         by: dict[str, list[str]] = {}

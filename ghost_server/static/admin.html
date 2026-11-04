@@ -113,6 +113,11 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('ha', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Ghost Hub tablet — home tiles</h3>
+          <label>Home Assistant entities to show (comma separated)</label>
+          <input data-k="tablet_entities" placeholder="light.kitchen, light.lounge, switch.coffee_machine, climate.living_room, scene.movie_night">
+          <div class="status">Leave empty and the tablet picks your lights and switches automatically. Tapping a tile switches lights, switches, fans and scenes. Locks, alarms and doors are shown but can't be operated from the tablet.</div>
+        </div>
         <div class="card"><h3>Phone presence — automations</h3>
           <label>When a phone leaves home</label><input data-k="on_left_home" placeholder="e.g. turn off all the lights and the TV">
           <label>When a phone is ~2 km from home</label><input data-k="on_approaching_home" placeholder="e.g. turn on the heater if it's below 17 degrees">

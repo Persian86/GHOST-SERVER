@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import __version__, chat, config, live, prompt, store, tools
+from . import __version__, chat, config, dashboard, live, prompt, store, tools
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -212,6 +213,24 @@ def run_presence(dev: dict, state: str) -> str:
     if text:
         hub.send_sync(dev["id"], {"type": "task_done", "status": "done", "text": text})
     return text
+
+
+@app.get("/api/v1/dashboard")
+async def dashboard_ep(dev: dict = Depends(device_auth)):
+    """The Ghost Hub tablet's always-on screen: weather, calendar, home tiles, headlines."""
+    return await asyncio.to_thread(dashboard.build)
+
+
+@app.post("/api/v1/home/switch")
+async def home_switch(body: dict, dev: dict = Depends(device_auth)):
+    """A tap on a home tile. Lights, switches, fans, scenes only — never locks, alarms or doors."""
+    eid = str(body.get("entity_id", ""))
+    if not re.fullmatch(r"[a-z_]+\.[A-Za-z0-9_]+", eid):
+        raise HTTPException(400, "bad entity_id")
+    try:
+        return await asyncio.to_thread(dashboard.switch, eid, str(body.get("action", "toggle")))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
 
 
 MAX_UPLOAD = 40 * 1024 * 1024

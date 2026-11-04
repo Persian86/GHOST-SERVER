@@ -99,6 +99,7 @@ DEFAULTS: dict[str, Any] = {
     "share_gemini_key": False,          # fallback when ephemeral tokens fail
     "away_mode": False,
     # phone presence automations: plain-English instructions Ghost carries out (Claude + server tools)
+    "tablet_entities": "",              # Ghost Hub tiles: Home Assistant entity ids (empty = pick automatically)
     "on_left_home": "",
     "on_approaching_home": "",
     "on_arrived_home": "",                 # give phones/tablets the Gemini key so they keep working away from home

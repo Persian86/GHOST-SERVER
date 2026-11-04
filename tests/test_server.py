@@ -267,3 +267,42 @@ def test_upload_file_and_download_from_another_device(server, admin, tmp_path):
     assert got.status_code == 200 and got.content == jpg
     assert httpx.get(server + r["path"]).status_code in (401, 403)
     assert httpx.post(server + "/api/v1/files", content=b"x").status_code == 401
+
+
+def test_dashboard_and_home_switch(server, admin, tmp_path, monkeypatch):
+    from ghost_server import dashboard
+    from ghost_server.tools import home
+    tab = _agent(server, admin, "Kitchen Hub", "tablet", tmp_path)
+    H = {"Authorization": "Bearer " + tab.key}
+    monkeypatch.setattr(dashboard, "weather_data", lambda city: {"city": city, "temp": 18, "desc": "clear", "days": []})
+    monkeypatch.setattr(dashboard, "headlines", lambda: [{"title": "Big news", "source": "ABC", "url": ""}])
+    dashboard._cache.clear()
+    d = httpx.get(server + "/api/v1/dashboard", headers=H).json()
+    assert d["weather"]["temp"] == 18 and d["headlines"][0]["title"] == "Big news"
+    assert d["home"] == {"connected": False, "tiles": []}          # no Home Assistant token yet
+    states = [{"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen", "brightness": 255}},
+              {"entity_id": "lock.front_door", "state": "locked", "attributes": {"friendly_name": "Front door"}},
+              {"entity_id": "switch.kettle_led", "state": "on", "attributes": {}}]
+    calls = []
+
+    class R:
+        def __init__(self, data, code=200):
+            self.data, self.status_code = data, code
+
+        def json(self):
+            return self.data
+    monkeypatch.setattr(home, "_req", lambda m, p, cfg=None, **kw:
+                        R(next(s for s in states if p.endswith(s["entity_id"]))) if "/api/states/" in p else R(states))
+    monkeypatch.setattr(home, "_call", lambda d_, s_, data: calls.append((d_, s_, data)) or 200)
+    admin.put("/admin/api/settings", json={"ha_token": "t", "ha_url": "http://ha"})
+    dashboard._cache.clear()
+    tiles = httpx.get(server + "/api/v1/dashboard", headers=H).json()["home"]["tiles"]
+    ids = [t["entity_id"] for t in tiles]
+    assert "light.kitchen" in ids and "lock.front_door" in ids and "switch.kettle_led" not in ids
+    assert next(t for t in tiles if t["entity_id"] == "lock.front_door")["switchable"] is False
+    r = httpx.post(server + "/api/v1/home/switch", headers=H, json={"entity_id": "light.kitchen", "action": "off"}).json()
+    assert r["ok"] and calls[-1] == ("light", "turn_off", {"entity_id": "light.kitchen"})
+    r = httpx.post(server + "/api/v1/home/switch", headers=H, json={"entity_id": "lock.front_door", "action": "toggle"}).json()
+    assert r["ok"] is False and len(calls) == 1                     # locks never operated
+    assert httpx.post(server + "/api/v1/home/switch", headers=H, json={"entity_id": "x; rm"}).status_code == 400
+    admin.put("/admin/api/settings", json={"ha_token": "", "tablet_entities": "lock.front_door"})
