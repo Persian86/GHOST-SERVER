@@ -412,3 +412,66 @@ def test_cameras_home_assistant_stream(server, admin, tmp_path):
     assert body.count(b"\xff\xd8fakejpeg") == 3 and b"ha-tok" not in body
     assert httpx.get(server + v["path"] + "/snap/0").content == b"\xff\xd8snap\xff\xd9"
     admin.put("/admin/api/settings", json={"ha_token": ""})
+
+
+def test_camera_watch_alerts_only_on_real_change(server, admin, tmp_path, monkeypatch):
+    import io
+    import time as _t
+    from PIL import Image, ImageDraw
+    from ghost_server import cameras, store as st, tools, watcher
+    from ghost_server.hub import hub
+
+    def frame(brightness=90, person=False):
+        im = Image.new("RGB", (640, 360), (brightness, brightness, brightness))
+        if person:
+            ImageDraw.Draw(im).rectangle([250, 80, 390, 340], fill=(230, 40, 40))
+        b = io.BytesIO(); im.save(b, "JPEG"); return b.getvalue()
+
+    # the scene: still, then just brighter (a cloud), then someone walks in
+    script = [frame()] * 4 + [frame(115)] * 4 + [frame(115, person=True)] * 30
+    shots = {"n": 0}
+
+    def fake_snapshot(cam, timeout=15):
+        i = min(shots["n"], len(script) - 1); shots["n"] += 1
+        return script[i]
+    looks, sent = [], []
+    monkeypatch.setattr(cameras, "snapshot", fake_snapshot)
+    monkeypatch.setattr(watcher, "judge", lambda w, jpeg: looks.append(1) or
+                        {"alert": True, "summary": "Someone's at the front gate."})
+    monkeypatch.setattr(watcher, "LOOK_COOLDOWN", 0)
+    monkeypatch.setattr(watcher, "ALERT_COOLDOWN", 3600)        # one alert, not a stream of them
+    monkeypatch.setattr(hub, "is_online", lambda d: True)
+    monkeypatch.setattr(hub, "send_sync", lambda d, m: sent.append((d, m)) or True)
+    monkeypatch.setattr(hub, "call_sync", lambda *a, **k: {"ok": True})
+
+    assert watcher.changed_fraction(watcher.tiny(frame()), watcher.tiny(frame(115))) < watcher.CHANGE_THRESHOLD
+    assert watcher.changed_fraction(watcher.tiny(frame()), watcher.tiny(frame(90, True))) > watcher.CHANGE_THRESHOLD
+
+    phone = _agent(server, admin, "Watch Phone", "phone", tmp_path)
+    pid = st.device_by_key(phone.key)["id"]
+    cam = cameras.Cam("rtsp:front-gate", "Front Gate", "rtsp", "rtsp://x")
+    w = watcher.start(cam, 5, "people", [pid], pid, poll=0.02)
+    for _ in range(200):
+        if sent:
+            break
+        _t.sleep(0.02)
+    _t.sleep(0.3)
+    assert len(sent) == 1 and sent[0][1]["text"] == "Someone's at the front gate."
+    assert sent[0][1]["picture"].startswith("/files/") and len(looks) == 1      # Claude asked once, alerted once
+    assert shots["n"] > 8                                                        # brightness change alone: no alert
+    assert any(e["type"] == "camera_alert" for e in st.events(pid)) if hasattr(st, "events") else True
+    status = tools.run("camera_watch_status", {}, tools.Ctx(pid, "Watch Phone", "live"))
+    assert "Front Gate" in status and "1 alert" in status
+    assert watcher.stop("front gate") == ["Front Gate"] and not watcher.WATCHES
+
+    # the tool: needs a camera list and Claude; parses 'until'
+    monkeypatch.setattr(cameras, "all_cameras", lambda: [cam])
+    admin.put("/admin/api/settings", json={"anthropic_api_key": "sk-test"})
+    started = []
+    monkeypatch.setattr(watcher, "start", lambda c, m, lf, n, by, poll=3: started.append((c.name, m, lf, n)) or
+                        watcher.Watch(c.id, c, _t.time() + m * 60, lf, n, by))
+    out = tools.run("watch_camera", {"camera": "front gate", "until": "7am", "look_for": "a parcel"},
+                    tools.Ctx(pid, "Watch Phone", "live"))
+    assert "Watching Front Gate until" in out and "a parcel" in out
+    assert 0 < started[0][1] <= 24 * 60 and started[0][3][0] == pid
+    assert watcher.minutes_from({"minutes": 30}) == 30 and watcher.minutes_from({}) == 60

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import Ctx, tool
-from .. import cameras
+from .. import cameras, store, watcher
 from ..hub import find_device, hub
 
 
@@ -56,8 +56,7 @@ def show_camera(args: dict, ctx: Ctx) -> str:
 
 @tool("check_camera", """Look through a security camera right now and answer a question about what it sees —
 'is anyone at the front door?', 'is the car in the driveway?', 'did a parcel arrive?'. This is a ONE-OFF look at
-this moment. You can NOT keep watching a camera or alert the user later when something happens — if they ask for
-that, say plainly it isn't set up yet, and offer to check now instead.""",
+this moment. To keep watching and be told later ('let me know if someone comes to the door'), use watch_camera.""",
       {"type": "OBJECT", "properties": {
           "camera": {"type": "STRING", "description": "Camera name"},
           "question": {"type": "STRING", "description": "What to look for"}},
@@ -74,3 +73,68 @@ def check_camera(args: dict, ctx: Ctx) -> str:
         except Exception as e:  # noqa: BLE001
             out.append(f"{cam.name}: couldn't get a picture ({e})")
     return "\n".join(out)
+
+
+def _notify_list(who: str, ctx: Ctx) -> list[str]:
+    """me (default) = the asking device + every tablet; everyone = all devices; or one device by name."""
+    w = (who or "me").strip().lower()
+    devs = store.devices()
+    if w in ("everyone", "all", "house", "everywhere"):
+        return [d["id"] for d in devs]
+    if w not in ("me", "", "here", "this device"):
+        d = find_device(w, online_only=False)
+        if d:
+            return [d["id"]]
+    ids = [ctx.device_id] if ctx.device_id else []
+    return ids + [d["id"] for d in devs if d["kind"] == "tablet" and d["id"] not in ids]
+
+
+@tool("watch_camera", """Keep watching a security camera and speak up when something happens — 'watch the front
+door tonight', 'let me know if a car pulls into the driveway in the next hour', 'tell me when the parcel arrives'.
+Ghost checks for movement every few seconds and only alerts for things worth knowing (people, cars, parcels,
+animals — or what look_for says), on the asking device and the tablets. camera = name or 'all'.""",
+      {"type": "OBJECT", "properties": {
+          "camera": {"type": "STRING", "description": "Camera name, or 'all'"},
+          "minutes": {"type": "NUMBER", "description": "How long to watch (default 60, max 720)"},
+          "until": {"type": "STRING", "description": "Or watch until a time: '7am', '23:30', 'morning'"},
+          "look_for": {"type": "STRING", "description": "Optional: what matters, e.g. 'a parcel', 'cars', 'the kids'"},
+          "notify": {"type": "STRING", "description": "me (default: this device + tablets) | everyone | a device name"}},
+       "required": ["camera"]})
+def watch_camera(args: dict, ctx: Ctx) -> str:
+    all_cams = cameras.all_cameras()
+    if not all_cams:
+        return "No cameras are set up yet — add them in Home Assistant or on the Ghost Server admin page."
+    cams = cameras.find(str(args.get("camera") or ""), all_cams)
+    if not cams:
+        return f"No camera matches '{args.get('camera')}'. Cameras: {_names(all_cams)}."
+    if not store.get("anthropic_api_key"):
+        return "Watching needs Claude to look at the pictures — add the Anthropic key on the admin page first."
+    mins = watcher.minutes_from(args)
+    notify = _notify_list(str(args.get("notify") or "me"), ctx)
+    started = [watcher.start(c, mins, str(args.get("look_for") or ""), notify, ctx.device_id) for c in cams[:6]]
+    who = store.device(notify[0])["name"] if notify and store.device(notify[0]) else "this device"
+    extra = f" and {len(notify) - 1} other device(s)" if len(notify) > 1 else ""
+    names = ", ".join(w.cam.name for w in started)
+    return (f"Watching {names} until {watcher.until_text(started[0].until)}"
+            + (f", looking for {started[0].look_for}" if started[0].look_for else "")
+            + f". Alerts go to {who}{extra}. Say 'stop watching' to end it.")
+
+
+@tool("stop_watching", "Stop watching a camera (or 'all').",
+      {"type": "OBJECT", "properties": {"camera": {"type": "STRING", "description": "Camera name, or empty/'all'"}}})
+def stop_watching(args: dict, ctx: Ctx) -> str:
+    stopped = watcher.stop(str(args.get("camera") or ""))
+    return f"Stopped watching {', '.join(stopped)}." if stopped else "I wasn't watching any camera."
+
+
+@tool("camera_watch_status", "Which cameras Ghost is watching right now, until when, and what it has seen.")
+def camera_watch_status(args: dict, ctx: Ctx) -> str:
+    ws = list(watcher.WATCHES.values())
+    if not ws:
+        return "Not watching any cameras."
+    lines = []
+    for w in ws:
+        seen = "; ".join(s for _, s in w.recent[-3:]) or "nothing to report yet"
+        lines.append(f"{w.cam.name}: until {watcher.until_text(w.until)}, {w.alerts} alert(s) — {seen}"
+                     + (f" (problem: {w.error})" if w.error else ""))
+    return "\n".join(lines)
