@@ -55,7 +55,9 @@ def show_camera(args: dict, ctx: Ctx) -> str:
 
 
 @tool("check_camera", """Look through a security camera right now and answer a question about what it sees —
-'is anyone at the front door?', 'is the car in the driveway?', 'did a parcel arrive?'.""",
+'is anyone at the front door?', 'is the car in the driveway?', 'did a parcel arrive?'. This is a ONE-OFF look at
+this moment. You can NOT keep watching a camera or alert the user later when something happens — if they ask for
+that, say plainly it isn't set up yet, and offer to check now instead.""",
       {"type": "OBJECT", "properties": {
           "camera": {"type": "STRING", "description": "Camera name"},
           "question": {"type": "STRING", "description": "What to look for"}},
