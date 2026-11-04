@@ -99,6 +99,7 @@ DEFAULTS: dict[str, Any] = {
     "share_gemini_key": False,          # fallback when ephemeral tokens fail
     "away_mode": False,
     # phone presence automations: plain-English instructions Ghost carries out (Claude + server tools)
+    "rtsp_cameras": "",                 # extra cameras / NVR channels: one "Name = rtsp://user:pass@ip:554/…" per line
     "tablet_entities": "",              # Ghost Hub tiles: Home Assistant entity ids (empty = pick automatically)
     "on_left_home": "",
     "on_approaching_home": "",
@@ -110,7 +111,7 @@ DEFAULTS: dict[str, Any] = {
     "calendars": "",
     "admin_password_hash": "",
 }
-SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars",
+SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars", "rtsp_cameras",
                "admin_password_hash"}
 
 

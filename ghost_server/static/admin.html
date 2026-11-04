@@ -113,6 +113,11 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('ha', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Security cameras</h3>
+          <div class="status">Cameras already in Home Assistant appear automatically. Add any others (NVR channels, Reolink, Hikvision, Tapo…) below, one per line:</div>
+          <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = rtsp://admin:password@192.168.80.50:554/h264Preview_01_sub&#10;Backyard = rtsp://admin:password@192.168.80.51:554/Streaming/Channels/102"></textarea>
+          <div class="status">Use each camera's <b>sub-stream</b> if it has one — it's lighter and plenty for a tablet. Passwords stay on the server; devices only ever get a short-lived viewing link.</div>
+        </div>
         <div class="card"><h3>Ghost Hub tablet — home tiles</h3>
           <label>Home Assistant entities to show (comma separated)</label>
           <input data-k="tablet_entities" placeholder="light.kitchen, light.lounge, switch.coffee_machine, climate.living_room, scene.movie_night">

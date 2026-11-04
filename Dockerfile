@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 GHOST_DATA=/data GHOST_PORT=8780 TZ=Australia/Melbourne
 WORKDIR /app
+# ffmpeg turns RTSP security cameras into a browser-friendly live stream
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY ghost_server ./ghost_server

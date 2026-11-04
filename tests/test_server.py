@@ -306,3 +306,100 @@ def test_dashboard_and_home_switch(server, admin, tmp_path, monkeypatch):
     assert r["ok"] is False and len(calls) == 1                     # locks never operated
     assert httpx.post(server + "/api/v1/home/switch", headers=H, json={"entity_id": "x; rm"}).status_code == 400
     admin.put("/admin/api/settings", json={"ha_token": "", "tablet_entities": "lock.front_door"})
+
+
+def test_cameras_rtsp_view_stream_and_show(server, admin, tmp_path, monkeypatch):
+    import functools
+    import http.server
+    import threading
+    from ghost_server import cameras
+    # a stand-in "camera": a test video served over http, read by ffmpeg like an RTSP feed
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="/tmp/camtest")
+    handler.log_message = lambda *a: None
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cam_url = f"http://127.0.0.1:{srv.server_port}/test.ts"
+    admin.put("/admin/api/settings", json={"ha_token": "", "rtsp_cameras":
+                                           f"Front Gate = {cam_url}\n# comment\nBackyard = {cam_url}\nbad line"})
+    assert admin.get("/admin/api/overview").json()["settings"]["rtsp_cameras"].startswith("•••")   # passwords masked
+    phone = _agent(server, admin, "Cam Phone", "phone", tmp_path)
+    H = {"Authorization": "Bearer " + phone.key}
+    names = [c["name"] for c in httpx.get(server + "/api/v1/cameras", headers=H).json()["cameras"]]
+    assert names == ["Front Gate", "Backyard"]
+    assert [c.name for c in cameras.find("the front gate camera")] == ["Front Gate"]
+    assert len(cameras.find("all")) == 2 and cameras.find("garage") == []
+    v = httpx.post(server + "/api/v1/cameras/view", headers=H, json={"camera": "backyard"}).json()
+    assert v["title"] == "Backyard" and v["path"].startswith("/cam/")
+    page = httpx.get(server + v["path"]).text
+    assert "/stream/0" in page and "Backyard" in page and cam_url not in page             # no camera URL leaks
+    with httpx.stream("GET", server + v["path"] + "/stream/0", timeout=30) as r:
+        assert r.status_code == 200 and "multipart/x-mixed-replace" in r.headers["content-type"]
+        got = b""
+        for chunk in r.iter_bytes():
+            got += chunk
+            if got.count(b"\xff\xd8") >= 2:
+                break
+    assert got.count(b"\xff\xd8") >= 2                                                    # real JPEG frames
+    snap = httpx.get(server + v["path"] + "/snap/0", timeout=30)
+    assert snap.status_code == 200 and snap.content[:2] == b"\xff\xd8"
+    assert httpx.get(server + "/cam/nope").status_code == 410
+    assert httpx.post(server + "/api/v1/cameras/view", json={}).status_code == 401
+    # Ghost: "show the front gate" → the phone gets a show_camera call with a view link
+    from ghost_server import tools
+    from ghost_server.hub import hub
+    sent = []
+    monkeypatch.setattr(hub, "call_sync", lambda dev_id, tool, args, timeout=20.0: sent.append((tool, args)) or {"ok": True, "result": "shown"})
+    monkeypatch.setattr(hub, "is_online", lambda dev_id: True)
+
+    class C:
+        capabilities = [{"name": "open_camera_view"}]
+    from ghost_server import store as st
+    pid = st.device_by_key(phone.key)["id"]
+    monkeypatch.setitem(hub.conns, pid, C())
+    out = tools.run("show_camera", {"camera": "front gate"}, tools.Ctx(pid, "Cam Phone", "live"))
+    assert "Showing Front Gate live" in out and sent[0][0] == "open_camera_view"
+    assert sent[0][1]["path"].startswith("/cam/") and cameras.view(sent[0][1]["path"][5:])[0].name == "Front Gate"
+    admin.put("/admin/api/settings", json={"rtsp_cameras": ""})
+
+
+def test_cameras_home_assistant_stream(server, admin, tmp_path):
+    import http.server
+    import json as _json
+    import threading
+
+    class FakeHA(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.headers.get("Authorization") != "Bearer ha-tok":
+                self.send_response(401); self.end_headers(); return
+            if self.path == "/api/states":
+                body = _json.dumps([{"entity_id": "camera.front_door", "state": "idle",
+                                     "attributes": {"friendly_name": "Front Door"}},
+                                    {"entity_id": "light.x", "state": "on", "attributes": {}}]).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/api/camera_proxy_stream/camera.front_door":
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace;boundary=frame"); self.end_headers()
+                for _ in range(3):
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n\xff\xd8fakejpeg\xff\xd9\r\n")
+            elif self.path == "/api/camera_proxy/camera.front_door":
+                self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.end_headers()
+                self.wfile.write(b"\xff\xd8snap\xff\xd9")
+            else:
+                self.send_response(404); self.end_headers()
+    ha = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeHA)
+    threading.Thread(target=ha.serve_forever, daemon=True).start()
+    admin.put("/admin/api/settings", json={"ha_url": f"http://127.0.0.1:{ha.server_port}", "ha_token": "ha-tok",
+                                           "rtsp_cameras": ""})
+    tab = _agent(server, admin, "Cam Tablet", "tablet", tmp_path)
+    H = {"Authorization": "Bearer " + tab.key}
+    assert httpx.get(server + "/api/v1/cameras", headers=H).json()["cameras"] == \
+        [{"id": "camera.front_door", "name": "Front Door", "source": "ha"}]
+    v = httpx.post(server + "/api/v1/cameras/view", headers=H, json={"camera": "door"}).json()
+    body = httpx.get(server + v["path"] + "/stream/0", timeout=20).content
+    assert body.count(b"\xff\xd8fakejpeg") == 3 and b"ha-tok" not in body
+    assert httpx.get(server + v["path"] + "/snap/0").content == b"\xff\xd8snap\xff\xd9"
+    admin.put("/admin/api/settings", json={"ha_token": ""})

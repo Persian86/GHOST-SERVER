@@ -28,7 +28,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import __version__, chat, config, dashboard, live, prompt, store, tools
+from . import __version__, cameras, chat, config, dashboard, live, prompt, store, tools
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -231,6 +231,58 @@ async def home_switch(body: dict, dev: dict = Depends(device_auth)):
         return await asyncio.to_thread(dashboard.switch, eid, str(body.get("action", "toggle")))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
+
+
+# ── security cameras ─────────────────────────────────────────────────────────
+@app.get("/api/v1/cameras")
+async def cameras_list(dev: dict = Depends(device_auth)):
+    cams = await asyncio.to_thread(cameras.all_cameras)
+    return {"cameras": [{"id": c.id, "name": c.name, "source": c.source} for c in cams]}
+
+
+@app.post("/api/v1/cameras/view")
+async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
+    """A short-lived link (/cam/<token>) that shows one camera, or 'all' as a grid."""
+    cams = await asyncio.to_thread(cameras.find, str(body.get("camera") or "all"))
+    if not cams:
+        raise HTTPException(404, "no camera matches that — or none are set up yet")
+    return {"path": "/cam/" + cameras.issue(cams), "title": cams[0].name if len(cams) == 1 else "Cameras",
+            "count": len(cams)}
+
+
+@app.get("/cam/{tok}", response_class=HTMLResponse)
+async def cam_page(tok: str):
+    cams = cameras.view(tok)
+    if cams is None:
+        return HTMLResponse("<body style='background:#000;color:#aaa;font-family:sans-serif;padding:40px'>"
+                            "This camera link has expired — ask Ghost to show the cameras again.</body>", 410)
+    return cameras.page(tok, cams)
+
+
+@app.get("/cam/{tok}/stream/{i}")
+async def cam_stream(tok: str, i: int):
+    from fastapi.responses import StreamingResponse
+    cams = cameras.view(tok)
+    if cams is None or not 0 <= i < len(cams):
+        raise HTTPException(404, "expired")
+    try:
+        ctype, body = await cameras.mjpeg(cams[i])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"camera unavailable: {e}")
+    return StreamingResponse(body, media_type=ctype, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/cam/{tok}/snap/{i}")
+async def cam_snap(tok: str, i: int):
+    from fastapi.responses import Response
+    cams = cameras.view(tok)
+    if cams is None or not 0 <= i < len(cams):
+        raise HTTPException(404, "expired")
+    try:
+        jpg = await asyncio.to_thread(cameras.snapshot, cams[i])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"camera unavailable: {e}")
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 MAX_UPLOAD = 40 * 1024 * 1024
