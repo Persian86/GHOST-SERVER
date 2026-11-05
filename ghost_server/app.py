@@ -240,6 +240,20 @@ async def cameras_list(dev: dict = Depends(device_auth)):
     return {"cameras": [{"id": c.id, "name": c.name, "source": c.source} for c in cams]}
 
 
+@app.get("/api/v1/cameras/status")
+async def cameras_status(dev: dict = Depends(device_auth)):
+    """For the Cameras screen: the cameras, what Ghost is watching, and the latest alerts (with pictures)."""
+    from . import watcher
+    cams = await asyncio.to_thread(cameras.all_cameras)
+    watches = [{"camera": w.cam.name, "until": w.until, "look_for": w.look_for, "alerts": w.alerts,
+                "seen": [s for _, s in w.recent[-3:]], "problem": w.error} for w in list(watcher.WATCHES.values())]
+    alerts = [{"camera": e["data"].get("camera", ""), "summary": e["data"].get("summary", ""),
+               "picture": e["data"].get("picture", ""), "at": e["at"]}
+              for e in store.recent_events(10, "camera_alert")]
+    return {"cameras": [{"id": c.id, "name": c.name, "source": c.source} for c in cams],
+            "watching": watches, "alerts": alerts}
+
+
 @app.post("/api/v1/cameras/view")
 async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
     """A short-lived link (/cam/<token>) that shows one camera, or 'all' as a grid."""

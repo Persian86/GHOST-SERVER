@@ -475,3 +475,12 @@ def test_camera_watch_alerts_only_on_real_change(server, admin, tmp_path, monkey
     assert "Watching Front Gate until" in out and "a parcel" in out
     assert 0 < started[0][1] <= 24 * 60 and started[0][3][0] == pid
     assert watcher.minutes_from({"minutes": 30}) == 30 and watcher.minutes_from({}) == 60
+
+
+def test_cameras_status_endpoint(server, admin, tmp_path):
+    from ghost_server import store as st
+    ph = _agent(server, admin, "Status Phone", "phone", tmp_path)
+    pid = st.device_by_key(ph.key)["id"]
+    st.add_event(pid, "camera_alert", {"camera": "Front Door", "summary": "A courier left a parcel.", "picture": "/files/x"})
+    d = httpx.get(server + "/api/v1/cameras/status", headers={"Authorization": "Bearer " + ph.key}).json()
+    assert d["alerts"][0]["summary"] == "A courier left a parcel." and d["watching"] == [] and "cameras" in d
