@@ -484,3 +484,93 @@ def test_cameras_status_endpoint(server, admin, tmp_path):
     st.add_event(pid, "camera_alert", {"camera": "Front Door", "summary": "A courier left a parcel.", "picture": "/files/x"})
     d = httpx.get(server + "/api/v1/cameras/status", headers={"Authorization": "Bearer " + ph.key}).json()
     assert d["alerts"][0]["summary"] == "A courier left a parcel." and d["watching"] == [] and "cameras" in d
+
+
+def test_quiet_schedule_and_words():
+    from ghost_server import quiet
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    assert quiet.parse_schedule("10pm to 6:30am") == ((22, 0), (6, 30))
+    assert quiet.parse_schedule("22:00-06:30") == ((22, 0), (6, 30)) and quiet.parse_schedule("off") is None
+    assert quiet.parse_clock("7") == (7, 0) and quiet.parse_clock("12am") == (0, 0) and quiet.parse_clock("25:00") is None
+    tz = ZoneInfo("Australia/Melbourne")
+    at = lambda h, m=0: dt.datetime(2026, 11, 5, h, m, tzinfo=tz).timestamp()
+    assert quiet._window("22:00-06:30", at(23))[0] and quiet._window("22:00-06:30", at(3))[0]
+    assert not quiet._window("22:00-06:30", at(12))[0]
+    end = quiet._window("22:00-06:30", at(23))[1]
+    assert dt.datetime.fromtimestamp(end, tz).hour == 6 and dt.datetime.fromtimestamp(end, tz).day == 6
+    assert quiet.has_emergency_words("Can you call me now? It's urgent")
+    assert quiet.has_emergency_words("We're at the hospital") and not quiet.has_emergency_words("fireplace is cosy")
+    assert not quiet.has_emergency_words("see you at dinner")
+
+
+def test_quiet_mode_holds_lets_through_and_catches_up(server, admin, tmp_path):
+    from ghost_server import quiet, store as st
+    desk = _agent(server, admin, "Quiet PC", "desktop", tmp_path)
+    tablet = _agent(server, admin, "Quiet Tablet", "tablet", tmp_path)
+    phone = _agent(server, admin, "Hayley's phone", "phone", tmp_path)
+    admin.put("/admin/api/settings", json={"quiet_favourites": "Hayley", "safety_alerts": False,
+                                           "quiet_me_devices": "Quiet PC"})
+    said_desk, said_tab, said_phone, states = [], [], [], []
+    phone.on_say = lambda t: said_phone.append(t)
+    desk.on_say = lambda t: said_desk.append(t)
+    tablet.on_say = lambda t: said_tab.append(t)
+    desk.on_message = lambda m: states.append(m) if m.get("type") == "quiet" else None
+    H = {"Authorization": "Bearer " + desk.key}
+
+    async def scenario():
+        stop = asyncio.Event()
+        tasks = [asyncio.create_task(a.run_link(stop)) for a in (desk, tablet, phone)]
+        for _ in range(100):
+            if desk.connected and tablet.connected and phone.connected:
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
+        # personal Do Not Disturb by voice: the PC goes quiet, the shared tablet doesn't
+        r = await asyncio.to_thread(desk.call_tool, "quiet_mode", {"action": "on", "minutes": 60})
+        await asyncio.sleep(0.3)
+        await asyncio.to_thread(phone.call_tool, "announce", {"text": "Bring milk", "device": "all"})       # favourite
+        await asyncio.to_thread(tablet.call_tool, "announce", {"text": "Dinner's ready", "device": "all"})  # held on PC
+        await asyncio.to_thread(tablet.call_tool, "announce", {"text": "Emergency — come quick", "device": "Quiet PC"})
+        await asyncio.sleep(0.3)
+        during = list(said_desk)
+        # switching off from the app gives a catch-up of what was held
+        r2 = await asyncio.to_thread(lambda: httpx.post(server + "/api/v1/quiet", headers=H,
+                                                       json={"scope": "me", "on": False}).json())
+        await asyncio.sleep(0.4)
+        stop.set()
+        for t in tasks:
+            t.cancel()
+        return r, during, r2
+
+    r, during, r2 = asyncio.run(scenario())
+    assert "Do Not Disturb is on until" in r and "still get through" in r
+    assert "Bring milk" in during and "Emergency — come quick" in during and "Dinner's ready" not in during
+    assert "Dinner's ready" in said_phone                    # Hayley's phone isn't one of "my devices"
+    assert "Bring milk" in said_tab                          # nor is the shared tablet
+    assert r2["active"] is False and r2["me"]["active"] is False
+    assert any("While Do Not Disturb was on" in s and "Dinner's ready" in s for s in said_desk)
+    assert any(m.get("active") for m in states) and states[-1]["active"] is False
+    # house quiet covers tablets too; a schedule turns it on by itself
+    quiet.set_quiet("house", True, until="11:59pm")
+    assert quiet.device_quiet("tablet") and quiet.device_quiet("desktop")
+    quiet.set_quiet("house", False)
+    assert not quiet.device_quiet("tablet")
+    assert quiet.gets_through({"from": "Safety alert", "text": "Kitchen smoke", "urgent": True})
+    st.put("quiet_favourites", ""); st.put("quiet_me_devices", "")
+
+
+def test_safety_check_reports_new_problems_only():
+    from ghost_server import quiet
+    quiet._safety_seeded = False
+    base = [{"entity_id": "binary_sensor.kitchen_smoke", "state": "off",
+             "attributes": {"device_class": "smoke", "friendly_name": "Kitchen smoke"}},
+            {"entity_id": "binary_sensor.laundry_leak", "state": "on",
+             "attributes": {"device_class": "moisture", "friendly_name": "Laundry leak"}},
+            {"entity_id": "binary_sensor.front_door", "state": "on", "attributes": {"device_class": "door"}}]
+    assert quiet.safety_check(base) == []                    # first look only learns what's already on
+    base[0]["state"] = "on"
+    assert quiet.safety_check(base) == ["Kitchen smoke — smoke detected"]
+    assert quiet.safety_check(base) == []                    # still on: not repeated
+    alarm = base + [{"entity_id": "alarm_control_panel.house", "state": "triggered", "attributes": {"friendly_name": "House alarm"}}]
+    assert quiet.safety_check(alarm) == ["House alarm — the alarm has gone off"]

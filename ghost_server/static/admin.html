@@ -123,6 +123,17 @@
           <input data-k="tablet_entities" placeholder="light.kitchen, light.lounge, switch.coffee_machine, climate.living_room, scene.movie_night">
           <div class="status">Leave empty and the tablet picks your lights and switches automatically. Tapping a tile switches lights, switches, fans and scenes. Locks, alarms and doors are shown but can't be operated from the tablet.</div>
         </div>
+        <div class="card"><h3>Do Not Disturb</h3>
+          <div class="status">Two quiet modes. <b>Mine</b>: your phone and PC go quiet. <b>House</b>: every device, the hub tablets too. Turn them on by voice (“don't disturb me until 7am”, “house quiet mode for an hour”), with the switch in each app, or on a schedule. Ghost holds announcements and gives a catch-up afterwards.</div>
+          <label>My nightly Do Not Disturb (e.g. 22:00-06:30 — empty = off)</label><input data-k="quiet_me_schedule" placeholder="22:00-06:30">
+          <label>House quiet mode schedule</label><input data-k="quiet_house_schedule" placeholder="22:30-06:00">
+          <label>Always let through — favourite people (comma separated)</label><input data-k="quiet_favourites" placeholder="Hayley, Zoey, Mum">
+          <div class="status">The phone adds its starred contacts automatically — star someone in Contacts and their calls ring through too.</div>
+          <label>Emergency words that break through (empty = the built-in list)</label><input data-k="quiet_words" placeholder="emergency, urgent, hospital, ambulance, accident, police, fire, help me, call me now, 000">
+          <label>My devices (names, comma separated — empty = every phone and PC)</label><input data-k="quiet_me_devices" placeholder="Adam's phone, Office PC">
+          <label><input type="checkbox" data-k="safety_alerts" style="width:auto"> Safety alerts: smoke, CO, gas, water-leak and alarm sensors in Home Assistant are announced on every device, even in Do Not Disturb</label>
+          <label><input type="checkbox" data-k="quiet_android_sync" style="width:auto"> Sync with the phone's own Do Not Disturb (starred contacts can still call)</label>
+        </div>
         <div class="card"><h3>Phone presence — automations</h3>
           <label>When a phone leaves home</label><input data-k="on_left_home" placeholder="e.g. turn off all the lights and the TV">
           <label>When a phone is ~2 km from home</label><input data-k="on_approaching_home" placeholder="e.g. turn on the heater if it's below 17 degrees">

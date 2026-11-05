@@ -104,6 +104,16 @@ DEFAULTS: dict[str, Any] = {
     "on_left_home": "",
     "on_approaching_home": "",
     "on_arrived_home": "",                 # give phones/tablets the Gemini key so they keep working away from home
+    # Do Not Disturb ("me" = the owner's phone + PC, "house" = every device)
+    "quiet_me_until": 0, "quiet_house_until": 0,            # epoch seconds; -1 = until turned off
+    "quiet_me_schedule": "", "quiet_house_schedule": "",    # "22:00-06:30"
+    "quiet_me_skip_until": 0, "quiet_house_skip_until": 0,  # switched off during tonight's schedule
+    "quiet_me_devices": "",                                 # which devices are "mine" (empty = every phone + PC)
+    "quiet_favourites": "",                                 # names who always get through
+    "quiet_favourites_phone": [],                           # the phone's starred contacts (it reports them)
+    "quiet_words": "",                                      # empty = the built-in emergency words
+    "quiet_android_sync": True,                             # mirror into the phone's own Do Not Disturb
+    "safety_alerts": True,                                  # smoke / CO / gas / leak / alarm → every device, always
     "ha_url": "http://192.168.80.244:8123",
     "ha_token": "",
     "marquee_url": "http://192.168.80.45:8420",

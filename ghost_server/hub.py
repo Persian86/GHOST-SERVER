@@ -67,6 +67,12 @@ class Hub:
         c = self.conns.get(device_id)
         if c is None:
             return False
+        # Do Not Disturb: hold what would be said, unless it's allowed through
+        if msg.get("type") in ("say", "task_done"):
+            from . import quiet
+            if quiet.device_quiet(c.kind, name=c.name) and not quiet.gets_through(msg):
+                quiet.hold(device_id, msg)
+                return True
         try:
             await c.ws.send_json(msg)
             return True

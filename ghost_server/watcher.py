@@ -93,8 +93,10 @@ def judge(w: Watch, jpeg: bytes) -> dict:
               f"Already reported in the last while: {earlier}.\n"
               "Look at this frame. Alert ONLY for something new that matches what they asked about. Do NOT alert for "
               "wind, rain, moving shadows, headlights, insects, a tree, or something already reported that's still there.\n"
-              'Reply with JSON only: {"alert": true|false, "summary": "one short spoken sentence, e.g. '
-              "'Someone's at the front door — looks like a courier with a parcel.'\"}")
+              'Reply with JSON only: {"alert": true|false, "urgent": true|false, "summary": "one short spoken sentence, e.g. '
+              "'Someone's at the front door — looks like a courier with a parcel.'\"}\n"
+              "Set urgent to true ONLY for real danger: fire or smoke, someone forcing or climbing in a door or window, "
+              "a break-in, someone hurt or collapsed, or a stranger trying doors at night. Deliveries and visitors are not urgent.")
     img = base64.b64encode(jpeg).decode()
     text, _ = claude(fast=False).complete([{"role": "user", "content": [
         {"type": "text", "text": prompt},
@@ -104,10 +106,10 @@ def judge(w: Watch, jpeg: bytes) -> dict:
         d = json.loads(m.group(0)) if m else {}
     except Exception:  # noqa: BLE001
         d = {}
-    return {"alert": bool(d.get("alert")), "summary": str(d.get("summary") or "").strip()}
+    return {"alert": bool(d.get("alert")), "urgent": bool(d.get("urgent")), "summary": str(d.get("summary") or "").strip()}
 
 
-def alert(w: Watch, summary: str, jpeg: bytes) -> None:
+def alert(w: Watch, summary: str, jpeg: bytes, urgent: bool = False) -> None:
     from .hub import hub
     w.alerts += 1
     w.last_alert = time.time()
@@ -123,9 +125,10 @@ def alert(w: Watch, summary: str, jpeg: bytes) -> None:
         path = "/files/" + store.add_file(f.name, f, w.started_by)
     except Exception:  # noqa: BLE001
         pass
-    store.add_event(w.started_by, "camera_alert", {"camera": w.cam.name, "summary": summary, "picture": path})
+    store.add_event(w.started_by, "camera_alert", {"camera": w.cam.name, "summary": summary, "picture": path,
+                                                   "urgent": urgent})
     msg = {"type": "say", "from": f"{w.cam.name} camera", "text": summary, "at": time.time(),
-           "camera": w.cam.name, "picture": path}
+           "camera": w.cam.name, "picture": path, "urgent": urgent}
     live_path = "/cam/" + cameras.issue([w.cam])
     for dev_id in w.notify:
         if not hub.is_online(dev_id):
@@ -134,7 +137,9 @@ def alert(w: Watch, summary: str, jpeg: bytes) -> None:
         row = store.device(dev_id)
         d = dict(row) if row else {}
         caps = {c.get("name") for c in hub.conns[dev_id].capabilities} if dev_id in hub.conns else set()
-        if d.get("kind") == "tablet" and "open_camera_view" in caps:      # the hub pops up the live view
+        from . import quiet
+        if d.get("kind") == "tablet" and "open_camera_view" in caps and (urgent or not quiet.device_quiet("tablet")):
+            # the hub pops up the live view (not during house quiet mode, unless it's urgent)
             hub.call_sync(dev_id, "open_camera_view", {"path": live_path, "title": w.cam.name}, timeout=8)
 
 
@@ -158,7 +163,7 @@ def _run(w: Watch, poll: float = POLL_SECONDS) -> None:
                     w.looks += 1
                     verdict = judge(w, jpeg)
                     if verdict["alert"] and verdict["summary"]:
-                        alert(w, verdict["summary"], jpeg)
+                        alert(w, verdict["summary"], jpeg, urgent=verdict.get("urgent", False))
                 # the empty scene adapts slowly (fast when nothing's happening)
                 w.background = blend(w.background, cur, 0.04 if busy else 0.15)
         except Exception as e:  # noqa: BLE001

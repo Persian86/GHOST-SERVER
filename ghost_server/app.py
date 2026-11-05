@@ -28,7 +28,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import __version__, cameras, chat, config, dashboard, live, prompt, store, tools
+from . import __version__, cameras, chat, config, dashboard, live, prompt, quiet, store, tools
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -41,7 +41,10 @@ async def _lifespan(_app):
     tools.load()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
+    bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop())]
     yield
+    for t in bg:
+        t.cancel()
 
 
 app = FastAPI(title="Ghost Server", version=__version__, lifespan=_lifespan)
@@ -254,6 +257,37 @@ async def cameras_status(dev: dict = Depends(device_auth)):
             "watching": watches, "alerts": alerts}
 
 
+# ── Do Not Disturb ───────────────────────────────────────────────────────────
+@app.get("/api/v1/quiet")
+async def quiet_get(dev: dict = Depends(device_auth)):
+    return quiet.snapshot(dev["kind"], dev["name"])
+
+
+@app.post("/api/v1/quiet")
+async def quiet_set(body: dict, dev: dict = Depends(device_auth)):
+    """{"scope": "me"|"house", "on": bool, "minutes"?: n, "until"?: "7am"} and/or settings:
+    {"me_schedule": "22:00-06:30", "house_schedule": "", "favourites_phone": [...], "android_sync": bool,
+     "safety": bool}"""
+    try:
+        if "on" in body:
+            quiet.set_quiet(str(body.get("scope") or "me"), bool(body["on"]),
+                            minutes=body.get("minutes"), until=body.get("until"))
+        for scope in quiet.SCOPES:
+            if f"{scope}_schedule" in body:
+                quiet.set_schedule(scope, str(body[f"{scope}_schedule"] or ""))
+        if "favourites_phone" in body:
+            names = [str(n).strip() for n in (body.get("favourites_phone") or []) if str(n).strip()][:100]
+            store.put("quiet_favourites_phone", names)
+        if "android_sync" in body:
+            store.put("quiet_android_sync", bool(body["android_sync"]))
+        if "safety" in body:
+            store.put("safety_alerts", bool(body["safety"]))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await quiet.tick(force=True)
+    return quiet.snapshot(dev["kind"], dev["name"])
+
+
 @app.post("/api/v1/cameras/view")
 async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
     """A short-lived link (/cam/<token>) that shows one camera, or 'all' as a grid."""
@@ -356,6 +390,7 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     store.touch_device(row["id"])
     await ws.send_json({"type": "welcome", "device_id": row["id"], "name": row["name"],
                         "assistant_name": store.get("assistant_name")})
+    await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
     try:
         while True:
             msg = await ws.receive_json()
@@ -436,6 +471,8 @@ def save_settings(body: dict, _: bool = Depends(admin_auth)):
         if k in store.SECRET_KEYS and (v is None or str(v).startswith("•••")):
             continue                      # untouched masked secret
         store.put(k, v)
+    if any(k.startswith(("quiet_", "safety_")) for k in body):
+        quiet.tick_soon()
     return {"ok": True, "settings": store.all_settings()}
 
 

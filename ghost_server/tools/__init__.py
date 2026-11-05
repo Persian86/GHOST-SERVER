@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 TOOLS: dict[str, "Tool"] = {}
-_MODULES = ("brain", "memory", "home", "marquee", "web", "documents", "devices", "tasks", "security")
+_MODULES = ("brain", "memory", "home", "marquee", "web", "documents", "devices", "tasks", "security", "quiet")
 _loaded = False
 
 
