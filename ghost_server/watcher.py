@@ -48,6 +48,7 @@ class Watch:
     looks: int = 0
     alerts: int = 0
     error: str = ""
+    door: bool = False                # the always-on front-door watch (door.py decides who hears it)
     stop: threading.Event = field(default_factory=threading.Event)
 
 
@@ -109,22 +110,29 @@ def judge(w: Watch, jpeg: bytes) -> dict:
     return {"alert": bool(d.get("alert")), "urgent": bool(d.get("urgent")), "summary": str(d.get("summary") or "").strip()}
 
 
+def save_picture(cam_name: str, jpeg: bytes, device_id: str = "", prefix: str = "watch") -> str:
+    """Keep a frame, so "show me what you saw" works and the phone can open it. '' on failure."""
+    try:
+        from . import config
+        folder = config.FILES_DIR / time.strftime("%Y-%m")
+        folder.mkdir(parents=True, exist_ok=True)
+        f = folder / f"{prefix}-{cameras._slug(cam_name)}-{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+        f.write_bytes(jpeg)
+        return "/files/" + store.add_file(f.name, f, device_id)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def alert(w: Watch, summary: str, jpeg: bytes, urgent: bool = False) -> None:
     from .hub import hub
     w.alerts += 1
     w.last_alert = time.time()
     w.recent.append((w.last_alert, summary))
-    # keep the picture, so "show me what you saw" works and the phone can open it
-    path = ""
-    try:
-        from . import config
-        folder = config.FILES_DIR / time.strftime("%Y-%m")
-        folder.mkdir(parents=True, exist_ok=True)
-        f = folder / f"watch-{cameras._slug(w.cam.name)}-{time.strftime('%Y%m%d-%H%M%S')}.jpg"
-        f.write_bytes(jpeg)
-        path = "/files/" + store.add_file(f.name, f, w.started_by)
-    except Exception:  # noqa: BLE001
-        pass
+    if w.door:
+        from . import door
+        door.on_motion(w, summary, jpeg, urgent)
+        return
+    path = save_picture(w.cam.name, jpeg, w.started_by)
     store.add_event(w.started_by, "camera_alert", {"camera": w.cam.name, "summary": summary, "picture": path,
                                                    "urgent": urgent})
     msg = {"type": "say", "from": f"{w.cam.name} camera", "text": summary, "at": time.time(),
@@ -182,14 +190,14 @@ def _run(w: Watch, poll: float = POLL_SECONDS) -> None:
 
 
 def start(cam: cameras.Cam, minutes: float, look_for: str, notify: list[str], started_by: str,
-          poll: float = POLL_SECONDS) -> Watch:
-    minutes = max(1.0, min(float(minutes or 60), MAX_HOURS * 60))
-    wid = cam.id
+          poll: float = POLL_SECONDS, door: bool = False) -> Watch:
+    minutes = (10 * 365 * 1440) if door else max(1.0, min(float(minutes or 60), MAX_HOURS * 60))
+    wid = ("door:" if door else "") + cam.id
     with _lock:
         old = WATCHES.get(wid)
         if old:
             old.stop.set()
-        w = Watch(wid, cam, time.time() + minutes * 60, look_for.strip(), notify, started_by)
+        w = Watch(wid, cam, time.time() + minutes * 60, look_for.strip(), notify, started_by, door=door)
         WATCHES[wid] = w
     threading.Thread(target=_run, args=(w, poll), daemon=True, name=f"watch-{wid}").start()
     return w
@@ -200,6 +208,8 @@ def stop(name: str = "") -> list[str]:
     stopped = []
     with _lock:
         for wid, w in list(WATCHES.items()):
+            if w.door:
+                continue                  # the front-door watch is switched on/off on the admin page
             if not n or n in ("all", "everything", "cameras") or n in w.cam.name.lower() or w.cam.name.lower() in n:
                 w.stop.set()
                 WATCHES.pop(wid, None)

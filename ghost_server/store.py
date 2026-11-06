@@ -139,11 +139,21 @@ DEFAULTS: dict[str, Any] = {
     "photo_folder": "/photos",                              # the tablet's photo frame (map a NAS share here)
     "photo_frame_after": 5,                                 # minutes idle before the tablet shows photos (0 = never)
     "admin_password_hash": "",
+    # meal planner (meals.py)
+    "meal_serves": 4,
+    "meal_preferences": "",                                 # e.g. "kid-friendly, no seafood, one vegetarian night"
+    "meal_pantry": "salt, pepper, olive oil, vegetable oil, water",   # never added to the shopping list
+    # front door (door.py)
+    "door_cameras": "",                                     # camera name(s) that see the front door
+    "door_bell_entities": "",                               # HA entities that change when the bell is pressed
+    "door_announce": "near",                                # near = rooms where someone is | everywhere
+    "door_watch": True,                                     # also notice visitors/deliveries without a press
     # security
     "approve_new_devices": True,                            # newly paired devices wait on the admin page
     "security_alerts": True,                                # failed logins, new devices, new addresses → my phone
     "key_rotate_days": 30,                                  # devices swap their key for a fresh one this often
-    "admin_idle_hours": 12,                                 # admin page signs out after this long unused
+    "admin_idle_hours": 12,
+    "https_only": False,                                    # turn off the plain-HTTP API (after devices moved over)                                 # admin page signs out after this long unused
     "admin_totp_secret": "",                                # two-step login (authenticator app)
     "admin_totp_since": 0,
     "admin_backup_codes": [],                               # hashed one-time codes

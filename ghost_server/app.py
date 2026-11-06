@@ -32,8 +32,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import (__version__, cameras, chat, config, dashboard, faces, household, live, photos, prompt, quiet,
-               security, store, tools)
+from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
+               prompt, quiet, security, store, tools)
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -47,13 +47,30 @@ async def _lifespan(_app):
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
-          asyncio.create_task(household.timer_loop())]
+          asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop())]
     yield
     for t in bg:
         t.cancel()
 
 
 app = FastAPI(title="Ghost Server", version=__version__, lifespan=_lifespan)
+
+# plain HTTP stays open for these even in "HTTPS only", so a device can fetch the certificate
+_PLAIN_OK = ("/api/v1/health", "/api/v1/tls", "/ghost-server.crt")
+
+
+@app.middleware("http")
+async def _https_only(request: Request, call_next):
+    if store.get("https_only") and request.url.scheme == "http" and not request.url.path.startswith(_PLAIN_OK):
+        from . import tls
+        if tls.pem():
+            host = (request.url.hostname or "localhost")
+            if request.url.path in ("/", "") and request.method == "GET":
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(f"https://{host}:{tls.PORT}/", status_code=307)
+            return JSONResponse({"detail": f"Use HTTPS: https://{host}:{tls.PORT} (GET /api/v1/tls for the certificate)",
+                                 "https_port": tls.PORT}, status_code=426)
+    return await call_next(request)
 STATIC = Path(__file__).parent / "static"
 
 
@@ -73,10 +90,15 @@ def _ip(request) -> str:
 WAITING = "Waiting for approval — approve this device on the Ghost Server admin page (Security)"
 
 
-def _check_device(row, ip: str) -> None:
-    """Shared by the HTTP API and the live link: approval, and "used from a new address" alerts."""
+def _check_device(row, ip: str, secure: bool | None = None) -> None:
+    """Shared by the HTTP API and the live link: approval, "used from a new address" alerts, and
+    remembering whether the device has moved to HTTPS (shown on the Security tab)."""
     if not row["approved"]:
         raise HTTPException(403, WAITING)
+    if secure is not None:
+        info = json.loads(row["info"] or "{}")
+        if info.get("https") != secure:
+            store.touch_device(row["id"], info={"https": secure})
     if ip and store.note_ip(row["id"], ip):
         security.log(f"{row['name']} connected from a new address", ip, "warn", row["id"],
                      alert=f"{row['name']} just connected from a new address ({ip}). If that wasn't you, "
@@ -87,7 +109,7 @@ def device_auth(request: Request, authorization: str | None = Header(None)) -> d
     row = store.device_by_key(_key_from(authorization))
     if row is None:
         raise HTTPException(401, "Unknown or revoked device key — pair this device again")
-    _check_device(row, _ip(request))
+    _check_device(row, _ip(request), request.url.scheme == "https")
     store.touch_device(row["id"])
     return {"id": row["id"], "name": row["name"], "kind": row["kind"]}
 
@@ -141,6 +163,24 @@ def _admin_password_check(pw: str, code: str, ip: str, what: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Agents
 # ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/v1/tls")
+def tls_info():
+    """Public: the server's certificate, for devices to pin (see tls.py)."""
+    from . import tls
+    return tls.info()
+
+
+@app.get("/ghost-server.crt")
+def tls_cert():
+    """The certificate as a file, to install on a PC so the browser trusts the admin page."""
+    from fastapi.responses import Response
+    from . import tls
+    if not tls.pem():
+        raise HTTPException(404, "HTTPS isn't set up")
+    return Response(tls.pem(), media_type="application/x-x509-ca-cert",
+                    headers={"Content-Disposition": "attachment; filename=ghost-server.crt"})
+
+
 @app.get("/api/v1/health")
 def health():
     return {"ok": True, "app": "ghost-server", "version": __version__, "online": len(hub.conns)}
@@ -354,6 +394,36 @@ async def faces_identify(body: dict, dev: dict = Depends(device_auth)):
     if r.get("for"):
         r.update(await asyncio.to_thread(_personal, r["for"]))
     return r
+
+
+# ── meal planner ─────────────────────────────────────────────────────────────
+@app.get("/api/v1/meals")
+def meals_week(days: int = 7, dev: dict = Depends(device_auth)):
+    return {"days": meals.week(days=max(1, min(int(days), 14)))}
+
+
+@app.post("/api/v1/meals")
+async def meals_set(body: dict, dev: dict = Depends(device_auth)):
+    """{"day": "thursday", "title": "Tacos"} (ingredients looked up), or {"day": …, "clear": true}."""
+    d = meals.parse_day(str(body.get("day") or "today"))
+    if d is None:
+        raise HTTPException(400, "Which day?")
+    if body.get("clear") or not str(body.get("title") or "").strip():
+        await asyncio.to_thread(meals.clear, d)
+    else:
+        ing = body.get("ingredients")
+        await asyncio.to_thread(meals.set_meal, d, str(body["title"]),
+                                [str(x) for x in ing] if isinstance(ing, list) else None, dev["name"])
+    return {"days": meals.week()}
+
+
+@app.post("/api/v1/meals/shop")
+async def meals_shop(body: dict, dev: dict = Depends(device_auth)):
+    """Put the coming week's (or the given days') ingredients on the shopping list."""
+    days = [meals.parse_day(x) for x in (body.get("days") or [])] or \
+        [meals.today() + __import__("datetime").timedelta(days=i) for i in range(7)]
+    r = await asyncio.to_thread(meals.shop, [d for d in days if d], dev["name"])
+    return {**r, "days": meals.week()}
 
 
 _enrol_tickets: dict[str, tuple[str, float]] = {}
@@ -634,12 +704,16 @@ async def get_file(fid: str, request: Request, k: str = "", authorization: str |
 async def agent_ws(ws: WebSocket, key: str = ""):
     row = store.device_by_key(key or _key_from(ws.headers.get("authorization")))
     # accept first so the app sees a close code it understands (a refused handshake is just "HTTP 403")
+    if store.get("https_only") and ws.url.scheme == "ws":
+        await ws.accept()
+        await ws.close(code=4426, reason="use HTTPS (wss) — GET /api/v1/tls")
+        return
     if row is None:
         await ws.accept()
         await ws.close(code=4401, reason="bad device key")
         return
     try:
-        _check_device(row, _ip(ws))
+        _check_device(row, _ip(ws), ws.url.scheme == "wss")
     except HTTPException:
         await ws.accept()
         await ws.close(code=4403, reason="waiting for approval")
@@ -652,7 +726,7 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     await ws.send_json({"type": "welcome", "device_id": row["id"], "name": row["name"],
                         "assistant_name": store.get("assistant_name")})
     await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
-    for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot):
+    for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot):
         try:
             await ws.send_json(await asyncio.to_thread(snap))
         except Exception:  # noqa: BLE001
@@ -743,7 +817,8 @@ def admin_login(body: dict, request: Request):
         security.notify(f"A backup code was used to sign in to the Ghost admin page. "
                         f"{security.backup_left()} left.")
     r = JSONResponse({"ok": True})
-    r.set_cookie("ghost_admin", tok, max_age=security.TTL, httponly=True, samesite="strict")
+    r.set_cookie("ghost_admin", tok, max_age=security.TTL, httponly=True, samesite="strict",
+                 secure=request.url.scheme == "https")
     return r
 
 
@@ -979,9 +1054,27 @@ async def admin_chat(body: dict, _: bool = Depends(admin_auth)):
 
 
 def main() -> None:
+    """HTTP on 8780 and HTTPS on 8781, one process (see tls.py)."""
     import uvicorn
+    from . import tls
     config.ensure_dirs()
-    uvicorn.run("ghost_server.app:app", host="0.0.0.0", port=config.PORT, log_level="info")
+    servers = [uvicorn.Server(uvicorn.Config("ghost_server.app:app", host="0.0.0.0", port=config.PORT,
+                                             log_level="info"))]
+    try:
+        if tls.ensure():
+            servers.append(uvicorn.Server(uvicorn.Config(
+                "ghost_server.app:app", host="0.0.0.0", port=tls.PORT, log_level="info",
+                ssl_certfile=str(tls.cert_path()), ssl_keyfile=str(tls.key_path()))))
+            print(f"[Ghost Server] HTTPS on port {tls.PORT} — certificate {tls.fingerprint(True)[:39]}…")
+    except Exception as e:  # noqa: BLE001 — HTTPS is extra; never stop the server over it
+        print(f"[Ghost Server] HTTPS not started: {e}")
+
+    async def both():
+        # one app, two listeners: lifespan (background loops) must only run once
+        for extra in servers[1:]:
+            extra.config.lifespan = "off"
+        await asyncio.gather(*(s.serve() for s in servers))
+    asyncio.run(both())
 
 
 if __name__ == "__main__":

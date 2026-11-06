@@ -285,12 +285,14 @@ def lists_snapshot() -> dict:
     return {"type": "lists", "lists": lists()}
 
 
-def add_items(list_name: str, text: str, by: str = "") -> list[str]:
+def add_items(list_name: str, text: str | list, by: str = "") -> list[str]:
+    """Text is split on commas / "and"; a list is taken as-is ("salt and pepper" stays one item)."""
     _schema()
     name = _list_name(list_name)
     have = {r["text"].lower() for r in store.q("SELECT text FROM list_items WHERE list=? AND done=0", (name,))}
     added = []
-    for part in re.split(r",|\band\b|\n", str(text or "")):
+    parts = text if isinstance(text, list) else re.split(r",|\band\b|\n", str(text or ""))
+    for part in parts:
         item = " ".join(part.split())[:80]
         if item and item.lower() not in have:
             store.x("INSERT INTO list_items (list, text, added_by, at) VALUES (?,?,?,?)",

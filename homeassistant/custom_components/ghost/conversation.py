@@ -11,6 +11,7 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import tls
 from .const import CONF_KEY, CONF_URL
 
 
@@ -55,6 +56,7 @@ class GhostAgent(conversation.ConversationEntity, conversation.AbstractConversat
                 json={"text": user_input.text, "room": room, "satellite": satellite,
                       "conversation_id": user_input.conversation_id, "language": user_input.language},
                 timeout=aiohttp.ClientTimeout(total=120),
+                ssl=tls.ssl_for(self.entry.data[CONF_URL], self.entry.data.get(tls.CONF_TLS_PEM, "")),
             ) as r:
                 data = await r.json(content_type=None)
                 speech = data.get("text") if r.status == 200 else (data.get("detail") or "Ghost had a problem.")

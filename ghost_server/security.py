@@ -320,11 +320,16 @@ def ago(t: float) -> str:
     return "yesterday" if d == 1 else f"{d} days ago"
 
 
+def _tls() -> dict:
+    from . import tls
+    return {"enabled": bool(tls.pem()), "port": tls.PORT, "fingerprint": tls.fingerprint(True)}
+
+
 def overview(current_token: str = "") -> dict:
     week = time.time() - 7 * 86400
     events = store.security_events(60)
     pending = [d for d in store.devices() if not d.get("approved", 1)]
-    keys = [{"id": d["id"], "name": d["name"], "kind": d["kind"],
+    keys = [{"id": d["id"], "name": d["name"], "kind": d["kind"], "https": bool((d.get("info") or {}).get("https")),
              "renewed": d.get("key_at") or d.get("created_at") or 0,
              "renewed_text": ago(d.get("key_at") or d.get("created_at") or 0)}
             for d in store.devices() if d.get("approved", 1)]
@@ -337,6 +342,7 @@ def overview(current_token: str = "") -> dict:
                      "asked": ago(d.get("created_at") or 0)} for d in pending],
         "keys": keys,
         "settings": {k: store.get(k) for k in ("approve_new_devices", "security_alerts", "key_rotate_days",
-                                                "admin_idle_hours")},
+                                                "admin_idle_hours", "https_only")},
+        "tls": _tls(),
         "log": events,
     }

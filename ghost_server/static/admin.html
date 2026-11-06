@@ -120,6 +120,23 @@
           <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = rtsp://admin:password@192.168.80.50:554/h264Preview_01_sub&#10;Backyard = rtsp://admin:password@192.168.80.51:554/Streaming/Channels/102"></textarea>
           <div class="status">Use each camera's <b>sub-stream</b> if it has one — it's lighter and plenty for a tablet. Passwords stay on the server; devices only ever get a short-lived viewing link.</div>
         </div>
+        <div class="card"><h3>Front door</h3>
+          <div class="status">Doorbell presses, visitors and deliveries. Ghost looks, says who it is if Visual ID knows them (“Hayley's at the front door”), otherwise describes them, and tells you in the room you're in.</div>
+          <label>Camera that sees the front door</label><input data-k="door_cameras" placeholder="Front door">
+          <label>Doorbell button — Home Assistant entity (one or more)</label>
+          <input data-k="door_bell_entities" placeholder="binary_sensor.front_door_visitor, event.doorbell_ring">
+          <div class="status">Find it in Home Assistant → Settings → Entities: search “visitor”, “ding”, “ring” or “doorbell” and press the bell to see which one changes.</div>
+          <label>Speak it on the Echos and room screens</label>
+          <select data-k="door_announce"><option value="near">In the room you're in (motion sensors / where you last spoke)</option><option value="everywhere">In every room</option></select>
+          <label><input type="checkbox" data-k="door_watch" style="width:auto"> Also tell me about visitors and deliveries when nobody presses the bell</label>
+          <div class="status">Your phone and PC get it with the picture, the hub tablet pops up the live camera. Ask “who was at the door?” any time, or “test the doorbell”. A bell press always gets through Do Not Disturb.</div>
+        </div>
+        <div class="card"><h3>Meal planner</h3>
+          <div class="status">Try: “plan dinners for the week”, “make Thursday tacos”, “what's for dinner?”, “put this week's dinners on the shopping list”, “how do I make tonight's dinner?”. Tonight's dinner shows on the kitchen tablet.</div>
+          <label>Cooking for (people)</label><input data-k="meal_serves" type="number" min="1" max="20">
+          <label>Likes, dislikes, allergies</label><input data-k="meal_preferences" placeholder="kid-friendly, no seafood, one vegetarian night">
+          <label>Always in the pantry — never added to the shopping list</label><input data-k="meal_pantry" placeholder="salt, pepper, olive oil, vegetable oil, water">
+        </div>
         <div class="card"><h3>Ghost Hub tablet — home tiles</h3>
           <label>Home Assistant entities to show (comma separated)</label>
           <input data-k="tablet_entities" placeholder="light.kitchen, light.lounge, switch.coffee_machine, climate.living_room, scene.movie_night">
@@ -210,6 +227,11 @@
         <div class="card"><h3>Security alerts</h3>
           <div class="muted">Failed logins and lockouts · a new device asks to join · a device key is used from a new address. Sent to your own phone (they get through Do Not Disturb).</div>
           <label><input type="checkbox" style="width:auto" id="s_alerts" onchange="secSet('security_alerts', this.checked)"> Send security alerts</label></div>
+        <div class="card"><h3>HTTPS (encrypted Wi-Fi traffic)</h3>
+          <div class="muted">Devices fetch the server's own certificate once and from then on only talk to it over HTTPS, accepting only that certificate.</div>
+          <div id="tlsInfo" style="margin-top:8px"></div>
+          <label><input type="checkbox" style="width:auto" id="s_https" onchange="secSet('https_only', this.checked)"> HTTPS only — turn off the unencrypted API (once every device below says HTTPS)</label>
+        </div>
         <div class="card"><h3>Admin password</h3>
           <label>Current password</label><input id="pwOld" type="password" autocomplete="current-password">
           <label>New password (8+ characters)</label><input id="pwNew" type="password" autocomplete="new-password">
@@ -363,7 +385,16 @@ async function drawSecurity() {
   $("#s_approve").checked = !!sec.settings.approve_new_devices;
   $("#s_alerts").checked = !!sec.settings.security_alerts;
   $("#rotDays").textContent = sec.settings.key_rotate_days;
-  $("#keys").innerHTML = sec.keys.filter(k => k.id !== "dev_admin").map(k => `<tr><td>${esc(k.name)}</td><td class="muted" style="width:150px">renewed ${esc(k.renewed_text)}</td></tr>`).join("")
+  $("#s_https").checked = !!sec.settings.https_only;
+  const tl = sec.tls || {};
+  const httpsUrl = `https://${location.hostname}:${tl.port}/`;
+  $("#tlsInfo").innerHTML = !tl.enabled ? '<span style="color:var(--warn)">Not running — update Ghost Server.</span>' :
+    `<div>${location.protocol === "https:" ? '<span class="ok">● You\'re on HTTPS now.</span>' : `Admin page over HTTPS: <a style="color:var(--pri)" href="${httpsUrl}">${esc(httpsUrl)}</a>`}</div>
+     <div class="muted" style="margin-top:6px">Fingerprint (compare with the apps' Settings → Ghost Server):</div>
+     <div style="font:13px ui-monospace,monospace;letter-spacing:.04em">${esc(tl.fingerprint)}</div>
+     <div class="row" style="margin-top:8px"><a class="b" href="/ghost-server.crt" download>Download certificate</a></div>
+     <div class="muted" style="margin-top:4px">Install it on your PC (double-click → Install → Local Machine → "Trusted Root Certification Authorities") so the browser stops warning.</div>`;
+  $("#keys").innerHTML = sec.keys.filter(k => k.id !== "dev_admin").map(k => `<tr><td>${esc(k.name)}</td><td style="width:70px" class="${k.https ? "ok" : "muted"}">${k.https ? "HTTPS" : "HTTP"}</td><td class="muted" style="width:150px">renewed ${esc(k.renewed_text)}</td></tr>`).join("")
     || "<tr><td class='muted'>No devices.</td></tr>";
   const col = {ok: "", warn: "color:var(--warn)", bad: "color:var(--bad)"};
   $("#secLog").innerHTML = `<tr><td class="muted">When</td><td class="muted">What</td><td class="muted">From</td></tr>` +

@@ -1,6 +1,8 @@
 """Security camera tools: show a live feed on a device, or look and answer."""
 from __future__ import annotations
 
+import time
+
 from . import Ctx, tool
 from .. import cameras, store, watcher
 from ..hub import find_device, hub
@@ -135,6 +137,30 @@ def camera_watch_status(args: dict, ctx: Ctx) -> str:
     lines = []
     for w in ws:
         seen = "; ".join(s for _, s in w.recent[-3:]) or "nothing to report yet"
-        lines.append(f"{w.cam.name}: until {watcher.until_text(w.until)}, {w.alerts} alert(s) — {seen}"
+        when = "always (front door watch)" if w.door else f"until {watcher.until_text(w.until)}"
+        lines.append(f"{w.cam.name}: {when}, {w.alerts} alert(s) — {seen}"
                      + (f" (problem: {w.error})" if w.error else ""))
     return "\n".join(lines)
+
+
+@tool("front_door", """The front door: who came to the door / what was delivered today ('who was at the door?',
+'did a parcel come?'), or 'test' to ring it like the doorbell was pressed (look, recognise, announce).""",
+      {"type": "OBJECT", "properties": {
+          "action": {"type": "STRING", "description": "history (default) | test | status"}}})
+def front_door(args: dict, ctx: Ctx) -> str:
+    from .. import door
+    action = str(args.get("action") or "history").lower()
+    cams = door.door_cameras()
+    if action == "test":
+        if not cams:
+            return "No front-door camera is set — pick it on the admin page (Front door)."
+        return "Rang it: " + door.ring(cams[0], source="test")
+    if action == "status":
+        st = door.status()
+        return (f"Door camera: {', '.join(st['cameras']) or 'not set'}. Doorbell: {', '.join(st['bells']) or 'not set'}. "
+                f"Watching for visitors: {'yes' if st['watching'] else 'no'}. Announce: {st['announce']}.")
+    items = door.history(8)
+    if not items:
+        return "Nobody's come to the door recently." if cams else \
+            "No front-door camera is set up yet — pick it on the admin page (Front door)."
+    return "\n".join(f"{time.strftime('%a %I:%M %p', time.localtime(i['at']))}: {i['summary']}" for i in items)

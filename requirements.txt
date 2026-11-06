@@ -12,3 +12,4 @@ Pillow>=10
 opencv-python-headless>=4.9
 numpy>=1.26
 segno>=1.6
+cryptography>=42

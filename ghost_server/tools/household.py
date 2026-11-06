@@ -149,3 +149,72 @@ def who_is_here(args: dict, ctx: Ctx) -> str:
 def _ago(t: float) -> str:
     m = int((time.time() - t) // 60)
     return "just now" if m < 2 else f"{m} minutes ago" if m < 60 else f"{m // 60} hour(s) ago"
+
+
+@tool("meals", """The family meal planner (dinners), shown on the kitchen tablet.
+  show — what's for dinner (day = tonight, tomorrow, a weekday, or 'week')
+  set — put a dish on a day ('make Thursday tacos'); ingredients are worked out automatically
+  plan — fill empty days of the coming week with ideas (ideas = anything they asked for)
+  clear — take a day off the plan
+  shop — put the ingredients for the week (or day) on the shopping list, skipping pantry staples
+  recipe — how to cook a day's dinner (or a dish)""",
+      {"type": "OBJECT", "properties": {
+          "action": {"type": "STRING", "description": "show | set | plan | clear | shop | recipe"},
+          "day": {"type": "STRING", "description": "tonight (default), tomorrow, monday…, or 'week'"},
+          "dish": {"type": "STRING", "description": "For set/recipe: the dinner, e.g. 'spaghetti bolognese'"},
+          "ideas": {"type": "STRING", "description": "For plan: e.g. 'something with chicken, a fish night'"}},
+       "required": ["action"]})
+def meals_tool(args: dict, ctx: Ctx) -> str:
+    import datetime as dt
+    from .. import meals as m
+    a = str(args.get("action") or "show").lower()
+    day = str(args.get("day") or "").strip().lower()
+    whole_week = day in ("week", "this week", "the week", "next 7 days", "all")
+    if a == "plan":
+        empty = [dt.date.fromisoformat(x["day"]) for x in m.week() if not x["title"]]
+        if not empty:
+            return "Every night this week already has a dinner. Clear a day first if you want a new idea."
+        try:
+            ideas = m.suggest(empty, str(args.get("ideas") or ""))
+        except Exception as e:  # noqa: BLE001
+            return f"I couldn't plan dinners right now ({e})."
+        for i in ideas:
+            m.set_meal(i["day"], i["title"], i["ingredients"], _who(ctx) or ctx.device_name)
+        return ("Planned: " + "; ".join(f"{m.day_words(i['day'])} {i['title']}" for i in ideas)
+                + ". Say 'add them to the shopping list' when you're happy.") if ideas else "I couldn't come up with a plan."
+    if a == "shop":
+        dates = [dt.date.fromisoformat(x["day"]) for x in m.week()] if (whole_week or not day) else \
+            [d for d in [m.parse_day(day)] if d]
+        r = m.shop(dates, _who(ctx) or ctx.device_name)
+        if not r["meals"]:
+            return "There are no dinners planned to shop for. Plan some first."
+        skip = f" Skipped pantry staples: {', '.join(r['skipped'])}." if r["skipped"] else ""
+        return (f"Added {len(r['added'])} item(s) to the shopping list for {', '.join(r['meals'])}." if r["added"]
+                else f"Everything for {', '.join(r['meals'])} is already on the list.") + skip
+    if whole_week:
+        rows = m.week()
+        return "Dinners: " + "; ".join(f"{x['label']}: {x['title'] or '—'}" for x in rows)
+    d = m.parse_day(day or "tonight")
+    if d is None:
+        return f"Which day is '{day}'?"
+    if a in ("set", "add", "make", "change"):
+        dish = str(args.get("dish") or "").strip()
+        if not dish:
+            return "What's for dinner that day?"
+        r = m.set_meal(d, dish, by=_who(ctx) or ctx.device_name)
+        extra = f" ({len(r.get('ingredients') or [])} ingredients ready for the shopping list)" if r.get("ingredients") else ""
+        return f"{m.day_words(d).capitalize()}: {r.get('title', dish)}.{extra}"
+    if a in ("clear", "remove", "delete"):
+        return f"Took {m.day_words(d)} off the plan." if m.clear(d) else f"Nothing was planned for {m.day_words(d)}."
+    meal = m.get(d)
+    if a == "recipe":
+        dish = str(args.get("dish") or "").strip() or (meal or {}).get("title", "")
+        if not dish:
+            return f"Nothing's planned for {m.day_words(d)} — which dish?"
+        try:
+            return m.recipe(dish) or "I couldn't get a recipe right now."
+        except Exception as e:  # noqa: BLE001
+            return f"I couldn't get a recipe right now ({e})."
+    if not meal or not meal["title"]:
+        return f"Nothing's planned for {m.day_words(d)} yet."
+    return f"{m.day_words(d).capitalize()} it's {meal['title']}."

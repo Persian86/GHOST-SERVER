@@ -25,7 +25,15 @@ PLATFORMS = [Platform.CONVERSATION]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    link = GhostLink(hass, entry.data[CONF_URL], entry.data[CONF_KEY])
+    from . import tls
+    if not entry.data[CONF_URL].startswith("https://"):
+        # move to HTTPS (with Ghost's own pinned certificate) as soon as the server offers it
+        got = await tls.upgrade(async_get_clientsession(hass), entry.data[CONF_URL])
+        if got:
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_URL: got[0], tls.CONF_TLS_PEM: got[1]})
+            _LOGGER.info("Ghost: now using HTTPS (%s)", got[0])
+    link = GhostLink(hass, entry.data[CONF_URL], entry.data[CONF_KEY], entry.data.get(tls.CONF_TLS_PEM, ""))
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = link
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     link.start()
@@ -85,6 +93,28 @@ def speaker_list(hass: HomeAssistant) -> list[dict]:
             for kind, eid, area in speakers(hass)]
 
 
+PRESENCE_CLASSES = ("motion", "occupancy", "presence")
+
+
+def occupied_areas(hass: HomeAssistant, within: float = 600) -> set[str]:
+    """Rooms where a motion / occupancy / presence sensor sees someone now, or did in the last 10 minutes."""
+    import time as _t
+    now = _t.time()
+    reg = er.async_get(hass)
+    out: set[str] = set()
+    for st in hass.states.async_all("binary_sensor"):
+        if st.attributes.get("device_class") not in PRESENCE_CLASSES:
+            continue
+        recent = st.state == "on" or (st.state == "off" and now - st.last_changed.timestamp() < within)
+        if not recent:
+            continue
+        e = reg.async_get(st.entity_id)
+        area = _area_name(hass, e) if e else ""
+        if area:
+            out.add(area.lower())
+    return out
+
+
 def satellites(hass: HomeAssistant) -> list[tuple[str, str]]:
     return [(eid, area) for kind, eid, area in speakers(hass) if kind == "satellite"]
 
@@ -110,8 +140,10 @@ def pick_speakers(found: list[tuple[str, str, str]], room: str = "") -> list[tup
 class GhostLink:
     """The live WebSocket to Ghost Server (see PROTOCOL.md §4)."""
 
-    def __init__(self, hass: HomeAssistant, url: str, key: str) -> None:
+    def __init__(self, hass: HomeAssistant, url: str, key: str, pem: str = "") -> None:
+        from . import tls
         self.hass, self.url, self.key = hass, url.rstrip("/"), key
+        self.ssl = tls.ssl_for(self.url, pem)
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -127,7 +159,7 @@ class GhostLink:
         ws_url = self.url.replace("http", "ws", 1) + f"/api/v1/agent?key={self.key}"
         while True:
             try:
-                async with session.ws_connect(ws_url, heartbeat=30) as ws:
+                async with session.ws_connect(ws_url, heartbeat=30, ssl=self.ssl) as ws:
                     rooms = sorted({a for _, _, a in speakers(self.hass) if a})
                     await ws.send_json({"type": "hello", "capabilities": [],
                                         "info": {"platform": "Home Assistant", "rooms": rooms,
@@ -139,7 +171,8 @@ class GhostLink:
                         msg = m.json()
                         if msg.get("type") in ("say", "task_done"):
                             text = msg.get("say") or msg.get("text") or ""
-                            await self.announce(text, msg.get("room") or "", msg.get("speaker") or "")
+                            await self.announce(text, msg.get("room") or "", msg.get("speaker") or "",
+                                                msg.get("near_room") or "")
                         elif msg.get("type") == "call":
                             await ws.send_json({"type": "result", "id": msg.get("id"), "ok": False,
                                                 "error": "Home Assistant has no device actions"})
@@ -156,12 +189,21 @@ class GhostLink:
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 
-    async def announce(self, text: str, room: str = "", speaker: str = "") -> None:
+    async def announce(self, text: str, room: str = "", speaker: str = "", near_room: str = "") -> None:
         if not text.strip():
             return
         found = speakers(self.hass)
         one = [(k, eid) for k, eid, _ in found if eid == speaker] if speaker else []
-        chosen = one or pick_speakers(found, room)
+        if one:
+            chosen = one
+        elif room == "@near":
+            # the room(s) you're in: occupied rooms + where you last spoke to Ghost; nobody seen → everywhere
+            rooms = occupied_areas(self.hass) | ({near_room.lower()} if near_room else set())
+            have = {a.lower() for _, _, a in found if a}
+            rooms &= have
+            chosen = [c for r in sorted(rooms) for c in pick_speakers(found, r)] if rooms else pick_speakers(found)
+        else:
+            chosen = pick_speakers(found, room)
         if not chosen:
             _LOGGER.warning("Ghost wanted to speak in '%s' but found no speaker there", room or "any room")
             return

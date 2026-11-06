@@ -17,12 +17,18 @@ class GhostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             url = user_input[CONF_URL].rstrip("/")
+            pem = ""
+            from . import tls
+            got = await tls.upgrade(async_get_clientsession(self.hass), url)   # pair over HTTPS when offered
+            if got:
+                url, pem = got
             try:
                 async with async_get_clientsession(self.hass).post(
                     f"{url}/api/v1/pair",
                     json={"code": user_input["code"].strip(), "name": user_input["name"].strip(),
                           "kind": "homeassistant", "info": {"platform": "Home Assistant"}},
                     timeout=aiohttp.ClientTimeout(total=15),
+                    ssl=tls.ssl_for(url, pem),
                 ) as r:
                     data = await r.json(content_type=None)
                     if r.status == 400:
@@ -36,7 +42,8 @@ class GhostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=data.get("assistant_name") or "Ghost",
-                    data={CONF_URL: url, CONF_KEY: data["device_key"], CONF_DEVICE_ID: data["device_id"]},
+                    data={CONF_URL: url, CONF_KEY: data["device_key"], CONF_DEVICE_ID: data["device_id"],
+                          tls.CONF_TLS_PEM: pem},
                 )
         schema = vol.Schema({
             vol.Required(CONF_URL, default=DEFAULT_URL): str,

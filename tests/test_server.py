@@ -927,3 +927,155 @@ def test_settings_log_names_not_values(server, admin):
     assert "admin_totp_secret" not in admin.get("/admin/api/overview").json()["settings"]
     assert admin.put("/admin/api/settings", json={"admin_totp_secret": "AAAA"}).status_code == 200
     assert store.get("admin_totp_secret") in ("", None)
+
+
+def test_front_door_bell_names_and_rooms(server, admin, tmp_path, monkeypatch):
+    """A doorbell press: Ghost looks, names a known face (or describes the visitor), the owner's phone
+    gets it with the picture (through Do Not Disturb), and Home Assistant speakers get it 'near' you."""
+    from ghost_server import cameras, door, store
+    cam = cameras.Cam("camera.front_door", "Front door", "ha")
+    monkeypatch.setattr(cameras, "all_cameras", lambda: [cam])
+    monkeypatch.setattr(cameras, "snapshot", lambda c, timeout=15: b"JPEGDATA")
+    monkeypatch.setattr(door, "describe_visitor", lambda jpeg, c: "A courier with a parcel.")
+    admin.put("/admin/api/settings", json={"door_cameras": "front door", "door_watch": False,
+                                           "door_bell_entities": "binary_sensor.front_door_visitor"})
+    ha = _agent(server, admin, "Door HA", "homeassistant", tmp_path)
+    phone = _agent(server, admin, "Adam Door Phone", "phone", tmp_path)
+    got = {"ha": [], "phone": []}
+
+    async def run():
+        import websockets
+        base = server.replace("http", "ws") + "/api/v1/agent?key="
+        async with websockets.connect(base + ha.key) as h, websockets.connect(base + phone.key) as p:
+            await h.send(json.dumps({"type": "hello", "capabilities": [], "info": {"rooms": ["Lounge", "Kitchen"]}}))
+            await p.send(json.dumps({"type": "hello", "capabilities": []}))
+            for ws in (h, p):
+                while json.loads(await asyncio.wait_for(ws.recv(), 5))["type"] != "ready":
+                    pass
+            e = "binary_sensor.front_door_visitor"
+            assert await asyncio.to_thread(door.check_bells, {e: "off"}) == []      # first look: just remembers
+            out = await asyncio.to_thread(door.check_bells, {e: "on"})
+            assert out == ["Someone's at the front door. A courier with a parcel."]
+            assert await asyncio.to_thread(door.check_bells, {e: "off"}) == []
+            assert await asyncio.to_thread(door.check_bells, {e: "on"}) == []       # pressed twice: one ring
+            # a face Visual ID knows
+            monkeypatch.setattr(door, "known_faces", lambda jpeg, c: ["Hayley"])
+            assert door.ring(cam, source="test") == "Hayley is at the front door."
+            for name, ws in (("ha", h), ("phone", p)):
+                while len(got[name]) < 2:
+                    m = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                    if m["type"] == "say":
+                        got[name].append(m)
+    asyncio.run(run())
+    h1, p1 = got["ha"][0], got["phone"][0]
+    assert h1["room"] == "@near" and "camera" not in h1 and h1["urgent"] is True
+    assert p1["camera"] == "Front door" and p1["picture"].startswith("/files/") and p1["urgent"] is True
+    assert got["phone"][1]["text"] == "Hayley is at the front door."
+    # "who was at the door?"
+    hist = phone.call_tool("front_door", {})
+    assert "courier" in hist and "Hayley" in hist
+    admin.put("/admin/api/settings", json={"door_announce": "everywhere"})
+    assert door.status()["announce"] == "everywhere"
+    admin.put("/admin/api/settings", json={"door_cameras": "", "door_bell_entities": "", "door_announce": "near"})
+
+
+def test_meal_planner_and_shopping(server, admin, tmp_path, monkeypatch):
+    """Plan dinners, set one by voice (ingredients worked out), push to the tablet, shop for the week
+    without pantry staples or duplicates."""
+    import datetime as dt
+    from ghost_server import meals
+    from ghost_server.tools import brain
+
+    class FakeClaude:
+        def complete(self, history, tools=None, **kw):
+            p = history[-1]["content"]
+            if "Plan family dinners" in p:
+                days = p.split("for: ")[1].split(".")[0].split(", ")
+                return json.dumps([{"day": d, "title": f"Chicken stir-fry {i}",
+                                    "ingredients": ["500 g chicken thigh", "1 broccoli", "salt", "2 tbsp olive oil"]}
+                                   for i, d in enumerate(days)]), []
+            if "List the ingredients" in p:
+                return '["8 taco shells", "500 g beef mince", "1 lettuce", "salt and pepper"]', []
+            return "1. Brown the mince. 2. Fill the shells.", []
+    monkeypatch.setattr(brain, "claude", lambda *a, **k: FakeClaude())
+    admin.put("/admin/api/settings", json={"meal_pantry": "salt, pepper, olive oil"})
+    t = _agent(server, admin, "Meal Tablet", "tablet", tmp_path)
+    h = {"Authorization": f"Bearer {t.key}"}
+
+    base = dt.date(2026, 11, 9)                       # a Monday
+    assert meals.parse_day("thursday", base) == dt.date(2026, 11, 12)
+    assert meals.parse_day("monday", base) == base and meals.parse_day("next monday", base) == dt.date(2026, 11, 16)
+    assert meals.parse_day("tomorrow", base) == dt.date(2026, 11, 10)
+    assert meals.parse_day("14/11", base) == dt.date(2026, 11, 14)
+
+    # the tablet hears about changes
+    m = _ws_until(server, t.key, lambda m: m.get("type") == "meals" and m["days"][0]["title"],
+                  actions=lambda: t.call_tool("meals", {"action": "set", "day": "tonight", "dish": "beef tacos"}))
+    assert m["days"][0]["title"] == "Beef tacos" or m["days"][0]["title"].lower() == "beef tacos"
+    assert "taco shells" in " ".join(m["days"][0]["ingredients"])
+    assert "it's beef tacos" in t.call_tool("meals", {"action": "show", "day": "tonight"}).lower()
+
+    r = t.call_tool("meals", {"action": "plan"})
+    assert r.startswith("Planned:") and "Chicken stir-fry" in r
+    week = httpx.get(server + "/api/v1/meals", headers=h).json()["days"]
+    assert len(week) == 7 and all(d["title"] for d in week)
+
+    r = t.call_tool("meals", {"action": "shop", "day": "week"})
+    assert "Added" in r and "salt" in r.lower()           # pantry staples are named as skipped
+    shop = [i["text"].lower() for i in httpx.get(server + "/api/v1/lists", headers=h).json()["lists"]["shopping"]]
+    assert "500 g chicken thigh" in shop and shop.count("500 g chicken thigh") == 1
+    assert "salt" not in shop and "2 tbsp olive oil" not in shop and "salt and pepper" not in shop
+    assert "8 taco shells" in shop
+    assert "Brown the mince" in t.call_tool("meals", {"action": "recipe"})
+    assert "Took" in t.call_tool("meals", {"action": "clear", "day": "tonight"})
+    assert "Nothing's planned" in t.call_tool("meals", {"action": "show"})
+
+
+def test_https_certificate_pinning_and_https_only(server, admin, tmp_path):
+    """The server makes its own certificate, serves the same API over HTTPS with it, and in
+    'HTTPS only' mode refuses the plain-HTTP API (but still hands out the certificate)."""
+    import ssl
+    import uvicorn
+    from ghost_server import tls
+    assert tls.ensure() and tls.pem().startswith("-----BEGIN CERTIFICATE")
+    info = httpx.get(server + "/api/v1/tls").json()
+    assert info["enabled"] and len(info["sha256"]) == 64 and info["pem"] == tls.pem()
+    assert httpx.get(server + "/ghost-server.crt").text == tls.pem()
+
+    from ghost_server.app import app
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="off",
+                                        ssl_certfile=str(tls.cert_path()), ssl_keyfile=str(tls.key_path())))
+    threading.Thread(target=srv.run, daemon=True).start()
+    ctx = ssl.create_default_context(cadata=tls.pem())         # trust exactly this certificate
+    url = f"https://127.0.0.1:{port}"
+    for _ in range(100):
+        try:
+            if httpx.get(url + "/api/v1/health", verify=ctx).status_code == 200:
+                break
+        except Exception:
+            time.sleep(0.05)
+    t = _agent(server, admin, "TLS Phone", "phone", tmp_path)
+    h = {"Authorization": f"Bearer {t.key}"}
+    assert httpx.get(url + "/api/v1/key", headers=h, verify=ctx).status_code == 200
+    try:
+        httpx.get(url + "/api/v1/health")                       # an ordinary client doesn't trust it
+        assert False, "should not be trusted without pinning"
+    except httpx.ConnectError:
+        pass
+
+    admin.put("/admin/api/settings", json={"https_only": True})
+    try:
+        r = httpx.get(server + "/api/v1/key", headers=h)
+        assert r.status_code == 426 and r.json()["https_port"] == tls.PORT
+        assert httpx.get(server + "/api/v1/tls").status_code == 200
+        assert httpx.get(server + "/api/v1/health").status_code == 200
+        assert httpx.get(server + "/", follow_redirects=False).status_code == 307
+        assert httpx.get(url + "/api/v1/key", headers=h, verify=ctx).status_code == 200
+        adm = httpx.Client(base_url=url, verify=ctx, headers={"X-Ghost-Admin": "1"})
+        assert adm.post("/admin/login", json={"password": "ghost-pass"}).status_code == 200
+        assert adm.put("/admin/api/settings", json={"https_only": False}).status_code == 200
+    finally:
+        from ghost_server import store
+        store.put("https_only", False)
+        srv.should_exit = True
