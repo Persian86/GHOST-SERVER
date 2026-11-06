@@ -90,9 +90,13 @@ def _tile(s: dict) -> dict:
     eid = s["entity_id"]
     domain = eid.split(".")[0]
     a = s.get("attributes", {})
+    bri = a.get("brightness")
     return {"entity_id": eid, "domain": domain, "name": a.get("friendly_name") or eid,
             "state": s.get("state"), "detail": _describe(s).split(": ", 1)[-1],
-            "switchable": domain in SWITCHABLE}
+            "switchable": domain in SWITCHABLE,
+            **({"brightness": round(int(bri) * 100 / 255)} if domain == "light" and bri is not None else {}),
+            **({"dimmable": True} if domain == "light" and (bri is not None or "brightness" in
+                                                            str(a.get("supported_color_modes", ""))) else {})}
 
 
 def home_tiles() -> dict:
@@ -114,11 +118,57 @@ def home_tiles() -> dict:
     return {"connected": True, "tiles": [_tile(s) for s in chosen[:16]]}
 
 
+def entities() -> dict:
+    """Everything a phone can pin as a favourite: lights, switches, fans, scenes, scripts, media
+    (never locks, alarms or doors — those stay voice-and-confirm only)."""
+    if not store.get("ha_token"):
+        return {"connected": False, "entities": []}
+    from .tools.home import _req
+    out = []
+    for s in _req("GET", "/api/states").json():
+        eid = s["entity_id"]
+        if eid.split(".")[0] in SWITCHABLE and s.get("state") not in ("unavailable",) \
+                and not eid.endswith(("_led", "_indicator")):
+            out.append(_tile(s))
+    out.sort(key=lambda t: (t["domain"], t["name"].lower()))
+    return {"connected": True, "entities": out}
+
+
+def tiles_for(ids: list[str]) -> dict:
+    """Tiles for these entities, in this order (a phone's own favourites)."""
+    if not store.get("ha_token"):
+        return {"connected": False, "tiles": []}
+    from .tools.home import _req
+    by_id = {s["entity_id"]: s for s in _req("GET", "/api/states").json()}
+    return {"connected": True, "tiles": [_tile(by_id[i]) for i in ids if i in by_id][:40]}
+
+
+def all_lights_off() -> dict:
+    """"Everything off" when leaving or going to bed: every light (not switches — a switch can be the fridge)."""
+    from .tools.home import _call, _req
+    on = [s["entity_id"] for s in _req("GET", "/api/states").json()
+          if s["entity_id"].startswith("light.") and s.get("state") == "on"]
+    if on:
+        code = _call("light", "turn_off", {"entity_id": on})
+        if code >= 300:
+            return {"ok": False, "error": f"Home Assistant said HTTP {code}"}
+    return {"ok": True, "turned_off": len(on)}
+
+
 def switch(entity_id: str, action: str) -> dict:
     from .tools.home import _call, _req
     domain = entity_id.split(".")[0]
     if domain not in SWITCHABLE:
         return {"ok": False, "error": f"{domain} can't be switched from the tablet"}
+    m = re.fullmatch(r"dim:(\d{1,3})", action or "")
+    if m and domain == "light":                                  # brightness from the phone's slider
+        pct = max(0, min(100, int(m.group(1))))
+        code = _call("light", "turn_on" if pct else "turn_off",
+                     {"entity_id": entity_id, **({"brightness_pct": pct} if pct else {})})
+        if code >= 300:
+            return {"ok": False, "error": f"Home Assistant said HTTP {code}"}
+        time.sleep(0.4)
+        return {"ok": True, "tile": _tile(_req("GET", f"/api/states/{entity_id}").json())}
     action = action if action in ("on", "off", "toggle") else "toggle"
     if domain in ("scene", "script"):
         service = "turn_on"

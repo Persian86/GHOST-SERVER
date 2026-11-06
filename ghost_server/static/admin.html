@@ -220,7 +220,10 @@
         <div class="card"><h3>Waiting for approval</h3>
           <div class="muted">New devices can't do anything until you approve them here.</div>
           <table id="pending" style="margin-top:6px"></table>
-          <label><input type="checkbox" style="width:auto" id="s_approve" onchange="secSet('approve_new_devices', this.checked)"> New devices must be approved</label></div>
+          <label><input type="checkbox" style="width:auto" id="s_approve" onchange="secSet('approve_new_devices', this.checked)"> New devices must be approved</label>
+          <label>Can approve from the notification (device names, comma separated)</label>
+          <input id="s_approve_from" placeholder="Adam's phone" onchange="secSet('approve_from', this.value)">
+          <div class="muted">Empty = your devices from Do Not Disturb → My devices (or every phone and PC if none are named). The phone asks for the fingerprint first.</div></div>
         <div class="card"><h3>Device keys</h3>
           <div class="muted">Each device swaps its key for a fresh one every <span id="rotDays">30</span> days. The apps keep theirs sealed in Android Keystore or Windows DPAPI.</div>
           <table id="keys" style="margin-top:6px"></table></div>
@@ -383,6 +386,7 @@ async function drawSecurity() {
     <td style="width:170px"><button class="b p" onclick="approve('${d.id}')">Approve</button> <button class="b danger" onclick="reject('${d.id}')">Reject</button></td></tr>`).join("")
     || "<tr><td class='muted'>Nobody waiting.</td></tr>";
   $("#s_approve").checked = !!sec.settings.approve_new_devices;
+  if (document.activeElement !== $("#s_approve_from")) $("#s_approve_from").value = sec.settings.approve_from || "";
   $("#s_alerts").checked = !!sec.settings.security_alerts;
   $("#rotDays").textContent = sec.settings.key_rotate_days;
   $("#s_https").checked = !!sec.settings.https_only;

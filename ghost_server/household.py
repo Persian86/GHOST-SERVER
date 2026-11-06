@@ -216,7 +216,8 @@ def _spoken(t: dict) -> bool:
     if "~" in did:
         return True
     c = hub.conns.get(did)
-    return c is not None and c.kind not in RINGS_NATIVELY
+    # the tablet always rings itself; a phone does when its app says so (Stop / +1 min on the notification)
+    return c is not None and c.kind not in RINGS_NATIVELY and not c.info.get("rings_timers")
 
 
 async def _ring(t: dict) -> None:

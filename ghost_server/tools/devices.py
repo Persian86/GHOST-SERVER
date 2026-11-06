@@ -158,3 +158,44 @@ def device_events(args: dict, ctx: Ctx) -> str:
     out = [f"{time.strftime('%H:%M', time.localtime(e['at']))} {names.get(e['device_id'], '?')} "
            f"{e['type']}: {json.dumps(e['data'])[:160]}" for e in rows]
     return "\n".join(out) or "Nothing reported recently."
+
+
+@tool("find_phone", """Find a phone: make it ring loudly (even on silent), vibrate and flash until someone presses
+'Found it', and say whether it's at home. 'Where's my phone?', 'find Hayley's phone', 'ring my phone'.
+`whose` is a name or 'my'/'' for the person asking. Use stop=true for 'stop ringing / found it'.""",
+      {"type": "OBJECT", "properties": {
+          "whose": {"type": "STRING", "description": "Name of the person, or empty for the person asking"},
+          "stop": {"type": "BOOLEAN"}}})
+def find_phone(args: dict, ctx: Ctx) -> str:
+    import time as _t
+    from .. import quiet, store
+    whose = str(args.get("whose") or "").strip().lower()
+    whose = "" if whose in ("my", "mine", "me", "i") else whose.replace("'s", "").replace("’s", "")
+    phones = [d for d in store.devices() if d["kind"] == "phone" and d.get("approved", 1)]
+    if not phones:
+        return "There's no phone paired with Ghost yet."
+    if whose:
+        pick = [d for d in phones if whose in d["name"].lower() or d["name"].lower().split()[0] in whose]
+    else:
+        # "my phone": the asker's own if they're on a phone, else the owner's phones, else the only one
+        pick = [d for d in phones if d["id"] == ctx.device_id] or \
+            [d for d in phones if quiet.is_mine(d["kind"], d["name"])] or (phones if len(phones) == 1 else [])
+    if not pick:
+        return "Whose phone? Paired phones: " + ", ".join(d["name"] for d in phones)
+    # the ones that can actually ring first (connected, newest)
+    pick.sort(key=lambda d: (d["id"] not in hub.conns, -float(d.get("last_seen") or 0)))
+    out = []
+    room = (ctx.extra or {}).get("room") or ctx.device_name
+    for d in pick[:2]:
+        c = hub.conns.get(d["id"])
+        if c is None or not any(x.get("name") == "ring_phone" for x in c.capabilities):
+            seen = _t.time() - float(d.get("last_seen") or 0)
+            ago = "just now" if seen < 120 else f"{int(seen // 60)} minutes ago" if seen < 3600 else \
+                f"{int(seen // 3600)} hours ago" if seen < 86400 else f"{int(seen // 86400)} days ago"
+            out.append(f"{d['name']} isn't connected to Ghost right now (last seen {ago}) — it may be off, "
+                       "out of battery or away from home.")
+            continue
+        res = hub.call_sync(d["id"], "ring_phone", {"stop": bool(args.get("stop")), "from": room}, timeout=12)
+        out.append(f"{d['name']}: {res.get('result') or 'ringing'}" if res.get("ok")
+                   else f"{d['name']} couldn't ring: {res.get('error', 'no answer')}")
+    return " ".join(out)

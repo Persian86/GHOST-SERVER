@@ -264,7 +264,7 @@ _alerted: dict[str, float] = {}
 
 
 def log(what: str, ip: str = "", level: str = "ok", device_id: str = "",
-        alert: str = "", alert_key: str = "", every: float = 600) -> None:
+        alert: str = "", alert_key: str = "", every: float = 600, alert_data: dict | None = None) -> None:
     """Write to the security log; `alert` (if set) goes to the owner's phone, at most once per
     `every` seconds for the same alert_key, so a flood of wrong passwords is one alert."""
     try:
@@ -277,15 +277,15 @@ def log(what: str, ip: str = "", level: str = "ok", device_id: str = "",
         if _alerted.get(k, 0) + every > now:
             return
         _alerted[k] = now
-        notify(alert)
+        notify(alert, data=alert_data)
 
 
-def notify(text: str, title: str = "Ghost security") -> int:
+def notify(text: str, title: str = "Ghost security", data: dict | None = None) -> int:
     """Send an alert to the owner's own devices (their phone first). It isn't a "say", so
     Do Not Disturb doesn't hold it — the apps show it as a notification."""
     from . import quiet
     from .hub import hub
-    msg = {"type": "notify", "title": title, "text": text, "level": "security", "urgent": True}
+    msg = {"type": "notify", "title": title, "text": text, "level": "security", "urgent": True, **(data or {})}
     targets = [c for c in hub.online() if quiet.is_mine(c.kind, c.name)]
     phones = [c for c in targets if c.kind == "phone"]
     sent = 0
@@ -342,7 +342,7 @@ def overview(current_token: str = "") -> dict:
                      "asked": ago(d.get("created_at") or 0)} for d in pending],
         "keys": keys,
         "settings": {k: store.get(k) for k in ("approve_new_devices", "security_alerts", "key_rotate_days",
-                                                "admin_idle_hours", "https_only")},
+                                                "admin_idle_hours", "https_only", "approve_from")},
         "tls": _tls(),
         "log": events,
     }

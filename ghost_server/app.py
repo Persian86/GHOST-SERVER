@@ -213,7 +213,10 @@ async def pair(body: dict, request: Request):
     else:
         security.log(f"{name} asked to join (waiting)", ip, "warn", did,
                      alert=f"{name} wants to join Ghost — approve or reject it on the admin page (Security).",
-                     alert_key="join:" + did)
+                     alert_key="join:" + did,
+                     # the owner's phone can answer it straight from the notification (after fingerprint)
+                     alert_data={"action": "approve_device", "device_id": did, "device_name": name,
+                                 "device_kind": str(body.get("kind") or "")[:30], "ip": ip})
     return {"device_id": did, "device_key": key, "assistant_name": store.get("assistant_name"),
             "approved": approved, **({} if approved else {"message": WAITING})}
 
@@ -224,6 +227,32 @@ def key_info(dev: dict = Depends(device_auth)):
     d = store.device(dev["id"])
     return {"rotate_days": int(store.get("key_rotate_days") or 30),
             "age_days": round((time.time() - float(d["key_at"] or d["created_at"] or 0)) / 86400, 1)}
+
+
+@app.post("/api/v1/devices/{did}/approve")
+def device_approve_from_owner(did: str, body: dict, request: Request, dev: dict = Depends(device_auth)):
+    """Approve or reject a waiting device from the owner's own phone or PC (the app asks for the
+    fingerprint / phone PIN first). Only for devices still waiting — never to undo a removal or
+    approve something already removed."""
+    allowed = [x.strip().lower() for x in str(store.get("approve_from") or "").split(",") if x.strip()]
+    ok = (any(a == dev["name"].lower() or a in dev["name"].lower() for a in allowed) if allowed
+          else quiet.is_mine(dev["kind"], dev["name"]))
+    if dev["kind"] not in ("phone", "desktop", "laptop") or not ok:
+        raise HTTPException(403, "Only the owner's own phone or PC can approve devices")
+    cur = store.device(did)
+    if cur is None or cur["revoked"]:
+        raise HTTPException(404, "That device has already been removed")
+    if cur["approved"]:
+        return {"ok": True, "already": True, "name": cur["name"]}
+    ip = _ip(request)
+    if body.get("approve"):
+        store.approve_device(did)
+        store.x("UPDATE devices SET key_at = ? WHERE id = ? AND key_at = 0", (time.time(), did))
+        security.log(f"{cur['name']} approved from {dev['name']}", ip, "ok", did)
+    else:
+        store.revoke_device(did)
+        security.log(f"{cur['name']} rejected from {dev['name']}", ip, "ok", did)
+    return {"ok": True, "approved": bool(body.get("approve")), "name": cur["name"]}
 
 
 @app.post("/api/v1/key/rotate")
@@ -396,6 +425,14 @@ async def faces_identify(body: dict, dev: dict = Depends(device_auth)):
     return r
 
 
+# ── front door ───────────────────────────────────────────────────────────────
+@app.get("/api/v1/door")
+def door_history(limit: int = 20, dev: dict = Depends(device_auth)):
+    """Who came to the door lately: [{at, camera, summary, picture, kind}] newest first."""
+    st = door.status()
+    return {"items": door.history(max(1, min(int(limit), 60))), "cameras": st["cameras"], "bells": st["bells"]}
+
+
 # ── meal planner ─────────────────────────────────────────────────────────────
 @app.get("/api/v1/meals")
 def meals_week(days: int = 7, dev: dict = Depends(device_auth)):
@@ -546,6 +583,34 @@ def run_presence(dev: dict, state: str) -> str:
 async def dashboard_ep(dev: dict = Depends(device_auth)):
     """The Ghost Hub tablet's always-on screen: weather, calendar, home tiles, headlines."""
     return await asyncio.to_thread(dashboard.build)
+
+
+@app.get("/api/v1/home/entities")
+async def home_entities(dev: dict = Depends(device_auth)):
+    """What can be pinned as a favourite on a phone."""
+    try:
+        return await asyncio.to_thread(dashboard.entities)
+    except Exception as e:  # noqa: BLE001
+        return {"connected": False, "entities": [], "error": str(e)}
+
+
+@app.get("/api/v1/home/tiles")
+async def home_tiles_for(ids: str = "", dev: dict = Depends(device_auth)):
+    """Tiles for a phone's favourites (?ids=light.kitchen,scene.movie)."""
+    want = [i for i in re.split(r"[,\s]+", ids) if re.fullmatch(r"[a-z_]+\.[A-Za-z0-9_]+", i)]
+    try:
+        return await asyncio.to_thread(dashboard.tiles_for, want) if want else \
+            await asyncio.to_thread(dashboard.home_tiles)
+    except Exception as e:  # noqa: BLE001
+        return {"connected": False, "tiles": [], "error": str(e)}
+
+
+@app.post("/api/v1/home/lights-off")
+async def home_lights_off(dev: dict = Depends(device_auth)):
+    try:
+        return await asyncio.to_thread(dashboard.all_lights_off)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/api/v1/home/switch")

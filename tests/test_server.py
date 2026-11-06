@@ -971,6 +971,8 @@ def test_front_door_bell_names_and_rooms(server, admin, tmp_path, monkeypatch):
     assert h1["room"] == "@near" and "camera" not in h1 and h1["urgent"] is True
     assert p1["camera"] == "Front door" and p1["picture"].startswith("/files/") and p1["urgent"] is True
     assert got["phone"][1]["text"] == "Hayley is at the front door."
+    items = httpx.get(server + "/api/v1/door", headers={"Authorization": f"Bearer {phone.key}"}).json()["items"]
+    assert items[0]["summary"] == "Hayley is at the front door." and items[0]["picture"].startswith("/files/")
     # "who was at the door?"
     hist = phone.call_tool("front_door", {})
     assert "courier" in hist and "Hayley" in hist
@@ -1079,3 +1081,140 @@ def test_https_certificate_pinning_and_https_only(server, admin, tmp_path):
         from ghost_server import store
         store.put("https_only", False)
         srv.should_exit = True
+
+
+def test_find_phone_from_another_device(server, admin, tmp_path):
+    """'Where's my phone?' from the tablet rings the owner's phone; an offline phone says when it was last seen."""
+    phone = _agent(server, admin, "Adam Find Phone", "phone", tmp_path)
+    tablet = _agent(server, admin, "Find Tablet", "tablet", tmp_path)
+    got = []
+
+    async def run():
+        import websockets
+        url = server.replace("http", "ws") + "/api/v1/agent?key=" + phone.key
+        async with websockets.connect(url) as ws:
+            await ws.send(json.dumps({"type": "hello", "capabilities": [{"name": "ring_phone", "description": "ring"}]}))
+            while json.loads(await asyncio.wait_for(ws.recv(), 5))["type"] != "ready":
+                pass
+            task = asyncio.create_task(asyncio.to_thread(tablet.call_tool, "find_phone", {"whose": "Adam"}))
+            while True:
+                m = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                if m.get("type") == "call":
+                    got.append(m)
+                    await ws.send(json.dumps({"type": "result", "id": m["id"], "ok": True,
+                                              "result": "Ringing — ringing loudly for 60 seconds. It's at home."}))
+                    break
+            return await task
+    res = asyncio.run(run())
+    assert got[0]["tool"] == "ring_phone" and got[0]["args"]["from"] == "Find Tablet"
+    assert "It's at home" in res and res.startswith("Adam Find Phone")
+    # the phone has gone offline now
+    off = tablet.call_tool("find_phone", {"whose": "adam find"})
+    assert "isn't connected" in off and "last seen" in off
+
+
+def test_phone_that_rings_timers_gets_a_native_ring(server, admin, tmp_path):
+    """A phone app that says rings_timers gets {"type":"timer","event":"ring"} (alarm + Stop / +1 min),
+    not three spoken announcements; Stop from its notification ends it for everyone."""
+    p = _agent(server, admin, "Ringing Phone", "phone", tmp_path)
+    h = {"Authorization": f"Bearer {p.key}"}
+    seen = []
+
+    async def run():
+        import websockets
+        url = server.replace("http", "ws") + "/api/v1/agent?key=" + p.key
+        async with websockets.connect(url) as ws:
+            await ws.send(json.dumps({"type": "hello", "capabilities": [], "info": {"rings_timers": True}}))
+            while json.loads(await asyncio.wait_for(ws.recv(), 5))["type"] != "ready":
+                pass
+            await asyncio.to_thread(httpx.post, server + "/api/v1/timers", headers=h, json={"seconds": 1, "label": "eggs"})
+            while True:
+                m = json.loads(await asyncio.wait_for(ws.recv(), 6))
+                seen.append(m)
+                if m.get("type") == "timer" and m.get("event") == "ring":
+                    tid = m["timer"]["id"]
+                    await asyncio.to_thread(httpx.post, server + f"/api/v1/timers/{tid}", headers=h, json={"action": "stop"})
+                if m.get("type") == "timer" and m.get("event") == "stopped":
+                    break
+    asyncio.run(run())
+    assert any(m.get("type") == "timer" and m.get("event") == "ring" for m in seen)
+    assert not any(m.get("type") == "say" and m.get("from") == "timer" for m in seen)
+
+
+def test_approve_new_device_from_owner_phone(server, admin, tmp_path):
+    """The 'asked to join' alert carries the device; the owner's phone can approve or reject it."""
+    from ghost_server import security
+    security._alerted.clear()
+    owner = _agent(server, admin, "Adam Approver Phone", "phone", tmp_path)
+    tab = _agent(server, admin, "Approver Tablet", "tablet", tmp_path)
+    admin.put("/admin/api/settings", json={"approve_new_devices": True, "approve_from": "Adam Approver"})
+    try:
+        def join(name):
+            code = admin.post("/admin/api/pair-code").json()["code"]
+            return httpx.post(server + "/api/v1/pair", json={"code": code, "name": name, "kind": "phone"}).json()
+        holder = {}
+        m = _ws_until(server, owner.key, lambda m: m.get("type") == "notify" and m.get("action") == "approve_device",
+                      actions=lambda: holder.setdefault("p", join("Visitor Phone")))
+        p = holder["p"]
+        assert m["device_id"] == p["device_id"] and m["device_name"] == "Visitor Phone"
+        h = {"Authorization": f"Bearer {owner.key}"}
+        # a tablet (not an approver) can't
+        r = httpx.post(server + f"/api/v1/devices/{p['device_id']}/approve",
+                       headers={"Authorization": f"Bearer {tab.key}"}, json={"approve": True})
+        assert r.status_code == 403
+        r = httpx.post(server + f"/api/v1/devices/{p['device_id']}/approve", headers=h, json={"approve": True}).json()
+        assert r["ok"] and r["approved"]
+        assert httpx.get(server + "/api/v1/key", headers={"Authorization": "Bearer " + p["device_key"]}).status_code == 200
+        q = join("Stranger Two")
+        assert httpx.post(server + f"/api/v1/devices/{q['device_id']}/approve", headers=h, json={"approve": False}).json()["ok"]
+        assert httpx.get(server + "/api/v1/key", headers={"Authorization": "Bearer " + q["device_key"]}).status_code == 401
+        # can't resurrect a rejected one
+        assert httpx.post(server + f"/api/v1/devices/{q['device_id']}/approve", headers=h, json={"approve": True}).status_code == 404
+    finally:
+        admin.put("/admin/api/settings", json={"approve_new_devices": False, "approve_from": ""})
+
+
+def test_phone_home_favourites_dim_and_all_off(server, admin, tmp_path, monkeypatch):
+    """Phone home controls: pick favourites, dim a light, all lights off — never locks."""
+    from ghost_server import store
+    from ghost_server.tools import home
+    states = {
+        "light.kitchen": {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen", "brightness": 128}},
+        "light.lounge": {"entity_id": "light.lounge", "state": "on", "attributes": {"friendly_name": "Lounge"}},
+        "switch.fridge": {"entity_id": "switch.fridge", "state": "on", "attributes": {"friendly_name": "Fridge"}},
+        "lock.front": {"entity_id": "lock.front", "state": "locked", "attributes": {"friendly_name": "Front door"}},
+        "scene.movie": {"entity_id": "scene.movie", "state": "scening", "attributes": {"friendly_name": "Movie night"}},
+    }
+    calls = []
+
+    class R:
+        def __init__(self, data, code=200): self._d, self.status_code = data, code
+        def json(self): return self._d
+
+    def fake_req(method, path, **kw):
+        if path == "/api/states":
+            return R(list(states.values()))
+        if path.startswith("/api/states/"):
+            return R(states[path.split("/")[-1]])
+        calls.append((path, kw.get("json")))
+        return R({}, 200)
+    monkeypatch.setattr(home, "_req", fake_req)
+    store.put("ha_token", "x"); store.put("ha_url", "http://ha")
+    try:
+        t = _agent(server, admin, "Home Phone", "phone", tmp_path)
+        h = {"Authorization": f"Bearer {t.key}"}
+        ents = [e["entity_id"] for e in httpx.get(server + "/api/v1/home/entities", headers=h).json()["entities"]]
+        assert "light.kitchen" in ents and "scene.movie" in ents and "lock.front" not in ents
+        tiles = httpx.get(server + "/api/v1/home/tiles?ids=scene.movie,light.kitchen", headers=h).json()["tiles"]
+        assert [x["entity_id"] for x in tiles] == ["scene.movie", "light.kitchen"]
+        assert tiles[1]["brightness"] == 50 and tiles[1]["dimmable"]
+        assert httpx.post(server + "/api/v1/home/switch", headers=h,
+                          json={"entity_id": "light.kitchen", "action": "dim:30"}).json()["ok"]
+        assert calls[-1] == ("/api/services/light/turn_on", {"entity_id": "light.kitchen", "brightness_pct": 30})
+        r = httpx.post(server + "/api/v1/home/lights-off", headers=h).json()
+        assert r["ok"] and r["turned_off"] == 2
+        assert calls[-1] == ("/api/services/light/turn_off", {"entity_id": ["light.kitchen", "light.lounge"]})
+        bad = httpx.post(server + "/api/v1/home/switch", headers=h, json={"entity_id": "lock.front", "action": "off"}).json()
+        assert bad["ok"] is False
+    finally:
+        store.put("ha_token", ""); store.put("ha_url", "")

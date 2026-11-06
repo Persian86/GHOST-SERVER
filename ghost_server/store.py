@@ -153,7 +153,9 @@ DEFAULTS: dict[str, Any] = {
     "security_alerts": True,                                # failed logins, new devices, new addresses → my phone
     "key_rotate_days": 30,                                  # devices swap their key for a fresh one this often
     "admin_idle_hours": 12,
-    "https_only": False,                                    # turn off the plain-HTTP API (after devices moved over)                                 # admin page signs out after this long unused
+    "https_only": False,
+    "approve_from": "",                                     # devices allowed to approve new ones from a notification
+                                                            # ("" = my devices from Do Not Disturb, else every phone/PC)                                    # turn off the plain-HTTP API (after devices moved over)                                 # admin page signs out after this long unused
     "admin_totp_secret": "",                                # two-step login (authenticator app)
     "admin_totp_since": 0,
     "admin_backup_codes": [],                               # hashed one-time codes
