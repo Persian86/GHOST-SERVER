@@ -57,6 +57,7 @@
   <div class="status bad" id="loginErr"></div>
 </div>
 
+<div id="lockWarn" class="hidden" style="position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#2A2150;border:1px solid var(--pri);color:#EEEAFB;padding:10px 16px;border-radius:12px;z-index:50;font-size:14px"></div>
 <div id="app" class="hidden">
   <header>
     <h1>GHOST</h1><span class="sub">home server</span>
@@ -214,6 +215,13 @@
         <div class="card"><h3>Lockout</h3>
           <div class="muted">5 wrong passwords or codes lock the admin page for 15 minutes. 5 wrong pairing codes pause pairing for 10 minutes.</div>
           <div id="lockInfo" style="margin-top:10px"></div></div>
+        <div class="card"><h3>Auto-lock</h3>
+          <div class="muted">The admin page signs itself out and hides everything after a while untouched. Background updates don't count as use.</div>
+          <label>Lock after</label>
+          <select id="s_lock" onchange="secSet('admin_lock_minutes', Number(this.value)); lockMinutes = Number(this.value)">
+            <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option>
+            <option value="30">30 minutes</option><option value="60">1 hour</option><option value="0">Never (signs out after 12 hours unused)</option>
+          </select></div>
         <div class="card"><h3>Signed-in browsers</h3><table id="sess"></table>
           <div class="row" style="margin-top:10px"><button class="b" onclick="signOutOthers()">Sign out everywhere else</button>
           <button class="b" onclick="logout()">Sign out</button></div></div>
@@ -273,8 +281,10 @@ const devName = id => ((data && data.devices || []).find(d => d.id === id) || {}
 const ago = t => { const s = Date.now()/1000 - t; return s < 90 ? "just now" : s < 3600 ? Math.round(s/60)+" min ago" : s < 86400 ? Math.round(s/3600)+" h ago" : Math.round(s/86400)+" d ago"; };
 async function api(path, opts = {}) {
   // X-Ghost-Admin: the server refuses changes without it, so another web page can't use this login
-  const r = await fetch(path, {headers: {"Content-Type": "application/json", "X-Ghost-Admin": "1"}, ...opts});
-  if (r.status === 401 && !path.startsWith("/admin/login")) { show("login"); throw new Error("login"); }
+  const headers = {"Content-Type": "application/json", "X-Ghost-Admin": "1"};
+  if (opts && opts.passive) headers["X-Ghost-Passive"] = "1";      // background refresh: doesn't count as use
+  const r = await fetch(path, {headers, ...opts});
+  if (r.status === 401 && !path.startsWith("/admin/login")) { lockNow(true); throw new Error("login"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || r.statusText);
   return j;
@@ -283,11 +293,38 @@ function show(which) { $("#login").classList.toggle("hidden", which !== "login")
 async function boot() {
   const s = await api("/admin/state");
   if (!s.logged_in) {
-    $("#loginHint").textContent = s.needs_setup ? "First run — choose an admin password." : "Home server";
+    let locked = false; try { locked = sessionStorage.getItem("ghostLocked") === "1"; sessionStorage.removeItem("ghostLocked"); } catch (e) {}
+    $("#loginHint").textContent = s.needs_setup ? "First run — choose an admin password."
+      : locked ? "Locked — the admin page was left unused. Sign in again." : "Home server";
     show("login"); return;
   }
-  show("app"); drawTabs(); await refresh(); setInterval(refresh, 8000);
+  lockMinutes = Number(s.lock_minutes || 0);
+  lastUse = Date.now();
+  show("app"); drawTabs(); await refresh();
+  if (!refreshTimer) refreshTimer = setInterval(() => refresh(true), 8000);
 }
+
+// ── Auto-lock: after a while untouched, the page signs out and hides everything ──
+let lockMinutes = 15, lastUse = Date.now(), refreshTimer = null;
+["mousemove", "mousedown", "keydown", "wheel", "touchstart", "scroll"].forEach(ev =>
+  window.addEventListener(ev, () => { lastUse = Date.now(); $("#lockWarn").classList.add("hidden"); }, {passive: true}));
+async function lockNow(serverSaid) {
+  if ($("#app").classList.contains("hidden")) { if (serverSaid) show("login"); return; }
+  try { if (!serverSaid) await fetch("/admin/logout", {method: "POST", headers: {"X-Ghost-Admin": "1"}}); } catch (e) {}
+  try { sessionStorage.setItem("ghostLocked", "1"); } catch (e) {}
+  location.reload();                              // nothing from the page stays on screen or in memory
+}
+setInterval(() => {
+  if (!lockMinutes || $("#app").classList.contains("hidden")) return;
+  const left = lockMinutes * 60000 - (Date.now() - lastUse);
+  if (left <= 0) { lockNow(false); return; }
+  const w = $("#lockWarn");
+  if (left <= 30000) { w.textContent = `Locking in ${Math.ceil(left / 1000)} s — move the mouse to stay signed in`; w.classList.remove("hidden"); }
+  else w.classList.add("hidden");
+}, 1000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && lockMinutes && Date.now() - lastUse > lockMinutes * 60000) lockNow(false);
+});
 async function login() {
   $("#loginErr").textContent = "";
   try {
@@ -303,8 +340,8 @@ function drawTabs() {
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
 function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if (t === "Security") drawSecurity(); }
-async function refresh() {
-  data = await api("/admin/api/overview");
+async function refresh(passive) {
+  data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
   $("#hdr").textContent = `v${data.version} · ${on}/${data.devices.length} devices online · ${data.tools.length} tools`;
   $("#srvAddr").textContent = location.origin;
@@ -390,6 +427,7 @@ async function drawSecurity() {
   $("#s_alerts").checked = !!sec.settings.security_alerts;
   $("#rotDays").textContent = sec.settings.key_rotate_days;
   $("#s_https").checked = !!sec.settings.https_only;
+  $("#s_lock").value = String(Number(sec.settings.admin_lock_minutes || 0));
   const tl = sec.tls || {};
   const httpsUrl = `https://${location.hostname}:${tl.port}/`;
   $("#tlsInfo").innerHTML = !tl.enabled ? '<span style="color:var(--warn)">Not running — update Ghost Server.</span>' :

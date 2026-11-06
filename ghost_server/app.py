@@ -129,7 +129,9 @@ def _pw_ok(pw: str, stored: str) -> bool:
 
 
 def admin_auth(request: Request) -> bool:
-    if not security.session_ok(request.cookies.get("ghost_admin", "")):
+    # the page's own background refresh says X-Ghost-Passive: it mustn't keep an unattended page unlocked
+    passive = request.headers.get("x-ghost-passive") == "1"
+    if not security.session_ok(request.cookies.get("ghost_admin", ""), touch=not passive):
         raise HTTPException(401, "Admin login needed")
     # another web page can't make your browser change things here: it can't add this header
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-ghost-admin") != "1":
@@ -832,7 +834,8 @@ def admin_page():
 def admin_state(request: Request):
     return {"needs_setup": not store.get("admin_password_hash"),
             "logged_in": security.session_ok(request.cookies.get("ghost_admin", ""), touch=False),
-            "two_step": security.two_step_on()}
+            "two_step": security.two_step_on(),
+            "lock_minutes": float(store.get("admin_lock_minutes") or 0)}
 
 
 def _locked_out(ip: str) -> None:

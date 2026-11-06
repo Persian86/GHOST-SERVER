@@ -1218,3 +1218,33 @@ def test_phone_home_favourites_dim_and_all_off(server, admin, tmp_path, monkeypa
         assert bad["ok"] is False
     finally:
         store.put("ha_token", ""); store.put("ha_url", "")
+
+
+def test_admin_auto_lock(server, admin, monkeypatch):
+    """The admin session ends after the auto-lock time without use; the page's own background
+    refresh (X-Ghost-Passive) doesn't keep it alive, but real use does."""
+    import time as _t
+    from ghost_server import security, store
+    assert admin.get("/admin/state").json()["lock_minutes"] == 15
+    store.put("admin_lock_minutes", 1)
+    try:
+        c = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
+        assert c.post("/admin/login", json={"password": "ghost-pass"}).status_code == 200
+        real = _t.time
+        start = real()
+        monkeypatch.setattr(security.time, "time", lambda: start + 40)
+        assert c.get("/admin/api/overview", headers={"X-Ghost-Passive": "1"}).status_code == 200   # passive: no touch
+        monkeypatch.setattr(security.time, "time", lambda: start + 70)
+        assert c.get("/admin/api/overview").status_code == 401                                     # locked
+        monkeypatch.setattr(security.time, "time", real)
+        # real use keeps it going
+        c2 = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
+        assert c2.post("/admin/login", json={"password": "ghost-pass"}).status_code == 200
+        start = real()
+        monkeypatch.setattr(security.time, "time", lambda: start + 40)
+        assert c2.get("/admin/api/overview").status_code == 200
+        monkeypatch.setattr(security.time, "time", lambda: start + 90)
+        assert c2.get("/admin/api/overview").status_code == 200
+    finally:
+        monkeypatch.setattr(security.time, "time", _t.time)
+        store.put("admin_lock_minutes", 15)

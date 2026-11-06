@@ -197,12 +197,20 @@ def new_session(ip: str, ua: str) -> str:
     return tok
 
 
+def lock_seconds() -> float:
+    """Auto-lock: seconds of no use before the admin page locks (0 = off)."""
+    try:
+        return max(0.0, float(store.get("admin_lock_minutes") or 0)) * 60
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def session_ok(token: str, touch: bool = True) -> bool:
     if not token:
         return False
     sid = _sid(token)
     now = time.time()
-    idle = float(store.get("admin_idle_hours") or 12) * 3600
+    idle = lock_seconds() or float(store.get("admin_idle_hours") or 12) * 3600
     with _lock:
         s = _sessions.get(sid)
         if not s:
@@ -342,7 +350,8 @@ def overview(current_token: str = "") -> dict:
                      "asked": ago(d.get("created_at") or 0)} for d in pending],
         "keys": keys,
         "settings": {k: store.get(k) for k in ("approve_new_devices", "security_alerts", "key_rotate_days",
-                                                "admin_idle_hours", "https_only", "approve_from")},
+                                                "admin_idle_hours", "https_only", "approve_from",
+                                                "admin_lock_minutes")},
         "tls": _tls(),
         "log": events,
     }
