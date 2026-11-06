@@ -608,7 +608,11 @@ def test_assist_room_speaker_voice_and_room_announce(server, admin, tmp_path, mo
         import websockets
         async with websockets.connect(server.replace("http", "ws") + f"/api/v1/agent?key={ha.key}") as ws:
             await ws.send(json.dumps({"type": "hello", "capabilities": [],
-                                      "info": {"rooms": ["Office", "Bedroom", "Lounge"]}}))
+                                      "info": {"rooms": ["Office", "Bedroom", "Lounge"],
+                                               "speakers": [
+                                                   {"id": "notify.kitchen_echo_dot_announce", "name": "Kitchen Echo Dot", "area": "Kitchen"},
+                                                   {"id": "notify.zoey_echo_announce", "name": "Zoey's Echo", "area": "Bedroom"},
+                                                   {"id": "assist_satellite.bedroom", "name": "Bedroom Screen", "area": "Bedroom"}]}}))
             while True:
                 m = json.loads(await asyncio.wait_for(ws.recv(), 5))
                 if m["type"] == "ready":
@@ -621,8 +625,20 @@ def test_assist_room_speaker_voice_and_room_announce(server, admin, tmp_path, mo
                 if m["type"] == "say":
                     got.append(m)
                     break
+            # one named speaker: only that Echo, not the whole room
+            for target in ("Zoey's Echo", "the kitchen echo"):
+                res = await asyncio.to_thread(other.call_tool, "announce", {"text": "Hi", "device": target})
+                assert res.startswith("Said it on")
+                while True:
+                    m = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                    if m["type"] == "say":
+                        got.append(m)
+                        break
+            assert "Kitchen Echo Dot" in await asyncio.to_thread(other.call_tool, "list_devices", {})
     asyncio.run(run())
-    assert got[0]["room"] == "Bedroom" and got[0]["text"] == "Bedtime!"
+    assert got[0]["room"] == "Bedroom" and got[0]["text"] == "Bedtime!" and "speaker" not in got[0]
+    assert got[1]["speaker"] == "notify.zoey_echo_announce"
+    assert got[2]["speaker"] == "notify.kitchen_echo_dot_announce"
 
 
 def _ws_until(server, key, pred, actions=None, timeout=8):

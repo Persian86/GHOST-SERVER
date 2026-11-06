@@ -1,0 +1,22 @@
+# Speech for Home Assistant Container (there are no add-ons, so these run as their own containers).
+# Portainer → Stacks → + Add stack → name "voice" → paste this → Deploy.
+# Change /share/Docker/... to wherever you keep Docker data on the NAS.
+# Then in Home Assistant add "Wyoming Protocol" twice: 192.168.80.244 port 10300 (Whisper) and 10200 (Piper).
+services:
+  whisper:                                   # speech → text
+    image: rhasspy/wyoming-whisper:latest
+    container_name: whisper
+    network_mode: host                       # Asustor: the default bridge network can't reach the internet for models
+    command: --model base-int8 --language en --uri tcp://0.0.0.0:10300   # slow on the NAS? use tiny-int8
+    volumes:
+      - /share/Docker/whisper:/data
+    restart: unless-stopped
+
+  piper:                                     # text → speech
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
+    network_mode: host
+    command: --voice en_GB-alan-medium --uri tcp://0.0.0.0:10200   # other voices: en_US-lessac-medium, en_GB-jenny_dioco-medium
+    volumes:
+      - /share/Docker/piper:/data
+    restart: unless-stopped

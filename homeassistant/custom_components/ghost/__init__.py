@@ -70,6 +70,21 @@ def speakers(hass: HomeAssistant) -> list[tuple[str, str, str]]:
     return out
 
 
+def speaker_name(hass: HomeAssistant, entity_id: str) -> str:
+    """What people call it: the device's name ("Kitchen Echo Dot"), else the entity's."""
+    e = er.async_get(hass).async_get(entity_id)
+    if e and e.device_id and (d := dr.async_get(hass).async_get(e.device_id)):
+        if d.name_by_user or d.name:
+            return d.name_by_user or d.name
+    st = hass.states.get(entity_id)
+    return (st and st.name) or (e and (e.name or e.original_name)) or entity_id
+
+
+def speaker_list(hass: HomeAssistant) -> list[dict]:
+    return [{"id": eid, "name": speaker_name(hass, eid), "area": area, "kind": kind}
+            for kind, eid, area in speakers(hass)]
+
+
 def satellites(hass: HomeAssistant) -> list[tuple[str, str]]:
     return [(eid, area) for kind, eid, area in speakers(hass) if kind == "satellite"]
 
@@ -115,7 +130,8 @@ class GhostLink:
                 async with session.ws_connect(ws_url, heartbeat=30) as ws:
                     rooms = sorted({a for _, _, a in speakers(self.hass) if a})
                     await ws.send_json({"type": "hello", "capabilities": [],
-                                        "info": {"platform": "Home Assistant", "rooms": rooms}})
+                                        "info": {"platform": "Home Assistant", "rooms": rooms,
+                                                 "speakers": speaker_list(self.hass)}})
                     delay = 1
                     async for m in ws:
                         if m.type != aiohttp.WSMsgType.TEXT:
@@ -123,7 +139,7 @@ class GhostLink:
                         msg = m.json()
                         if msg.get("type") in ("say", "task_done"):
                             text = msg.get("say") or msg.get("text") or ""
-                            await self.announce(text, msg.get("room") or "")
+                            await self.announce(text, msg.get("room") or "", msg.get("speaker") or "")
                         elif msg.get("type") == "call":
                             await ws.send_json({"type": "result", "id": msg.get("id"), "ok": False,
                                                 "error": "Home Assistant has no device actions"})
@@ -140,10 +156,12 @@ class GhostLink:
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 
-    async def announce(self, text: str, room: str = "") -> None:
+    async def announce(self, text: str, room: str = "", speaker: str = "") -> None:
         if not text.strip():
             return
-        chosen = pick_speakers(speakers(self.hass), room)
+        found = speakers(self.hass)
+        one = [(k, eid) for k, eid, _ in found if eid == speaker] if speaker else []
+        chosen = one or pick_speakers(found, room)
         if not chosen:
             _LOGGER.warning("Ghost wanted to speak in '%s' but found no speaker there", room or "any room")
             return

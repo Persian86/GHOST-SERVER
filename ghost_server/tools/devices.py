@@ -17,15 +17,53 @@ def describe_devices(exclude: str = "") -> str:
         on = hub.is_online(d["id"])
         caps = [c.get("name") for c in (hub.conns[d["id"]].capabilities if on else d["capabilities"])]
         rooms = _rooms(d["id"]) if on else []
+        spk = [f"{x['name']}" + (f" ({x['area']})" if x.get("area") else "") for x in _speakers(d["id"])] if on else []
         lines.append(f"- {d['name']} ({d['kind']}, {'online' if on else 'offline'})"
                      + (f": {', '.join(c for c in caps if c)}" if caps else "")
-                     + (f" - room speakers in: {', '.join(rooms)} (announce to a room by its name)" if rooms else ""))
+                     + (f" - room speakers in: {', '.join(rooms)} (announce to a room by its name)" if rooms else "")
+                     + (f" - speakers you can name: {', '.join(spk)}" if spk else ""))
     return "\n".join(lines) or "No other devices are paired yet."
 
 
 def _rooms(device_id: str) -> list[str]:
     c = hub.conns.get(device_id)
     return [str(r) for r in (c.info.get("rooms") or [])][:30] if c else []
+
+
+def _speakers(device_id: str) -> list[dict]:
+    """Individual speakers behind a hub (Home Assistant): [{"id": entity_id, "name": "Kitchen Echo", "area": "Kitchen"}]."""
+    c = hub.conns.get(device_id)
+    return [x for x in (c.info.get("speakers") or []) if isinstance(x, dict) and x.get("id")][:60] if c else []
+
+
+def _norm(s: str) -> str:
+    s = " " + str(s or "").lower().replace("'s", "").replace("’s", "") + " "
+    for word in (" the ", " my ", " speaker ", " device "):
+        s = s.replace(word, " ")
+    return " ".join(s.split())
+
+
+def find_speaker(name: str) -> tuple[str, dict] | None:
+    """(hub device id, speaker) for ONE named speaker, e.g. 'kitchen echo dot', 'Zoey's echo'.
+    A bare room name ('kitchen') is left to find_room, which speaks once per room."""
+    n = _norm(name)
+    if not n:
+        return None
+    rooms = {r.lower() for did in list(hub.conns) for r in _rooms(did)}
+    best = None
+    for did in list(hub.conns):
+        for sp in _speakers(did):
+            sn = _norm(sp.get("name", ""))
+            if not sn:
+                continue
+            if sn == n:
+                return did, sp
+            if n in rooms:
+                continue                    # "kitchen" means the room, not one speaker in it
+            words = set(n.split())
+            if (n in sn or sn in n or words <= set(sn.split())) and (best is None or len(sn) < len(best[2])):
+                best = (did, sp, sn)
+    return (best[0], best[1]) if best else None
 
 
 def find_room(name: str) -> tuple[str, str] | None:
@@ -79,9 +117,10 @@ def device_action(args: dict, ctx: Ctx) -> str:
     return f"{d['name']} couldn't do it: {res.get('error', 'unknown error')}"
 
 
-@tool("announce", """Say something out loud on another device, in a room ('bedroom', 'office'), or on
-every device ('all'): 'tell the kitchen tablet dinner's ready', 'tell the bedroom it's time to get up',
-'announce to the house that we're leaving in five minutes'.""",
+@tool("announce", """Say something out loud on another device, on ONE named speaker ('kitchen echo dot'),
+in a room ('bedroom', 'office' = every speaker there, once), or on every device ('all'): 'tell the
+kitchen tablet dinner's ready', 'play on Zoey's Echo: bedtime', 'tell the bedroom it's time to get up',
+'announce to the house that we're leaving in five minutes'. Speaker names are in list_devices.""",
       {"type": "OBJECT", "properties": {
           "text": {"type": "STRING"},
           "device": {"type": "STRING", "description": "Device name, room name, or 'all' (default)"}},
@@ -93,6 +132,11 @@ def announce(args: dict, ctx: Ctx) -> str:
     if target in ("all", "everyone", "house", "everywhere"):
         n = hub.broadcast_sync(msg, except_id=ctx.device_id)
         return f"Announced on {n} device(s)." if n else "No other devices are online."
+    sp = find_speaker(target)
+    if sp:                                  # one Echo / screen by its own name
+        did, s = sp
+        ok = hub.send_sync(did, {**msg, "speaker": s["id"], "room": s.get("area", "")})
+        return f"Said it on {s['name']}." if ok else f"{s['name']} is offline."
     d = find_device(target)
     if d is None:
         room = find_room(target)
@@ -100,7 +144,9 @@ def announce(args: dict, ctx: Ctx) -> str:
             did, r = room
             ok = hub.send_sync(did, {**msg, "room": r})
             return f"Said it in the {r}." if ok else f"The {r} speaker is offline."
-        return f"No online device or room matches '{target}'."
+        names = [x["name"] for did in list(hub.conns) for x in _speakers(did)]
+        return (f"No online device, speaker or room matches '{target}'."
+                + (f" Speakers: {', '.join(names[:20])}." if names else ""))
     return f"Said it on {d['name']}." if hub.send_sync(d["id"], msg) else f"{d['name']} is offline."
 
 
