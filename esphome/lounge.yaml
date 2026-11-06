@@ -1,0 +1,22 @@
+# Ghost room screen: Lounge. Change the entity ids below to match your Home Assistant,
+# then flash with the ESPHome add-on (Install → plug into this computer the first time).
+substitutions:
+  name: ghost-lounge
+  friendly_name: Lounge Screen
+  room: Lounge
+  wake_word: hey_jarvis
+  wake_word_name: Hey Jarvis
+  weather_entity: weather.home
+  light_1: light.lounge_light
+  light_1_name: Light
+  light_2: light.lounge_lamp
+  light_2_name: Lamp
+  light_3: fan.lounge_fan
+  light_3_name: Fan
+
+packages:
+  base: !include ghost-room-base.yaml
+
+api:
+  encryption:
+    key: !secret lounge_api_key

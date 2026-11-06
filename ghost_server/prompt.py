@@ -41,6 +41,13 @@ def build(device: dict) -> str:
                         "household (or a guest) may be talking. Don't assume it's the owner unless they say so; "
                         "ask a name if it matters. Don't read out anyone's private messages, money or health "
                         "details here. Be friendly and brief; children may use it too.")
+    from .faces import presence_text
+    who = presence_text(device.get("id", ""))
+    if who:
+        if device.get("kind") == "tablet" and "recognises" in who:
+            who += (" On this shared tablet, being recognised counts as them telling you who they are, but still "
+                    "keep money, health and private messages off the shared screen.")
+        parts.insert(2, who)
     facts = store.facts()
     if facts:
         by: dict[str, list[str]] = {}
@@ -55,5 +62,5 @@ def build(device: dict) -> str:
     if turns:
         names = {d["id"]: d["name"] for d in store.devices(include_revoked=True)}
         parts.append("[RECENTLY, ON OTHER DEVICES — for continuity only]\n" + "\n".join(
-            f"{names.get(t['device_id'], '?')} · {t['role']}: {t['text'][:200]}" for t in turns[-6:]))
+            f"{names.get(t['device_id']) or t['device_id'].split('~', 1)[-1]} · {t['role']}: {t['text'][:200]}" for t in turns[-6:]))
     return "\n\n".join(parts)

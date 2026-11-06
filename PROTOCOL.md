@@ -154,6 +154,38 @@ POST /api/v1/chat   {"text": "turn off the lounge lights"}
 
 Claude answers using every server tool plus this device's own capabilities, which are routed back over the live link.
 
+### Room speakers behind Home Assistant
+
+The Ghost integration for Home Assistant (`homeassistant/`) pairs as one device of kind
+`homeassistant`. It sends spoken requests from each Assist satellite with the room it is in:
+
+```http
+POST /api/v1/assist   {"text": "lights off", "room": "Bedroom", "satellite": "Bedroom Screen"}
+→ {"text": "The bedroom light is off.", "tools": ["home_assistant"], "conversation_id": "…"}
+```
+
+Replies are written to be spoken. "Here", or "the lights" with no room named, mean that room, and
+each room keeps its own short history. Over its live link the integration reports
+`"info": {"rooms": [...]}`, and `announce` to a room name sends it `{"type":"say","text":…,"room":"Bedroom"}`.
+
+### Household: timers, lists, notes, Visual ID, photos
+
+```http
+GET  /api/v1/timers                      → {"items": [{id, kind: timer|alarm, label, status, remaining, ends_at}]}
+POST /api/v1/timers  {seconds, label} | {alarm: "6:30am", days: "weekdays", label}
+POST /api/v1/timers/{id}  {action: stop | cancel | add, seconds}
+GET  /api/v1/lists                       → {"lists": {"shopping": [{id, text, done}], "to do": [...]}}
+POST /api/v1/lists  {list, text}         POST /api/v1/lists/item/{id}  {done, delete}
+GET  /api/v1/notes?who=Adam              POST /api/v1/notes {text, to, from}     POST /api/v1/notes/{id}
+POST /api/v1/faces/identify {image: base64 JPEG} → {people: [{name, score}], guests, greet?, notes?, agenda?}
+POST /api/v1/faces/enroll {name, image, admin_password}
+GET  /api/v1/photos → {count, photos: [n…]}       GET /photos/{n}?w=1600&k=<device key>
+```
+
+Live link pushes: `{"type":"timers"}`, `{"type":"lists"}`, `{"type":"notes"}` snapshots on every change (and on connect).
+A timer set on a tablet rings there as `{"type":"timer","event":"ring","timer":{…},"text":…}` (and `"stopped"`).
+On phones, PCs and room speakers it is announced instead, as an urgent `say`, three times. Both get past Do Not Disturb.
+
 ## 7. Designing capabilities
 
 * Name them as verbs, specific to the device: `open_app`, `take_screenshot`, `ring`,

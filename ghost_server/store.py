@@ -119,6 +119,9 @@ DEFAULTS: dict[str, Any] = {
     "marquee_url": "http://192.168.80.45:8420",
     "marquee_key": "",
     "calendars": "",
+    "faces_enabled": False,                                 # Visual ID: recognise people set up on the admin page
+    "photo_folder": "/photos",                              # the tablet's photo frame (map a NAS share here)
+    "photo_frame_after": 5,                                 # minutes idle before the tablet shows photos (0 = never)
     "admin_password_hash": "",
 }
 SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars", "rtsp_cameras",

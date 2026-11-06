@@ -1,0 +1,6 @@
+"""Constants for the Ghost integration."""
+DOMAIN = "ghost"
+CONF_URL = "url"
+CONF_KEY = "device_key"
+CONF_DEVICE_ID = "device_id"
+DEFAULT_URL = "http://192.168.80.244:8780"

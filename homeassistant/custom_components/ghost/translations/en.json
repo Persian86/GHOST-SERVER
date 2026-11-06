@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Ghost",
+        "description": "On Ghost's admin page press **New pairing code**, then enter it here.",
+        "data": {"url": "Ghost Server address", "code": "Pairing code", "name": "Name for this Home Assistant"}
+      }
+    },
+    "error": {
+      "bad_code": "That code is wrong or has expired. Make a new one on Ghost's admin page.",
+      "cannot_connect": "Couldn't reach Ghost Server at that address."
+    },
+    "abort": {"already_configured": "This Home Assistant is already connected to Ghost."}
+  }
+}

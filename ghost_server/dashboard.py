@@ -158,4 +158,12 @@ def build() -> dict:
         "calendar": _cached("calendar", 600, calendar_data) or {"connected": False, "today": [], "tomorrow": []},
         "home": _cached("home", 5, home_tiles) or {"connected": False, "tiles": []},
         "headlines": _cached("headlines", 1800, headlines) or [],
+        "features": {"faces": bool(store.get("faces_enabled")), "photo_frame_after": _int(store.get("photo_frame_after"), 5)},
     }
+
+
+def _int(v, default: int) -> int:
+    try:
+        return max(0, int(float(v)))
+    except (TypeError, ValueError):
+        return default

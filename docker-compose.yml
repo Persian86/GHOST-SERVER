@@ -16,3 +16,5 @@ services:
       - GHOST_PORT=8780
     volumes:
       - /volume1/Docker/ghost-server:/data
+      # The tablet's photo frame: point this at your photos (read-only). Change the left side to your share.
+      - /volume1/Photos:/photos:ro

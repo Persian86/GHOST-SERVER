@@ -6,9 +6,13 @@ Ghost Server — HTTP + WebSocket API and the admin page.
       GET  /api/v1/session                                    → everything to start Gemini Live
       POST /api/v1/tools/call      {name, args}               → {result}
       POST /api/v1/chat            {text}                     → {text, tools}
+      POST /api/v1/assist          {text, room, satellite}    → {text, tools}   (room speakers via Home Assistant)
       POST /api/v1/turns           {turns:[{role,text}]}      → log conversation for shared context
       POST /api/v1/events          {type, data}               → notifications, battery, alerts
       GET  /api/v1/devices                                    → the household's devices
+      GET/POST /api/v1/timers, /lists, /notes                 → shared timers, lists, notes
+      POST /api/v1/faces/identify {image}  /faces/enroll      → Visual ID
+      GET  /api/v1/photos, /photos/{n}?w=&k=                  → the photo frame
       WS   /api/v1/agent?key=…                                → live link (see PROTOCOL.md)
       GET  /files/{id}?k=…                                    → documents Ghost made
 
@@ -28,7 +32,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import __version__, cameras, chat, config, dashboard, live, prompt, quiet, store, tools
+from . import __version__, cameras, chat, config, dashboard, faces, household, live, photos, prompt, quiet, store, tools
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -41,7 +45,8 @@ async def _lifespan(_app):
     tools.load()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
-    bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop())]
+    bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
+          asyncio.create_task(household.timer_loop())]
     yield
     for t in bg:
         t.cancel()
@@ -148,6 +153,158 @@ async def chat_ep(body: dict, dev: dict = Depends(device_auth)):
         return await asyncio.to_thread(chat.reply, dev, text)
     except RuntimeError as e:
         return {"text": str(e), "tools": []}
+
+
+@app.post("/api/v1/assist")
+async def assist_ep(body: dict, dev: dict = Depends(device_auth)):
+    """A spoken request from a room speaker behind a hub (the Home Assistant
+    integration): answered for speech, aware of the room, with its own history."""
+    text = str(body.get("text", "")).strip()
+    if not text:
+        raise HTTPException(400, "text is empty")
+    room_dev = chat.room_device(dev, str(body.get("room") or ""), str(body.get("satellite") or ""))
+    try:
+        out = await asyncio.to_thread(chat.reply, room_dev, text, True)
+    except RuntimeError as e:
+        out = {"text": str(e), "tools": []}
+    out["conversation_id"] = body.get("conversation_id") or room_dev["id"]
+    return out
+
+
+# ── household: timers, lists, notes ──────────────────────────────────────────
+@app.get("/api/v1/timers")
+async def timers_get(dev: dict = Depends(device_auth)):
+    return await asyncio.to_thread(household.timers_snapshot)
+
+
+@app.post("/api/v1/timers")
+async def timers_set(body: dict, dev: dict = Depends(device_auth)):
+    """From a screen: {seconds, label} for a timer, or {alarm: '6:30am', days, label}."""
+    if body.get("alarm"):
+        r = await asyncio.to_thread(household.set_alarm, str(body["alarm"]), str(body.get("label") or ""),
+                                    str(body.get("days") or ""), dev["id"], "")
+        if not r:
+            raise HTTPException(400, "I couldn't read that alarm time")
+        return r
+    secs = float(body.get("seconds") or 0)
+    if secs <= 0:
+        raise HTTPException(400, "seconds must be more than 0")
+    return await asyncio.to_thread(household.set_timer, secs, str(body.get("label") or ""), dev["id"], "")
+
+
+@app.post("/api/v1/timers/{tid}")
+async def timers_edit(tid: str, body: dict, dev: dict = Depends(device_auth)):
+    """{action: stop | cancel | add, seconds}"""
+    a = str(body.get("action") or "stop")
+    if a == "add":
+        ok = await asyncio.to_thread(household.add_time, tid, float(body.get("seconds") or 60))
+    elif a == "cancel":
+        await asyncio.to_thread(household.cancel_alarm_forever, tid)
+        ok = True
+    else:
+        ok = await asyncio.to_thread(household.stop, tid)
+    return {"ok": ok}
+
+
+@app.get("/api/v1/lists")
+async def lists_get(dev: dict = Depends(device_auth)):
+    return await asyncio.to_thread(household.lists_snapshot)
+
+
+@app.post("/api/v1/lists")
+async def lists_add(body: dict, dev: dict = Depends(device_auth)):
+    added = await asyncio.to_thread(household.add_items, str(body.get("list") or "shopping"),
+                                    str(body.get("text") or ""), str(body.get("by") or dev["name"]))
+    return {"added": added}
+
+
+@app.post("/api/v1/lists/item/{iid}")
+async def lists_item(iid: int, body: dict, dev: dict = Depends(device_auth)):
+    ok = await asyncio.to_thread(household.set_item, iid, bool(body.get("done")), bool(body.get("delete")))
+    return {"ok": ok}
+
+
+@app.get("/api/v1/notes")
+async def notes_get(dev: dict = Depends(device_auth), who: str = ""):
+    return {"type": "notes", "items": await asyncio.to_thread(household.notes, who)}
+
+
+@app.post("/api/v1/notes")
+async def notes_add(body: dict, dev: dict = Depends(device_auth)):
+    if not str(body.get("text") or "").strip():
+        raise HTTPException(400, "the note is empty")
+    return await asyncio.to_thread(household.leave_note, str(body["text"]), str(body.get("to") or ""),
+                                   str(body.get("from") or ""))
+
+
+@app.post("/api/v1/notes/{nid}")
+async def notes_done(nid: int, dev: dict = Depends(device_auth)):
+    return {"ok": await asyncio.to_thread(household.done_note, nid)}
+
+
+# ── Visual ID ────────────────────────────────────────────────────────────────
+def _personal(name: str) -> dict:
+    """What the tablet shows when it recognises someone: their notes and their own calendar."""
+    out = {"notes": household.notes(name)}
+    p = faces.person(name)
+    if p and p.get("calendar"):
+        import httpx
+        from .tools.web import events_on, today
+        try:
+            ics = httpx.get(p["calendar"].replace("webcal://", "https://"), timeout=8, follow_redirects=True).text
+            out["agenda"] = [{"time": t, "title": s} for t, s in events_on(ics, today())[:8]]
+        except Exception:  # noqa: BLE001
+            out["agenda"] = []
+    return out
+
+
+@app.post("/api/v1/faces/identify")
+async def faces_identify(body: dict, dev: dict = Depends(device_auth)):
+    if not store.get("faces_enabled"):
+        return {"people": [], "guests": 0, "faces": 0, "disabled": True}
+    try:
+        r = await asyncio.to_thread(faces.identify, body.get("image") or "", dev)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001 — models missing or broken
+        raise HTTPException(503, f"Visual ID isn't working on the server: {e}")
+    if r.get("for"):
+        r.update(await asyncio.to_thread(_personal, r["for"]))
+    return r
+
+
+@app.post("/api/v1/faces/enroll")
+async def faces_enroll(body: dict, dev: dict = Depends(device_auth)):
+    """Adding a person needs the admin password, so a visitor can't teach Ghost to call them you."""
+    stored = str(store.get("admin_password_hash") or "")
+    if not stored or not _pw_ok(str(body.get("admin_password") or ""), stored):
+        raise HTTPException(403, "That isn't the admin password")
+    try:
+        r = await asyncio.to_thread(faces.enroll, str(body.get("name") or ""), body.get("image") or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"Visual ID isn't working on the server: {e}")
+    if r.get("ok") and not store.get("faces_enabled"):
+        store.put("faces_enabled", True)
+    return r
+
+
+# ── photo frame ──────────────────────────────────────────────────────────────
+@app.get("/api/v1/photos")
+async def photos_list(dev: dict = Depends(device_auth)):
+    return await asyncio.to_thread(photos.listing)
+
+
+@app.get("/photos/{n}")
+async def photo(n: int, k: str = "", w: int = 1600, authorization: str | None = Header(None)):
+    if store.device_by_key(_key_from(authorization, k)) is None:
+        raise HTTPException(401, "Unknown device key")
+    data = await asyncio.to_thread(photos.image, n, w)
+    if data is None:
+        raise HTTPException(404, "No such photo")
+    from fastapi.responses import Response
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
 @app.post("/api/v1/llm")
@@ -391,6 +548,11 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     await ws.send_json({"type": "welcome", "device_id": row["id"], "name": row["name"],
                         "assistant_name": store.get("assistant_name")})
     await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
+    for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot):
+        try:
+            await ws.send_json(await asyncio.to_thread(snap))
+        except Exception:  # noqa: BLE001
+            pass
     try:
         while True:
             msg = await ws.receive_json()
@@ -541,6 +703,20 @@ async def test(what: str, _: bool = Depends(admin_auth)):
             return False, f"{type(e).__name__}: {e}"
     ok, msg = await asyncio.to_thread(run)
     return {"ok": ok, "message": msg}
+
+
+@app.get("/admin/api/people")
+def admin_people(_: bool = Depends(admin_auth)):
+    return {"people": faces.people(), "seen": faces.last_seen(), "enabled": bool(store.get("faces_enabled"))}
+
+
+@app.post("/admin/api/people/{pid}")
+def admin_person(pid: int, body: dict, _: bool = Depends(admin_auth)):
+    if body.get("delete"):
+        faces.delete_person(pid)
+    else:
+        faces.edit_person(pid, body.get("name"), body.get("calendar"))
+    return {"people": faces.people()}
 
 
 @app.post("/admin/api/chat")

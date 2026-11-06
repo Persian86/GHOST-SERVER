@@ -5,6 +5,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Visual ID face models (OpenCV YuNet + SFace), checked against their published SHA-256
+COPY tools_build/fetch_models.py /tmp/fetch_models.py
+RUN python /tmp/fetch_models.py /app/models && rm /tmp/fetch_models.py
+ENV GHOST_MODELS=/app/models
 COPY ghost_server ./ghost_server
 COPY sdk ./sdk
 VOLUME ["/data"]

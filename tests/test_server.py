@@ -574,3 +574,182 @@ def test_safety_check_reports_new_problems_only():
     assert quiet.safety_check(base) == []                    # still on: not repeated
     alarm = base + [{"entity_id": "alarm_control_panel.house", "state": "triggered", "attributes": {"friendly_name": "House alarm"}}]
     assert quiet.safety_check(alarm) == ["House alarm — the alarm has gone off"]
+
+
+def test_assist_room_speaker_voice_and_room_announce(server, admin, tmp_path, monkeypatch):
+    """Home Assistant room speakers: spoken-style answers that know the room, their own
+    history per room, and 'announce to the bedroom' reaching the hub with the room."""
+    from ghost_server.tools import brain
+    seen = []
+
+    class FakeClaude:
+        def complete(self, history, tools=None, **kw):
+            seen.append(history[0]["content"])
+            return "The office lights are off.", []
+    monkeypatch.setattr(brain, "claude", lambda *a, **k: FakeClaude())
+    ha = _agent(server, admin, "Home Assistant", "homeassistant", tmp_path)
+    h = {"Authorization": f"Bearer {ha.key}"}
+    r = httpx.post(server + "/api/v1/assist", headers=h, timeout=30,
+                   json={"text": "turn the lights off", "room": "Office", "satellite": "Office Screen"}).json()
+    assert r["text"] == "The office lights are off."
+    assert "talking to you from the Office" in seen[-1] and "SPOKEN ALOUD" in seen[-1]
+    assert r["conversation_id"].endswith("~office")
+    # each room keeps its own history
+    httpx.post(server + "/api/v1/assist", headers=h, timeout=30, json={"text": "hello", "room": "Bedroom"})
+    assert "talking to you from the Bedroom" in seen[-1]
+    # announce to a room → the hub gets a 'say' carrying the room
+    got = []
+
+    async def run():
+        import websockets
+        async with websockets.connect(server.replace("http", "ws") + f"/api/v1/agent?key={ha.key}") as ws:
+            await ws.send(json.dumps({"type": "hello", "capabilities": [],
+                                      "info": {"rooms": ["Office", "Bedroom", "Lounge"]}}))
+            while True:
+                m = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                if m["type"] == "ready":
+                    break
+            other = _agent(server, admin, "Office PC 2", "desktop", tmp_path)
+            res = await asyncio.to_thread(other.call_tool, "announce", {"text": "Bedtime!", "device": "the bedroom"})
+            assert "Bedroom" in res
+            while True:
+                m = json.loads(await asyncio.wait_for(ws.recv(), 5))
+                if m["type"] == "say":
+                    got.append(m)
+                    break
+    asyncio.run(run())
+    assert got[0]["room"] == "Bedroom" and got[0]["text"] == "Bedtime!"
+
+
+def _ws_until(server, key, pred, actions=None, timeout=8):
+    """Open a live link, run `actions` once ready, return the first message where pred(msg)."""
+    async def run():
+        import websockets
+        async with websockets.connect(server.replace("http", "ws") + f"/api/v1/agent?key={key}") as ws:
+            await ws.send(json.dumps({"type": "hello", "capabilities": []}))
+            end = time.time() + timeout
+            fired = False
+            while time.time() < end:
+                m = json.loads(await asyncio.wait_for(ws.recv(), timeout))
+                if m["type"] == "ready" and not fired and actions:
+                    fired = True
+                    await asyncio.to_thread(actions)
+                    continue
+                if pred(m) and (fired or not actions):
+                    return m
+        return None
+    return asyncio.run(run())
+
+
+def test_timers_ring_on_the_device_and_stop(server, admin, tmp_path):
+    a = _agent(server, admin, "Timer Tablet", "tablet", tmp_path)
+    h = {"Authorization": f"Bearer {a.key}"}
+    box = {}
+
+    def set_it():
+        box["t"] = httpx.post(server + "/api/v1/timers", headers=h, json={"seconds": 1, "label": "pasta"}).json()
+    m = _ws_until(server, a.key, lambda m: m["type"] == "timer" and m.get("event") == "ring", set_it)
+    assert m and m["timer"]["label"] == "pasta" and "pasta timer is done" in m["text"]
+    assert httpx.post(server + f"/api/v1/timers/{box['t']['id']}", headers=h, json={"action": "stop"}).json()["ok"]
+    assert all(t["id"] != box["t"]["id"] for t in httpx.get(server + "/api/v1/timers", headers=h).json()["items"])
+    # by voice: set, list, cancel
+    say = lambda args: a.call_tool("timer", args)
+    assert "set for 10 minutes" in say({"action": "set", "minutes": 10, "label": "eggs"})
+    assert "eggs timer: 10 minutes left" in say({"action": "list"}) or "eggs timer: 9 minutes" in say({"action": "list"})
+    assert "Alarm set for" in say({"action": "alarm", "time": "6:30am", "days": "weekdays"})
+    assert "Stopped" in say({"action": "stop", "label": "eggs"})
+    assert "Stopped" in say({"action": "stop", "label": "alarm"})
+
+
+def test_lists_and_notes(server, admin, tmp_path):
+    a = _agent(server, admin, "List Phone", "phone", tmp_path)
+    h = {"Authorization": f"Bearer {a.key}"}
+    assert "milk, eggs" in a.call_tool("lists", {"action": "add", "items": "milk, eggs"}).lower()
+    assert "already" in a.call_tool("lists", {"action": "add", "items": "Milk"})
+    assert "Ticked off Eggs" in a.call_tool("lists", {"action": "done", "items": "eggs"})
+    shop = httpx.get(server + "/api/v1/lists", headers=h).json()["lists"]["shopping"]
+    assert [i["text"] for i in shop if not i["done"]] == ["Milk"]
+    assert "Cleared 1" in a.call_tool("lists", {"action": "clear"})
+    a.call_tool("lists", {"action": "add", "list": "my to-do list", "items": "fix the gate"})
+    assert "Fix the gate" in a.call_tool("lists", {"action": "show", "list": "todo"})
+    # notes
+    assert "Note left for Zoe" in a.call_tool("notes", {"action": "leave", "to": "Zoe", "text": "Feed the cat", "from": "Dad"})
+    a.call_tool("notes", {"action": "leave", "to": "everyone", "text": "Pizza night Friday"})
+    zoe = httpx.get(server + "/api/v1/notes", headers=h, params={"who": "Zoe"}).json()["items"]
+    assert {n["text"] for n in zoe} == {"Feed the cat", "Pizza night Friday"}
+    other = httpx.get(server + "/api/v1/notes", headers=h, params={"who": "Sam"}).json()["items"]
+    assert [n["text"] for n in other] == ["Pizza night Friday"]
+    assert "Marked 1" in a.call_tool("notes", {"action": "done", "text": "feed the cat"})
+
+
+def test_visual_id_enroll_identify_greet_and_prompt(server, admin, tmp_path, monkeypatch):
+    import base64
+    from ghost_server import faces, prompt, store
+
+    class FakeEngine:
+        def faces(self, jpeg):
+            v = {b"ADAM": [1, 0, 0], b"ADAM2": [0.95, 0.31, 0], b"GUEST": [0, 0, 1]}
+            return [] if jpeg == b"NOFACE" else [([10, 10, 100, 100], v[jpeg])]
+    monkeypatch.setattr(faces, "engine", FakeEngine())
+    img = lambda b: base64.b64encode(b).decode()
+    t = _agent(server, admin, "Kitchen Hub", "tablet", tmp_path)
+    h = {"Authorization": f"Bearer {t.key}"}
+    # adding someone needs the admin password
+    bad = httpx.post(server + "/api/v1/faces/enroll", headers=h,
+                     json={"name": "Adam", "image": img(b"ADAM"), "admin_password": "nope"})
+    assert bad.status_code == 403
+    r = httpx.post(server + "/api/v1/faces/enroll", headers=h,
+                   json={"name": "Adam", "image": img(b"ADAM"), "admin_password": "ghost-pass"}).json()
+    assert r["ok"] and r["samples"] == 1
+    r = httpx.post(server + "/api/v1/faces/enroll", headers=h,
+                   json={"name": "adam", "image": img(b"NOFACE"), "admin_password": "ghost-pass"}).json()
+    assert not r["ok"] and "couldn't see a face" in r["error"]
+    # recognised (a slightly different shot), greeted once, with personal notes
+    t.call_tool("notes", {"action": "leave", "to": "Adam", "text": "Bins go out tonight"})
+    r = httpx.post(server + "/api/v1/faces/identify", headers=h, json={"image": img(b"ADAM2")}).json()
+    assert r["people"][0]["name"] == "Adam" and r["greet"].endswith(", Adam")
+    assert any(n["text"] == "Bins go out tonight" for n in r["notes"])
+    again = httpx.post(server + "/api/v1/faces/identify", headers=h, json={"image": img(b"ADAM2")}).json()
+    assert "greet" not in again
+    # Ghost on this tablet now knows who it's talking to
+    sysmsg = prompt.build(dict(store.device_by_key(t.key)))
+    assert "recognises Adam" in sysmsg
+    assert "Adam at the Kitchen Hub" in t.call_tool("who_is_here", {})
+    # a stranger is a guest, and nothing about them is stored
+    r = httpx.post(server + "/api/v1/faces/identify", headers=h, json={"image": img(b"GUEST")}).json()
+    assert r["people"] == [] and r["guests"] == 1
+    assert "don't recognise" in prompt.build(dict(store.device_by_key(t.key)))
+    people = admin.get("/admin/api/people").json()["people"]
+    assert [(p["name"], p["samples"]) for p in people] == [("Adam", 1)]
+    # delete removes every print
+    admin.post(f"/admin/api/people/{people[0]['id']}", json={"delete": True})
+    r = httpx.post(server + "/api/v1/faces/identify", headers=h, json={"image": img(b"ADAM")}).json()
+    assert r["people"] == []
+
+
+def test_photo_frame(server, admin, tmp_path):
+    from PIL import Image
+    from ghost_server import photos
+    pics = tmp_path / "pics"
+    (pics / "2025").mkdir(parents=True)
+    Image.new("RGB", (3000, 2000), (200, 30, 30)).save(pics / "2025" / "beach.jpg")
+    Image.new("RGB", (800, 600), (30, 30, 200)).save(pics / "cat.png")
+    (pics / "notes.txt").write_text("not a photo")
+    admin.put("/admin/api/settings", json={"photo_folder": str(pics)})
+    photos._scan["at"] = 0
+    t = _agent(server, admin, "Photo Hub", "tablet", tmp_path)
+    lst = httpx.get(server + "/api/v1/photos", headers={"Authorization": f"Bearer {t.key}"}).json()
+    assert lst["found"] and lst["count"] == 2 and sorted(lst["photos"]) == [0, 1]
+    r = httpx.get(server + "/photos/0", params={"k": t.key, "w": 1200})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    import io
+    assert max(Image.open(io.BytesIO(r.content)).size) == 1200
+    assert httpx.get(server + "/photos/0", params={"k": "wrong"}).status_code == 401
+
+
+def test_timer_on_a_phone_is_spoken(server, admin, tmp_path):
+    p = _agent(server, admin, "Timer Phone", "phone", tmp_path)
+    h = {"Authorization": f"Bearer {p.key}"}
+    m = _ws_until(server, p.key, lambda m: m["type"] == "say" and m.get("from") == "timer",
+                  lambda: httpx.post(server + "/api/v1/timers", headers=h, json={"seconds": 1, "label": "tea"}))
+    assert m and m["urgent"] and "tea timer is done" in m["text"]

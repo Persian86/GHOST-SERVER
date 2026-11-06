@@ -1,0 +1,12 @@
+{
+  "domain": "ghost",
+  "name": "Ghost",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "after_dependencies": ["assist_satellite"],
+  "documentation": "https://github.com/Persian86/GHOST-SERVER",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "1.0.0"
+}
