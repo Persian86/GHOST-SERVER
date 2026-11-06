@@ -46,11 +46,15 @@ def server(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def admin(server):
-    c = httpx.Client(base_url=server)
+    c = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
     assert c.get("/admin/state").json()["needs_setup"] is True
     assert c.post("/admin/login", json={"password": "abc"}).status_code == 400      # too short
     assert c.post("/admin/login", json={"password": "ghost-pass"}).status_code == 200
     assert httpx.post(server + "/admin/login", json={"password": "wrong"}).status_code == 401
+    from ghost_server import security
+    security.reset_all()
+    # most tests pair devices directly; approval has its own test
+    assert c.put("/admin/api/settings", json={"approve_new_devices": False}).status_code == 200
     return c
 
 
@@ -701,6 +705,12 @@ def test_visual_id_enroll_identify_greet_and_prompt(server, admin, tmp_path, mon
     r = httpx.post(server + "/api/v1/faces/enroll", headers=h,
                    json={"name": "Adam", "image": img(b"ADAM"), "admin_password": "ghost-pass"}).json()
     assert r["ok"] and r["samples"] == 1
+    tk = r["ticket"]                       # the rest of the photos ride on the ticket (no password again)
+    r2 = httpx.post(server + "/api/v1/faces/enroll", headers=h,
+                    json={"name": "Adam", "image": img(b"ADAM"), "ticket": tk}).json()
+    assert r2["ok"] and r2["samples"] == 2
+    assert httpx.post(server + "/api/v1/faces/enroll", headers=h,
+                      json={"name": "Adam", "image": img(b"ADAM"), "ticket": "forged"}).status_code == 403
     r = httpx.post(server + "/api/v1/faces/enroll", headers=h,
                    json={"name": "adam", "image": img(b"NOFACE"), "admin_password": "ghost-pass"}).json()
     assert not r["ok"] and "couldn't see a face" in r["error"]
@@ -720,7 +730,7 @@ def test_visual_id_enroll_identify_greet_and_prompt(server, admin, tmp_path, mon
     assert r["people"] == [] and r["guests"] == 1
     assert "don't recognise" in prompt.build(dict(store.device_by_key(t.key)))
     people = admin.get("/admin/api/people").json()["people"]
-    assert [(p["name"], p["samples"]) for p in people] == [("Adam", 1)]
+    assert [(p["name"], p["samples"]) for p in people] == [("Adam", 2)]
     # delete removes every print
     admin.post(f"/admin/api/people/{people[0]['id']}", json={"delete": True})
     r = httpx.post(server + "/api/v1/faces/identify", headers=h, json={"image": img(b"ADAM")}).json()
@@ -753,3 +763,151 @@ def test_timer_on_a_phone_is_spoken(server, admin, tmp_path):
     m = _ws_until(server, p.key, lambda m: m["type"] == "say" and m.get("from") == "timer",
                   lambda: httpx.post(server + "/api/v1/timers", headers=h, json={"seconds": 1, "label": "tea"}))
     assert m and m["urgent"] and "tea timer is done" in m["text"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Security
+# ─────────────────────────────────────────────────────────────────────────────
+def test_admin_needs_csrf_header(server, admin):
+    bare = httpx.Client(base_url=server, cookies=admin.cookies)
+    assert bare.get("/admin/api/overview").status_code == 200                # reading is fine
+    assert bare.put("/admin/api/settings", json={"city": "Paris"}).status_code == 403
+    assert admin.put("/admin/api/settings", json={"city": "Melbourne"}).status_code == 200
+
+
+def test_admin_lockout(server, admin):
+    from ghost_server import security, store
+    security.reset_all()
+    for _ in range(5):
+        assert httpx.post(server + "/admin/login", json={"password": "nope"}).status_code == 401
+    r = httpx.post(server + "/admin/login", json={"password": "ghost-pass"})
+    assert r.status_code == 429 and "locked" in r.json()["detail"]
+    assert any("locked" in e["what"] for e in store.security_events(20))
+    security.reset_all()
+    assert httpx.post(server + "/admin/login", json={"password": "ghost-pass"}).status_code == 200
+
+
+def test_pairing_lockout(server, admin):
+    from ghost_server import security
+    security.reset_all()
+    for _ in range(5):
+        assert httpx.post(server + "/api/v1/pair", json={"code": "000000", "kind": "phone"}).status_code == 400
+    good = admin.post("/admin/api/pair-code").json()["code"]
+    r = httpx.post(server + "/api/v1/pair", json={"code": good, "kind": "phone"})
+    assert r.status_code == 429 and "paused" in r.json()["detail"]
+    security.reset_all()
+    assert httpx.post(server + "/api/v1/pair", json={"code": good, "kind": "phone"}).status_code == 200
+
+
+def test_two_step_login(server, admin):
+    from ghost_server import security
+    security.reset_all()
+    start = admin.post("/admin/api/2fa/start").json()
+    assert start["uri"].startswith("otpauth://totp/") and start["secret"]
+    assert "<svg" in start["qr"]
+    assert admin.post("/admin/api/2fa/enable", json={"code": "123456"}).status_code == 400
+    r = admin.post("/admin/api/2fa/enable", json={"code": security.totp_now(start["secret"])}).json()
+    codes = r["backup_codes"]
+    assert len(codes) == 8 and admin.get("/admin/state").json()["two_step"] is True
+    assert admin.get("/admin/api/security").json()["two_step"]["backup_left"] == 8
+
+    # password alone isn't enough any more
+    c = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
+    assert c.post("/admin/login", json={"password": "ghost-pass"}).json() == {"ok": False, "need_code": True}
+    assert c.post("/admin/login", json={"password": "ghost-pass", "code": "000000"}).status_code == 401
+    security._last_step["n"] = 0                      # the code used to switch it on can be used again here
+    ok = c.post("/admin/login", json={"password": "ghost-pass", "code": security.totp_now(start["secret"])})
+    assert ok.status_code == 200 and c.get("/admin/api/overview").status_code == 200
+    # the same code can't be replayed
+    c2 = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
+    assert c2.post("/admin/login", json={"password": "ghost-pass",
+                                         "code": security.totp_now(start["secret"])}).status_code == 401
+    # a backup code works once
+    assert c2.post("/admin/login", json={"password": "ghost-pass", "code": codes[0]}).status_code == 200
+    c3 = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
+    assert c3.post("/admin/login", json={"password": "ghost-pass", "code": codes[0]}).status_code == 401
+    assert admin.get("/admin/api/security").json()["two_step"]["backup_left"] == 7
+
+    # sessions: three browsers signed in; sign out the others
+    sess = admin.get("/admin/api/security").json()["sessions"]
+    assert len(sess) >= 3 and sum(s["this"] for s in sess) == 1
+    assert admin.post("/admin/api/sessions/others").json()["signed_out"] >= 2
+    assert c.get("/admin/api/overview").status_code == 401
+    assert admin.get("/admin/api/overview").status_code == 200
+
+    # turning it off needs the password and a code
+    assert admin.post("/admin/api/2fa/disable", json={"password": "ghost-pass"}).status_code == 403
+    assert admin.post("/admin/api/2fa/disable", json={"password": "ghost-pass", "code": codes[1]}).status_code == 200
+    assert admin.get("/admin/state").json()["two_step"] is False
+    security.reset_all()
+
+
+def test_device_approval_and_key_rotation(server, admin, tmp_path):
+    from ghost_server import store
+    admin.put("/admin/api/settings", json={"approve_new_devices": True})
+    try:
+        code = admin.post("/admin/api/pair-code").json()["code"]
+        p = httpx.post(server + "/api/v1/pair", json={"code": code, "name": "Bedroom Screen", "kind": "room"}).json()
+        assert p["approved"] is False
+        hdr = {"Authorization": "Bearer " + p["device_key"]}
+        r = httpx.get(server + "/api/v1/session", headers=hdr)
+        assert r.status_code == 403 and "approval" in r.json()["detail"]
+
+        async def ws_code():
+            import websockets
+            url = server.replace("http", "ws") + "/api/v1/agent?key=" + p["device_key"]
+            async with websockets.connect(url) as ws:
+                try:
+                    await ws.recv()
+                except websockets.ConnectionClosed as e:
+                    return e.rcvd.code if e.rcvd else None
+        assert asyncio.run(ws_code()) == 4403
+
+        sec = admin.get("/admin/api/security").json()
+        assert any(d["id"] == p["device_id"] for d in sec["pending"])
+        assert admin.post(f"/admin/api/devices/{p['device_id']}", json={"approve": True}).status_code == 200
+        s = httpx.get(server + "/api/v1/session", headers=hdr).json()
+        assert s["key"]["rotate_days"] == 30 and s["key"]["age_days"] < 1
+        assert httpx.get(server + "/api/v1/key", headers=hdr).json()["rotate_days"] == 30
+
+        # renew the key: new one works, old one still works for a grace period
+        new = httpx.post(server + "/api/v1/key/rotate", headers=hdr).json()["device_key"]
+        assert new != p["device_key"]
+        assert httpx.get(server + "/api/v1/session", headers={"Authorization": "Bearer " + new}).status_code == 200
+        assert httpx.get(server + "/api/v1/session", headers=hdr).status_code == 200
+        store.x("UPDATE devices SET prev_until = 0 WHERE id = ?", (p["device_id"],))
+        assert httpx.get(server + "/api/v1/session", headers=hdr).status_code == 401
+
+        # rejecting another waiting device
+        code = admin.post("/admin/api/pair-code").json()["code"]
+        q = httpx.post(server + "/api/v1/pair", json={"code": code, "name": "Stranger", "kind": "phone"}).json()
+        admin.post(f"/admin/api/devices/{q['device_id']}", json={"revoke": True})
+        assert httpx.get(server + "/api/v1/session",
+                         headers={"Authorization": "Bearer " + q["device_key"]}).status_code == 401
+        log = [e["what"] for e in admin.get("/admin/api/security").json()["log"]]
+        assert any("asked to join" in w for w in log) and any("approved" in w for w in log)
+        assert any("renewed its key" in w for w in log) and any("rejected" in w for w in log)
+    finally:
+        admin.put("/admin/api/settings", json={"approve_new_devices": False})
+
+
+def test_security_alert_reaches_owner_phone(server, admin, tmp_path):
+    from ghost_server import security
+    security.reset_all()
+    security._alerted.clear()
+    phone = _agent(server, admin, "Adam Alert Phone", "phone", tmp_path)
+    m = _ws_until(server, phone.key, lambda m: m.get("type") == "notify",
+                  actions=lambda: httpx.post(server + "/admin/login", json={"password": "bad"}))
+    assert m and "wrong" in m["text"].lower() and m["level"] == "security"
+    security.reset_all()
+
+
+def test_settings_log_names_not_values(server, admin):
+    from ghost_server import store
+    admin.put("/admin/api/settings", json={"anthropic_api_key": "sk-ant-very-secret-9999"})
+    e = store.security_events(5)
+    assert any("anthropic_api_key" in x["what"] for x in e)
+    assert not any("very-secret" in x["what"] for x in e)
+    assert "admin_totp_secret" not in admin.get("/admin/api/overview").json()["settings"]
+    assert admin.put("/admin/api/settings", json={"admin_totp_secret": "AAAA"}).status_code == 200
+    assert store.get("admin_totp_secret") in ("", None)

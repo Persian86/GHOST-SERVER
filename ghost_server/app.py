@@ -32,7 +32,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import __version__, cameras, chat, config, dashboard, faces, household, live, photos, prompt, quiet, store, tools
+from . import (__version__, cameras, chat, config, dashboard, faces, household, live, photos, prompt, quiet,
+               security, store, tools)
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -54,8 +55,6 @@ async def _lifespan(_app):
 
 app = FastAPI(title="Ghost Server", version=__version__, lifespan=_lifespan)
 STATIC = Path(__file__).parent / "static"
-_admin_sessions: dict[str, float] = {}
-ADMIN_TTL = 7 * 86400
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,10 +66,28 @@ def _key_from(authorization: str | None, k: str | None = None) -> str:
     return (k or "").strip()
 
 
-def device_auth(authorization: str | None = Header(None)) -> dict:
+def _ip(request) -> str:
+    return getattr(getattr(request, "client", None), "host", "") or ""
+
+
+WAITING = "Waiting for approval — approve this device on the Ghost Server admin page (Security)"
+
+
+def _check_device(row, ip: str) -> None:
+    """Shared by the HTTP API and the live link: approval, and "used from a new address" alerts."""
+    if not row["approved"]:
+        raise HTTPException(403, WAITING)
+    if ip and store.note_ip(row["id"], ip):
+        security.log(f"{row['name']} connected from a new address", ip, "warn", row["id"],
+                     alert=f"{row['name']} just connected from a new address ({ip}). If that wasn't you, "
+                           "remove it on the admin page.", alert_key="ip:" + row["id"], every=3600)
+
+
+def device_auth(request: Request, authorization: str | None = Header(None)) -> dict:
     row = store.device_by_key(_key_from(authorization))
     if row is None:
         raise HTTPException(401, "Unknown or revoked device key — pair this device again")
+    _check_device(row, _ip(request))
     store.touch_device(row["id"])
     return {"id": row["id"], "name": row["name"], "kind": row["kind"]}
 
@@ -90,10 +107,35 @@ def _pw_ok(pw: str, stored: str) -> bool:
 
 
 def admin_auth(request: Request) -> bool:
-    tok = request.cookies.get("ghost_admin", "")
-    if tok and _admin_sessions.get(tok, 0) > time.time():
-        return True
-    raise HTTPException(401, "Admin login needed")
+    if not security.session_ok(request.cookies.get("ghost_admin", "")):
+        raise HTTPException(401, "Admin login needed")
+    # another web page can't make your browser change things here: it can't add this header
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-ghost-admin") != "1":
+        raise HTTPException(403, "Missing X-Ghost-Admin header")
+    return True
+
+
+def _admin_password_check(pw: str, code: str, ip: str, what: str) -> None:
+    """Password (+ two-step code if on) for actions outside the admin page, e.g. adding a
+    person on the tablet. Wrong tries count towards the same lockout as the login page."""
+    left = security.locked_for("admin", ip)
+    if left:
+        raise HTTPException(429, f"Too many wrong tries — wait {security.lock_words(left)}")
+    stored = str(store.get("admin_password_hash") or "")
+    ok = bool(stored) and _pw_ok(pw, stored)
+    if ok and security.two_step_on():
+        ok = bool(security.check_second_step(code))
+    if not ok:
+        if security.fail("admin", ip):
+            security.log(f"Admin page locked for 15 minutes ({what})", ip, "bad",
+                         alert="Too many wrong admin passwords — the admin page is locked for 15 minutes.",
+                         alert_key="lock:admin")
+        else:
+            security.log(f"Wrong admin password or code ({what})", ip, "bad",
+                         alert="Someone typed a wrong Ghost admin password.", alert_key="fail:admin")
+        raise HTTPException(403, "That isn't the admin password" +
+                            (" and code" if security.two_step_on() else ""))
+    security.clear("admin", ip)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,13 +147,52 @@ def health():
 
 
 @app.post("/api/v1/pair")
-async def pair(body: dict):
+async def pair(body: dict, request: Request):
+    ip = _ip(request)
+    left = security.locked_for("pair", ip)
+    if left:
+        raise HTTPException(429, f"Pairing is paused after too many wrong codes — try again in "
+                                 f"{security.lock_words(left)}")
     got = store.redeem_pair_code(str(body.get("code", "")), str(body.get("name", "")),
                                  str(body.get("kind", "agent")), body.get("info") or {})
     if not got:
+        if security.fail("pair", ip):
+            security.log("Wrong pairing codes, pairing paused for 10 minutes", ip, "bad",
+                         alert="Several wrong pairing codes were tried — pairing is paused for 10 minutes.",
+                         alert_key="lock:pair")
+        else:
+            security.log("Wrong pairing code", ip, "bad")
         raise HTTPException(400, "That pairing code is wrong or has expired — make a new one on the admin page")
+    security.clear("pair", ip)
     did, key = got
-    return {"device_id": did, "device_key": key, "assistant_name": store.get("assistant_name")}
+    name = str(body.get("name") or body.get("kind") or "device")[:60]
+    store.note_ip(did, ip)
+    approved = bool(store.device(did)["approved"])
+    if approved:
+        security.log(f"{name} paired", ip, "ok", did)
+    else:
+        security.log(f"{name} asked to join (waiting)", ip, "warn", did,
+                     alert=f"{name} wants to join Ghost — approve or reject it on the admin page (Security).",
+                     alert_key="join:" + did)
+    return {"device_id": did, "device_key": key, "assistant_name": store.get("assistant_name"),
+            "approved": approved, **({} if approved else {"message": WAITING})}
+
+
+@app.get("/api/v1/key")
+def key_info(dev: dict = Depends(device_auth)):
+    """How old this device's key is, and how often the server wants it renewed."""
+    d = store.device(dev["id"])
+    return {"rotate_days": int(store.get("key_rotate_days") or 30),
+            "age_days": round((time.time() - float(d["key_at"] or d["created_at"] or 0)) / 86400, 1)}
+
+
+@app.post("/api/v1/key/rotate")
+def key_rotate(request: Request, dev: dict = Depends(device_auth)):
+    """The device swaps its key for a fresh one (apps do this every key_rotate_days). The old
+    key keeps working for a day in case this reply is lost."""
+    key = store.rotate_key(dev["id"])
+    security.log(f"{dev['name']} renewed its key", _ip(request), "ok", dev["id"])
+    return {"device_key": key, "rotate_days": int(store.get("key_rotate_days") or 30)}
 
 
 @app.get("/api/v1/session")
@@ -126,6 +207,8 @@ async def session(dev: dict = Depends(device_auth)):
         "server_tools": tools.declarations("live"),
         "gemini": creds,
         "server_time": time.time(),
+        "key": {"rotate_days": int(store.get("key_rotate_days") or 30),
+                "age_days": round((time.time() - float(d.get("key_at") or d.get("created_at") or 0)) / 86400, 1)},
     }
     # Away mode: phones and tablets keep a copy of the Gemini key so they can still
     # talk (with their own tools + web search) when they can't reach the server.
@@ -273,21 +356,35 @@ async def faces_identify(body: dict, dev: dict = Depends(device_auth)):
     return r
 
 
+_enrol_tickets: dict[str, tuple[str, float]] = {}
+
+
 @app.post("/api/v1/faces/enroll")
-async def faces_enroll(body: dict, dev: dict = Depends(device_auth)):
+async def faces_enroll(body: dict, request: Request, dev: dict = Depends(device_auth)):
     """Adding a person needs the admin password, so a visitor can't teach Ghost to call them you."""
-    stored = str(store.get("admin_password_hash") or "")
-    if not stored or not _pw_ok(str(body.get("admin_password") or ""), stored):
-        raise HTTPException(403, "That isn't the admin password")
+    # the first photo needs the password (+ code); the rest of that session uses the ticket it gets back,
+    # because a two-step code can only be used once
+    tk = str(body.get("ticket") or "")
+    held = _enrol_tickets.get(tk)
+    if not (held and held[0] == dev["id"] and held[1] > time.time()):
+        await asyncio.to_thread(_admin_password_check, str(body.get("admin_password") or ""),
+                                str(body.get("admin_code") or ""), _ip(request), "adding a person")
+        tk = secrets.token_urlsafe(16)
+        for k in [k for k, v in _enrol_tickets.items() if v[1] < time.time()]:
+            _enrol_tickets.pop(k, None)
+        _enrol_tickets[tk] = (dev["id"], time.time() + 600)
     try:
         r = await asyncio.to_thread(faces.enroll, str(body.get("name") or ""), body.get("image") or "")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(503, f"Visual ID isn't working on the server: {e}")
+    if r.get("ok"):
+        security.log(f"Visual ID: {str(body.get('name') or 'someone')[:40]} added on {dev['name']}", _ip(request), "ok",
+                     dev["id"])
     if r.get("ok") and not store.get("faces_enabled"):
         store.put("faces_enabled", True)
-    return r
+    return {**r, "ticket": tk}
 
 
 # ── photo frame ──────────────────────────────────────────────────────────────
@@ -524,8 +621,7 @@ async def devices_ep(dev: dict = Depends(device_auth)):
 async def get_file(fid: str, request: Request, k: str = "", authorization: str | None = Header(None)):
     ok = store.device_by_key(_key_from(authorization, k)) is not None
     if not ok:
-        tok = request.cookies.get("ghost_admin", "")
-        ok = _admin_sessions.get(tok, 0) > time.time()
+        ok = security.session_ok(request.cookies.get("ghost_admin", ""))
     if not ok:
         raise HTTPException(401, "Not allowed")
     f = store.file(fid)
@@ -537,8 +633,16 @@ async def get_file(fid: str, request: Request, k: str = "", authorization: str |
 @app.websocket("/api/v1/agent")
 async def agent_ws(ws: WebSocket, key: str = ""):
     row = store.device_by_key(key or _key_from(ws.headers.get("authorization")))
+    # accept first so the app sees a close code it understands (a refused handshake is just "HTTP 403")
     if row is None:
+        await ws.accept()
         await ws.close(code=4401, reason="bad device key")
+        return
+    try:
+        _check_device(row, _ip(ws))
+    except HTTPException:
+        await ws.accept()
+        await ws.close(code=4403, reason="waiting for approval")
         return
     await ws.accept()
     conn = AgentConn(device_id=row["id"], name=row["name"], kind=row["kind"], ws=ws,
@@ -587,27 +691,149 @@ def admin_page():
 
 @app.get("/admin/state")
 def admin_state(request: Request):
-    tok = request.cookies.get("ghost_admin", "")
     return {"needs_setup": not store.get("admin_password_hash"),
-            "logged_in": _admin_sessions.get(tok, 0) > time.time()}
+            "logged_in": security.session_ok(request.cookies.get("ghost_admin", ""), touch=False),
+            "two_step": security.two_step_on()}
+
+
+def _locked_out(ip: str) -> None:
+    left = security.locked_for("admin", ip)
+    if left:
+        raise HTTPException(429, f"Too many wrong tries — the admin page is locked for {security.lock_words(left)}")
+
+
+def _wrong(ip: str, what: str) -> None:
+    if security.fail("admin", ip):
+        security.log("Admin page locked for 15 minutes after wrong tries", ip, "bad",
+                     alert="Too many wrong admin passwords — the admin page is locked for 15 minutes.",
+                     alert_key="lock:admin")
+    else:
+        security.log(what, ip, "bad", alert="Someone typed a wrong Ghost admin password.", alert_key="fail:admin")
+    time.sleep(1)
 
 
 @app.post("/admin/login")
-def admin_login(body: dict):
+def admin_login(body: dict, request: Request):
+    ip = _ip(request)
+    _locked_out(ip)
     pw = str(body.get("password", ""))
     stored = store.get("admin_password_hash")
+    how = "password"
     if not stored:
-        if len(pw) < 6:
-            raise HTTPException(400, "Choose a password of at least 6 characters")
+        if len(pw) < 8:
+            raise HTTPException(400, "Choose a password of at least 8 characters")
         store.put("admin_password_hash", _pw_hash(pw))
+        security.log("Admin password set", ip)
     elif not _pw_ok(pw, stored):
-        time.sleep(1)
+        _wrong(ip, "Wrong admin password")
         raise HTTPException(401, "Wrong password")
-    tok = secrets.token_urlsafe(24)
-    _admin_sessions[tok] = time.time() + ADMIN_TTL
+    elif security.two_step_on():
+        code = str(body.get("code") or "").strip()
+        if not code:
+            return {"ok": False, "need_code": True}
+        how = security.check_second_step(code)
+        if not how:
+            _wrong(ip, "Wrong 2-step code")
+            raise HTTPException(401, "That code isn't right — check the time on your phone, or use a backup code")
+        how = "2-step code" if how == "app" else "a backup code"
+    security.clear("admin", ip)
+    tok = security.new_session(ip, request.headers.get("user-agent", ""))
+    security.log(f"Admin signed in with {how}", ip, "ok")
+    if how == "a backup code":
+        security.notify(f"A backup code was used to sign in to the Ghost admin page. "
+                        f"{security.backup_left()} left.")
     r = JSONResponse({"ok": True})
-    r.set_cookie("ghost_admin", tok, max_age=ADMIN_TTL, httponly=True, samesite="lax")
+    r.set_cookie("ghost_admin", tok, max_age=security.TTL, httponly=True, samesite="strict")
     return r
+
+
+@app.post("/admin/logout")
+def admin_logout(request: Request):
+    security.end_session(request.cookies.get("ghost_admin", ""))
+    r = JSONResponse({"ok": True})
+    r.delete_cookie("ghost_admin")
+    return r
+
+
+@app.post("/admin/api/password")
+def admin_password(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    ip = _ip(request)
+    _locked_out(ip)
+    if not _pw_ok(str(body.get("current") or ""), str(store.get("admin_password_hash") or "")):
+        _wrong(ip, "Wrong admin password (changing password)")
+        raise HTTPException(403, "The current password isn't right")
+    new = str(body.get("new") or "")
+    if len(new) < 8:
+        raise HTTPException(400, "Choose a password of at least 8 characters")
+    store.put("admin_password_hash", _pw_hash(new))
+    n = security.end_others(request.cookies.get("ghost_admin", ""))
+    security.log("Admin password changed", ip, "ok", alert="The Ghost admin password was changed.")
+    return {"ok": True, "signed_out": n}
+
+
+# ── security tab ─────────────────────────────────────────────────────────────
+@app.get("/admin/api/security")
+def admin_security(request: Request, _: bool = Depends(admin_auth)):
+    return security.overview(request.cookies.get("ghost_admin", ""))
+
+
+@app.post("/admin/api/2fa/start")
+def twofa_start(request: Request, _: bool = Depends(admin_auth)):
+    return security.start_setup(request.cookies.get("ghost_admin", ""))
+
+
+@app.post("/admin/api/2fa/enable")
+def twofa_enable(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    codes = security.finish_setup(request.cookies.get("ghost_admin", ""), str(body.get("code") or ""))
+    if codes is None:
+        raise HTTPException(400, "That code isn't right — scan the QR code again and type the 6 digits you see")
+    security.log("Two-step login turned on", _ip(request), "ok", alert="Two-step login was turned on for the admin page.")
+    return {"ok": True, "backup_codes": codes}
+
+
+def _reauth(body: dict, request: Request, what: str) -> None:
+    ip = _ip(request)
+    _locked_out(ip)
+    ok = _pw_ok(str(body.get("password") or ""), str(store.get("admin_password_hash") or ""))
+    if ok and security.two_step_on():
+        ok = bool(security.check_second_step(str(body.get("code") or "")))
+    if not ok:
+        _wrong(ip, f"Wrong password or code ({what})")
+        raise HTTPException(403, "Password or code isn't right")
+
+
+@app.post("/admin/api/2fa/disable")
+def twofa_disable(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    _reauth(body, request, "turning off 2-step login")
+    security.turn_off()
+    security.log("Two-step login turned off", _ip(request), "warn",
+                 alert="Two-step login was turned OFF for the Ghost admin page.")
+    return {"ok": True}
+
+
+@app.post("/admin/api/2fa/backup-codes")
+def twofa_backup(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    _reauth(body, request, "new backup codes")
+    if not security.two_step_on():
+        raise HTTPException(400, "Two-step login is off")
+    security.log("New backup codes made (old ones stop working)", _ip(request), "ok")
+    return {"ok": True, "backup_codes": security.new_backup_codes()}
+
+
+@app.post("/admin/api/sessions/others")
+def sessions_others(request: Request, _: bool = Depends(admin_auth)):
+    n = security.end_others(request.cookies.get("ghost_admin", ""))
+    security.log(f"Signed out {n} other browser{'s' if n != 1 else ''}", _ip(request), "ok")
+    return {"ok": True, "signed_out": n}
+
+
+@app.post("/admin/api/sessions/{sid}/end")
+def session_end(sid: str, request: Request, _: bool = Depends(admin_auth)):
+    full = security.session_by_short(sid)
+    if not full or not security.end_session(sid=full):
+        raise HTTPException(404, "No such browser")
+    security.log("Signed out a browser", _ip(request), "ok")
+    return {"ok": True}
 
 
 @app.get("/admin/api/overview")
@@ -626,26 +852,45 @@ def overview(_: bool = Depends(admin_auth)):
 
 
 @app.put("/admin/api/settings")
-def save_settings(body: dict, _: bool = Depends(admin_auth)):
+def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    changed = []
     for k, v in body.items():
-        if k not in store.DEFAULTS or k == "admin_password_hash":
+        if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
             continue
         if k in store.SECRET_KEYS and (v is None or str(v).startswith("•••")):
             continue                      # untouched masked secret
+        if store.get(k) != v:
+            changed.append(k)
         store.put(k, v)
+    if changed:                           # names only — never the values (keys, tokens)
+        sec = {"approve_new_devices", "security_alerts"}
+        off = [k for k in sec & set(changed) if not body.get(k)]
+        security.log("Settings changed: " + ", ".join(sorted(changed))[:180], _ip(request),
+                     "warn" if off else "ok",
+                     alert=("Security setting turned off: " + ", ".join(off)) if off else "")
     if any(k.startswith(("quiet_", "safety_")) for k in body):
         quiet.tick_soon()
     return {"ok": True, "settings": store.all_settings()}
 
 
 @app.post("/admin/api/pair-code")
-def pair_code(_: bool = Depends(admin_auth)):
-    return {"code": store.new_pair_code(10), "expires_in": 600}
+def pair_code(request: Request, _: bool = Depends(admin_auth)):
+    security.log("Pairing code made", _ip(request))
+    return {"code": store.new_pair_code(10), "expires_in": 600,
+            "needs_approval": bool(store.get("approve_new_devices"))}
 
 
 @app.post("/admin/api/devices/{did}")
-def device_edit(did: str, body: dict, _: bool = Depends(admin_auth)):
+def device_edit(did: str, body: dict, request: Request, _: bool = Depends(admin_auth)):
+    cur = store.device(did)
+    if cur is None:
+        raise HTTPException(404, "No such device")
+    if body.get("approve") and not body.get("revoke"):
+        store.approve_device(did)
+        store.x("UPDATE devices SET key_at = ? WHERE id = ? AND key_at = 0", (time.time(), did))
+        security.log(f"{cur['name']} approved", _ip(request), "ok", did)
     if body.get("revoke"):
+        security.log(f"{cur['name']} {'rejected' if not cur['approved'] else 'removed'}", _ip(request), "ok", did)
         store.revoke_device(did)
         c = hub.conns.get(did)
         if c:

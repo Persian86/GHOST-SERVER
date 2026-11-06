@@ -50,7 +50,9 @@
   <h1 style="color:var(--pri);letter-spacing:.14em;margin:0 0 4px">GHOST</h1>
   <div class="muted" id="loginHint">Home server</div>
   <label>Password</label>
-  <input id="pw" type="password" autofocus>
+  <input id="pw" type="password" autofocus autocomplete="current-password">
+  <div id="codeRow" class="hidden"><label>6-digit code from your authenticator app (or a backup code)</label>
+  <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123 456"></div>
   <div class="row" style="margin-top:14px"><button class="b p" onclick="login()">Continue</button></div>
   <div class="status bad" id="loginErr"></div>
 </div>
@@ -186,6 +188,37 @@
       <h2>Recently seen</h2><div class="card"><table id="seen"></table></div>
     </section>
 
+    <section data-tab="Security">
+      <div class="card" id="secBanner" style="margin-bottom:14px"></div>
+      <div class="grid">
+        <div class="card"><h3>Two-step login</h3>
+          <div class="muted">Signing in needs your password <i>and</i> a 6-digit code from an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password…).</div>
+          <div id="tfa" style="margin-top:10px"></div><div class="status" id="tfaStatus"></div></div>
+        <div class="card"><h3>Lockout</h3>
+          <div class="muted">5 wrong passwords or codes lock the admin page for 15 minutes. 5 wrong pairing codes pause pairing for 10 minutes.</div>
+          <div id="lockInfo" style="margin-top:10px"></div></div>
+        <div class="card"><h3>Signed-in browsers</h3><table id="sess"></table>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="signOutOthers()">Sign out everywhere else</button>
+          <button class="b" onclick="logout()">Sign out</button></div></div>
+        <div class="card"><h3>Waiting for approval</h3>
+          <div class="muted">New devices can't do anything until you approve them here.</div>
+          <table id="pending" style="margin-top:6px"></table>
+          <label><input type="checkbox" style="width:auto" id="s_approve" onchange="secSet('approve_new_devices', this.checked)"> New devices must be approved</label></div>
+        <div class="card"><h3>Device keys</h3>
+          <div class="muted">Each device swaps its key for a fresh one every <span id="rotDays">30</span> days. The apps keep theirs sealed in Android Keystore or Windows DPAPI.</div>
+          <table id="keys" style="margin-top:6px"></table></div>
+        <div class="card"><h3>Security alerts</h3>
+          <div class="muted">Failed logins and lockouts · a new device asks to join · a device key is used from a new address. Sent to your own phone (they get through Do Not Disturb).</div>
+          <label><input type="checkbox" style="width:auto" id="s_alerts" onchange="secSet('security_alerts', this.checked)"> Send security alerts</label></div>
+        <div class="card"><h3>Admin password</h3>
+          <label>Current password</label><input id="pwOld" type="password" autocomplete="current-password">
+          <label>New password (8+ characters)</label><input id="pwNew" type="password" autocomplete="new-password">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="changePw()">Change password</button></div>
+          <div class="status" id="pwStatus"></div></div>
+      </div>
+      <h2>Security log</h2><div class="card"><table id="secLog"></table></div>
+    </section>
+
     <section data-tab="Activity">
       <h2>Tasks</h2><div class="card"><table id="tasks"></table></div>
       <h2>Files Ghost made</h2><div class="card"><table id="files"></table></div>
@@ -206,13 +239,16 @@
 </div>
 
 <script>
-const TABS = ["Devices", "Brain & keys", "Memory", "People", "Activity", "Talk"];
+const TABS = ["Devices", "Brain & keys", "Memory", "People", "Security", "Activity", "Talk"];
 let tab = "Devices", data = null;
 const $ = s => document.querySelector(s), val = id => document.getElementById(id).value.trim();
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// names come from devices that pair themselves, so never put them inside onclick="…" — pass ids and look names up
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const devName = id => ((data && data.devices || []).find(d => d.id === id) || {}).name || "this device";
 const ago = t => { const s = Date.now()/1000 - t; return s < 90 ? "just now" : s < 3600 ? Math.round(s/60)+" min ago" : s < 86400 ? Math.round(s/3600)+" h ago" : Math.round(s/86400)+" d ago"; };
 async function api(path, opts = {}) {
-  const r = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
+  // X-Ghost-Admin: the server refuses changes without it, so another web page can't use this login
+  const r = await fetch(path, {headers: {"Content-Type": "application/json", "X-Ghost-Admin": "1"}, ...opts});
   if (r.status === 401 && !path.startsWith("/admin/login")) { show("login"); throw new Error("login"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || r.statusText);
@@ -228,28 +264,38 @@ async function boot() {
   show("app"); drawTabs(); await refresh(); setInterval(refresh, 8000);
 }
 async function login() {
-  try { await api("/admin/login", {method: "POST", body: JSON.stringify({password: $("#pw").value})}); boot(); }
-  catch (e) { $("#loginErr").textContent = e.message; }
+  $("#loginErr").textContent = "";
+  try {
+    const r = await api("/admin/login", {method: "POST", body: JSON.stringify({password: $("#pw").value, code: $("#code").value})});
+    if (r.need_code) { $("#codeRow").classList.remove("hidden"); $("#code").focus(); return; }
+    $("#pw").value = ""; $("#code").value = ""; $("#codeRow").classList.add("hidden"); boot();
+  } catch (e) { $("#loginErr").textContent = e.message; }
 }
 $("#pw").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+$("#code").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
 function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if (t === "Security") drawSecurity(); }
 async function refresh() {
   data = await api("/admin/api/overview");
   const on = data.devices.filter(d => d.online).length;
   $("#hdr").textContent = `v${data.version} · ${on}/${data.devices.length} devices online · ${data.tools.length} tools`;
   $("#srvAddr").textContent = location.origin;
-  $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => `
+  if (tab === "Security") drawSecurity();
+  $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
+    <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
+      <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
+      <div class="row" style="margin-top:10px"><button class="b p" onclick="approve('${d.id}')">Approve</button>
+        <button class="b danger" onclick="reject('${d.id}')">Reject</button></div></div>` : `
     <div class="card"><h3><span class="dot ${d.online?'on':''}"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · ${d.online ? "online" : "last seen " + ago(d.last_seen)}${d.info && d.info.battery!=null ? " · battery " + d.info.battery + "%" : ""}</div>
       <div class="chips">${(d.capabilities||[]).map(c => `<span>${esc(c.name)}</span>`).join("") || '<span>no device tools yet</span>'}</div>
       <div class="row" style="margin-top:10px">
         <button class="b" onclick="rename('${d.id}')">Rename</button>
         <button class="b" onclick="sayTo('${d.id}')">Say…</button>
-        <button class="b danger" onclick="revoke('${d.id}','${esc(d.name)}')">Remove</button></div></div>`).join("")
+        <button class="b danger" onclick="revoke('${d.id}')">Remove</button></div></div>`).join("")
     || '<div class="muted">No devices yet — make a pairing code.</div>';
   if (!formFilled) fillForm();
   $("#facts").innerHTML = data.facts.map(f => `<tr><td class="muted" style="width:110px">${esc(f.section)}</td><td>${esc(f.text)}</td><td style="width:60px"><button class="b danger" onclick="mem({delete_fact:${f.id}})">✕</button></td></tr>`).join("") || "<tr><td class='muted'>Nothing yet.</td></tr>";
@@ -278,6 +324,86 @@ function markDirty(on) {
 document.addEventListener("input", e => { if (e.target.dataset && e.target.dataset.k) markDirty(true); });
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 async function makeCode() { const r = await api("/admin/api/pair-code", {method: "POST"}); $("#pairCode").textContent = r.code; }
+// ── Security tab ──────────────────────────────────────────────────────────────
+let sec = null, tfaSetup = null, shownCodes = null;
+async function drawSecurity() {
+  sec = await api("/admin/api/security");
+  const t = sec.two_step, warn = [];
+  if (!t.on) warn.push("two-step login is off");
+  if (!sec.settings.approve_new_devices) warn.push("new devices don't need approval");
+  if (!sec.settings.security_alerts) warn.push("security alerts are off");
+  $("#secBanner").innerHTML = warn.length
+    ? `<span style="color:var(--warn)">●</span> Could be safer: ${warn.join(" · ")}`
+    : `<span class="ok">●</span> All protections on`;
+  if (shownCodes) {
+    $("#tfa").innerHTML = `<div class="ok">Save these backup codes somewhere safe — each one works once if you lose your phone. They won't be shown again.</div>
+      <div style="font:600 16px/1.9 ui-monospace,monospace;columns:2;margin:8px 0">${shownCodes.map(esc).join("<br>")}</div>
+      <button class="b p" onclick="shownCodes=null;drawSecurity()">I've saved them</button>`;
+  } else if (t.on) {
+    $("#tfa").innerHTML = `<div class="ok">On · set up ${new Date(t.since*1000).toLocaleDateString()}</div>
+      <div class="muted">Backup codes: ${t.backup_left} left</div>
+      <div class="row" style="margin-top:10px"><button class="b" onclick="newBackup()">New backup codes</button>
+      <button class="b danger" onclick="tfaOff()">Turn off</button></div>`;
+  } else if (tfaSetup) {
+    $("#tfa").innerHTML = `<div class="muted">1. Scan this with your authenticator app</div>
+      <div style="margin:8px 0">${tfaSetup.qr || ""}</div>
+      <div class="muted">or type this key: <b style="font-family:ui-monospace,monospace;letter-spacing:.08em">${esc(tfaSetup.secret.match(/.{1,4}/g).join(" "))}</b></div>
+      <label>2. Type the 6-digit code it shows</label><input id="tfaCode" inputmode="numeric" autocomplete="one-time-code">
+      <div class="row" style="margin-top:10px"><button class="b p" onclick="tfaEnable()">Turn on</button><button class="b" onclick="tfaSetup=null;drawSecurity()">Cancel</button></div>`;
+  } else {
+    $("#tfa").innerHTML = `<span style="color:var(--warn)">Off</span><div class="row" style="margin-top:10px"><button class="b p" onclick="tfaStart()">Set up two-step login</button></div>`;
+  }
+  $("#lockInfo").innerHTML = sec.lockouts_7d ? `<span class="bad">${sec.lockouts_7d} lockout${sec.lockouts_7d>1?"s":""} in the last 7 days</span>` : `<span class="ok">No lockouts in the last 7 days</span>`;
+  $("#sess").innerHTML = sec.sessions.map(s => `<tr><td>${s.this ? "<b>This browser</b> · " : ""}${esc(s.browser)}<div class="muted">${esc(s.ip)}</div></td>
+    <td class="muted" style="width:90px">${s.this ? "now" : ago(s.seen)}</td>
+    <td style="width:80px">${s.this ? "" : `<button class="b" onclick="endSess('${s.id}')">Sign out</button>`}</td></tr>`).join("");
+  $("#pending").innerHTML = sec.pending.map(d => `<tr><td><b>${esc(d.name)}</b><div class="muted">${esc(d.kind)}${d.ip ? " · " + esc(d.ip) : ""} · ${esc(d.asked)}</div></td>
+    <td style="width:170px"><button class="b p" onclick="approve('${d.id}')">Approve</button> <button class="b danger" onclick="reject('${d.id}')">Reject</button></td></tr>`).join("")
+    || "<tr><td class='muted'>Nobody waiting.</td></tr>";
+  $("#s_approve").checked = !!sec.settings.approve_new_devices;
+  $("#s_alerts").checked = !!sec.settings.security_alerts;
+  $("#rotDays").textContent = sec.settings.key_rotate_days;
+  $("#keys").innerHTML = sec.keys.filter(k => k.id !== "dev_admin").map(k => `<tr><td>${esc(k.name)}</td><td class="muted" style="width:150px">renewed ${esc(k.renewed_text)}</td></tr>`).join("")
+    || "<tr><td class='muted'>No devices.</td></tr>";
+  const col = {ok: "", warn: "color:var(--warn)", bad: "color:var(--bad)"};
+  $("#secLog").innerHTML = `<tr><td class="muted">When</td><td class="muted">What</td><td class="muted">From</td></tr>` +
+    (sec.log.map(e => `<tr><td class="muted" style="width:110px">${ago(e.at)}</td><td style="${col[e.level]||""}">${esc(e.what)}</td><td class="muted" style="width:130px">${esc(e.ip||"—")}</td></tr>`).join("")
+     || "<tr><td class='muted' colspan=3>Nothing yet.</td></tr>");
+}
+function secMsg(t, ok) { $("#tfaStatus").innerHTML = t ? `<span class="${ok?"ok":"bad"}">${esc(t)}</span>` : ""; }
+async function tfaStart() { tfaSetup = await api("/admin/api/2fa/start", {method: "POST"}); secMsg(""); drawSecurity(); }
+async function tfaEnable() {
+  try { const r = await api("/admin/api/2fa/enable", {method: "POST", body: JSON.stringify({code: val("tfaCode")})});
+        tfaSetup = null; shownCodes = r.backup_codes; secMsg("Two-step login is on.", true); drawSecurity(); }
+  catch (e) { secMsg(e.message); }
+}
+function askPwCode() {
+  const password = prompt("Admin password"); if (!password) return null;
+  const code = prompt("6-digit code from your authenticator app (or a backup code)"); if (!code) return null;
+  return {password, code};
+}
+async function tfaOff() {
+  if (!confirm("Turn off two-step login? Signing in will only need the password.")) return;
+  const b = askPwCode(); if (!b) return;
+  try { await api("/admin/api/2fa/disable", {method: "POST", body: JSON.stringify(b)}); secMsg("Two-step login is off."); drawSecurity(); }
+  catch (e) { secMsg(e.message); }
+}
+async function newBackup() {
+  const b = askPwCode(); if (!b) return;
+  try { shownCodes = (await api("/admin/api/2fa/backup-codes", {method: "POST", body: JSON.stringify(b)})).backup_codes; drawSecurity(); }
+  catch (e) { secMsg(e.message); }
+}
+async function signOutOthers() { const r = await api("/admin/api/sessions/others", {method: "POST"}); drawSecurity(); }
+async function endSess(id) { await api(`/admin/api/sessions/${id}/end`, {method: "POST"}); drawSecurity(); }
+async function logout() { await api("/admin/logout", {method: "POST"}); location.reload(); }
+async function secSet(k, v) { await api("/admin/api/settings", {method: "PUT", body: JSON.stringify({[k]: v})}); data.settings[k] = v; drawSecurity(); }
+async function approve(id) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({approve: true})}); refresh(); if (tab === "Security") drawSecurity(); }
+async function reject(id) { const name = devName(id); if (confirm(`Reject ${name}? It won't be able to connect.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
+async function changePw() {
+  try { const r = await api("/admin/api/password", {method: "POST", body: JSON.stringify({current: val("pwOld"), new: val("pwNew")})});
+        $("#pwOld").value = $("#pwNew").value = ""; $("#pwStatus").innerHTML = `<span class="ok">Changed. ${r.signed_out} other browser(s) signed out.</span>`; }
+  catch (e) { $("#pwStatus").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
 async function saveSettings() {
   const body = {};
   document.querySelectorAll("[data-k]").forEach(el => body[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value);
@@ -297,21 +423,23 @@ async function test(what, btn) {
 }
 async function drawPeople() {
   const r = await api("/admin/api/people");
+  peopleList = r.people;
   $("#people").innerHTML = r.people.map(p => `<tr><td style="width:160px"><b>${esc(p.name)}</b><div class="muted">${p.samples} face sample${p.samples==1?"":"s"}</div></td>
     <td><input id="cal${p.id}" value="${esc(p.calendar||"")}" placeholder="Their own iCal link (optional) — shown when they're recognised"></td>
     <td style="width:230px"><button class="b" onclick="person(${p.id},{calendar:document.getElementById('cal${p.id}').value})">Save</button>
     <button class="b" onclick="renamePerson(${p.id})">Rename</button>
-    <button class="b danger" onclick="delPerson(${p.id},'${esc(p.name)}')">Delete</button></td></tr>`).join("")
+    <button class="b danger" onclick="delPerson(${p.id})">Delete</button></td></tr>`).join("")
     || "<tr><td class='muted'>Nobody yet. Add people from the kitchen tablet.</td></tr>";
   $("#seen").innerHTML = r.seen.map(e => `<tr><td style="width:160px">${esc(e.name)}</td><td>${esc(e.device)}</td><td class="muted">${ago(e.at)}</td></tr>`).join("")
     || "<tr><td class='muted'>No one recognised since the server started.</td></tr>";
 }
 async function person(id, body) { await api("/admin/api/people/" + id, {method: "POST", body: JSON.stringify(body)}); drawPeople(); }
 function renamePerson(id) { const n = prompt("New name"); if (n) person(id, {name: n}); }
-function delPerson(id, name) { if (confirm(`Delete ${name} and all their face samples?`)) person(id, {delete: true}); }
+let peopleList = [];
+function delPerson(id) { const name = (peopleList.find(p => p.id === id) || {}).name || "this person"; if (confirm(`Delete ${name} and all their face samples?`)) person(id, {delete: true}); }
 async function mem(body) { await api("/admin/api/memory", {method: "POST", body: JSON.stringify(body)}); ["factText","ruleText"].forEach(i => document.getElementById(i).value = ""); refresh(); }
 async function rename(id) { const n = prompt("New name"); if (n) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({name: n})}); refresh(); } }
-async function revoke(id, name) { if (confirm(`Remove ${name}? It will need pairing again.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
+async function revoke(id) { const name = devName(id); if (confirm(`Remove ${name}? It will need pairing again.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
 async function say(id, text) {
   text = text ?? val("annText"); if (!text) return;
   const r = await api(`/admin/api/devices/${id}/say`, {method: "POST", body: JSON.stringify({text})});

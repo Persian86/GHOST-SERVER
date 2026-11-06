@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT, type TEXT, data TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY, name TEXT, path TEXT, device_id TEXT, created_at REAL);
+CREATE TABLE IF NOT EXISTS security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, what TEXT, ip TEXT, level TEXT, device_id TEXT);
 CREATE INDEX IF NOT EXISTS turns_at ON turns(at);
+CREATE INDEX IF NOT EXISTS security_at ON security_events(at);
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 """
 
@@ -57,7 +60,20 @@ def init(path: Path | None = None) -> None:
         _local.__dict__.clear()
         con = _con()
         con.executescript(SCHEMA)
+        have = {r[1] for r in con.execute("PRAGMA table_info(devices)")}
+        for col, ddl in _DEVICE_COLUMNS.items():
+            if col not in have:                     # older databases: devices already paired stay approved
+                con.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
         con.commit()
+
+
+_DEVICE_COLUMNS = {
+    "approved": "INTEGER DEFAULT 1",      # new devices wait for the owner when approve_new_devices is on
+    "key_at": "REAL DEFAULT 0",           # when the current key was issued (pairing or renewal)
+    "prev_key_hash": "TEXT DEFAULT ''",   # the key before the last renewal, still valid briefly
+    "prev_until": "REAL DEFAULT 0",
+    "ips": "TEXT DEFAULT '[]'",           # addresses this device has used (for "new address" alerts)
+}
 
 
 def _con() -> sqlite3.Connection:
@@ -123,9 +139,19 @@ DEFAULTS: dict[str, Any] = {
     "photo_folder": "/photos",                              # the tablet's photo frame (map a NAS share here)
     "photo_frame_after": 5,                                 # minutes idle before the tablet shows photos (0 = never)
     "admin_password_hash": "",
+    # security
+    "approve_new_devices": True,                            # newly paired devices wait on the admin page
+    "security_alerts": True,                                # failed logins, new devices, new addresses → my phone
+    "key_rotate_days": 30,                                  # devices swap their key for a fresh one this often
+    "admin_idle_hours": 12,                                 # admin page signs out after this long unused
+    "admin_totp_secret": "",                                # two-step login (authenticator app)
+    "admin_totp_since": 0,
+    "admin_backup_codes": [],                               # hashed one-time codes
 }
+# never changed through the settings form — each has its own flow
+PROTECTED_KEYS = {"admin_password_hash", "admin_totp_secret", "admin_totp_since", "admin_backup_codes"}
 SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars", "rtsp_cameras",
-               "admin_password_hash"}
+               "admin_password_hash", "admin_totp_secret"}
 
 
 def get(key: str, default: Any = None) -> Any:
@@ -153,7 +179,8 @@ def all_settings(reveal: bool = False) -> dict:
         for k in SECRET_KEYS:
             v = str(out.get(k) or "")
             out[k] = ("•••" + v[-4:]) if v else ""
-    out.pop("admin_password_hash", None)
+    for k in PROTECTED_KEYS:
+        out.pop(k, None)
     return out
 
 
@@ -178,17 +205,51 @@ def redeem_pair_code(code: str, name: str, kind: str, info: dict | None = None) 
     x("DELETE FROM pair_codes WHERE code = ?", (code,))
     device_id = "dev_" + secrets.token_hex(5)
     key = "gk_" + secrets.token_urlsafe(32)
-    x("INSERT INTO devices (id, name, kind, key_hash, info, created_at, last_seen) VALUES (?,?,?,?,?,?,?)",
+    approved = 0 if get("approve_new_devices") else 1
+    x("INSERT INTO devices (id, name, kind, key_hash, info, created_at, last_seen, approved, key_at) "
+      "VALUES (?,?,?,?,?,?,?,?,?)",
       (device_id, (name or kind or "device")[:60], (kind or "agent")[:30], _hash(key),
-       json.dumps(info or {}), time.time(), time.time()))
+       json.dumps(info or {}), time.time(), time.time(), approved, time.time()))
     return device_id, key
+
+
+def pair_code_exists(code: str) -> bool:
+    return bool(q("SELECT 1 FROM pair_codes WHERE code = ? AND expires > ?", (str(code).strip(), time.time())))
 
 
 def device_by_key(key: str) -> sqlite3.Row | None:
     if not key:
         return None
-    rows = q("SELECT * FROM devices WHERE key_hash = ? AND revoked = 0", (_hash(key),))
+    h = _hash(key)
+    rows = q("SELECT * FROM devices WHERE revoked = 0 AND (key_hash = ? OR (prev_key_hash = ? AND prev_until > ?))",
+             (h, h, time.time()))
     return rows[0] if rows else None
+
+
+def rotate_key(device_id: str, grace: float = 86400) -> str:
+    """A fresh key for the device. The old one keeps working for `grace` seconds, in case the
+    reply never reached it (Wi-Fi dropped mid-renewal)."""
+    cur = device(device_id)
+    key = "gk_" + secrets.token_urlsafe(32)
+    x("UPDATE devices SET prev_key_hash = ?, prev_until = ?, key_hash = ?, key_at = ? WHERE id = ?",
+      (cur["key_hash"] if cur else "", time.time() + grace, _hash(key), time.time(), device_id))
+    return key
+
+
+def approve_device(device_id: str) -> None:
+    x("UPDATE devices SET approved = 1 WHERE id = ?", (device_id,))
+
+
+def note_ip(device_id: str, ip: str) -> bool:
+    """Remember an address; True if this device has used other addresses before but never this one."""
+    cur = device(device_id)
+    if not cur or not ip:
+        return False
+    seen = json.loads(cur["ips"] or "[]")
+    if ip in seen:
+        return False
+    x("UPDATE devices SET ips = ? WHERE id = ?", (json.dumps((seen + [ip])[-10:]), device_id))
+    return bool(seen)
 
 
 def device(device_id: str) -> sqlite3.Row | None:
@@ -202,6 +263,8 @@ def devices(include_revoked: bool = False) -> list[dict]:
     for r in rows:
         d = dict(r)
         d.pop("key_hash", None)
+        d.pop("prev_key_hash", None)
+        d["ips"] = json.loads(d.get("ips") or "[]")
         d["capabilities"] = json.loads(d.get("capabilities") or "[]")
         d["info"] = json.loads(d.get("info") or "{}")
         out.append(d)
@@ -225,7 +288,19 @@ def rename_device(device_id: str, name: str) -> None:
 
 
 def revoke_device(device_id: str) -> None:
-    x("UPDATE devices SET revoked = 1 WHERE id = ?", (device_id,))
+    x("UPDATE devices SET revoked = 1, prev_until = 0 WHERE id = ?", (device_id,))
+
+
+# ── security log ─────────────────────────────────────────────────────────────
+def add_security_event(what: str, ip: str = "", level: str = "ok", device_id: str = "") -> None:
+    x("INSERT INTO security_events (at, what, ip, level, device_id) VALUES (?,?,?,?,?)",
+      (time.time(), what[:200], ip[:60], level, device_id))
+    x("DELETE FROM security_events WHERE at < ?", (time.time() - 180 * 86400,))
+
+
+def security_events(limit: int = 50, since: float = 0) -> list[dict]:
+    return [dict(r) for r in q("SELECT * FROM security_events WHERE at >= ? ORDER BY id DESC LIMIT ?",
+                               (since, limit))]
 
 
 # ── memory ───────────────────────────────────────────────────────────────────

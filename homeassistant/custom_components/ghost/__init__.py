@@ -130,6 +130,9 @@ class GhostLink:
                     if ws.close_code == 4401:
                         _LOGGER.error("Ghost revoked this Home Assistant's key; remove and re-add the integration")
                         return
+                    if ws.close_code == 4403:
+                        _LOGGER.warning("Ghost Server: approve this Home Assistant on the admin page (Security)")
+                        delay = 30
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — keep reconnecting
