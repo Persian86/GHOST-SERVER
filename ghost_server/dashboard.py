@@ -209,7 +209,16 @@ def build() -> dict:
         "home": _cached("home", 5, home_tiles) or {"connected": False, "tiles": []},
         "headlines": _cached("headlines", 1800, headlines) or [],
         "features": {"faces": bool(store.get("faces_enabled")), "photo_frame_after": _int(store.get("photo_frame_after"), 5)},
+        "theme": _theme(),
     }
+
+
+def _theme() -> dict:
+    try:
+        from . import theme
+        return theme.current()
+    except Exception:  # noqa: BLE001
+        return {"type": "theme", "id": ""}
 
 
 def _int(v, default: int) -> int:

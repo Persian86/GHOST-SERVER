@@ -138,6 +138,17 @@
           <label>Likes, dislikes, allergies</label><input data-k="meal_preferences" placeholder="kid-friendly, no seafood, one vegetarian night">
           <label>Always in the pantry — never added to the shopping list</label><input data-k="meal_pantry" placeholder="salt, pepper, olive oil, vegetable oil, water">
         </div>
+        <div class="card"><h3>Seasonal themes</h3>
+          <div class="status">Ghost dresses up for the holidays — a witch's hat and bats for Halloween, a Santa hat and snow for Christmas, bunny ears for Easter, a party hat on birthdays — and the phone, tablet colours and greeting change with it. <span id="themeToday"></span></div>
+          <label>Look</label>
+          <select data-k="theme_mode"><option value="auto">Automatic — holidays and seasons</option><option value="off">Off — always the normal Ghost</option><option value="halloween">Preview: 🎃 Halloween</option><option value="christmas">Preview: 🎄 Christmas</option><option value="easter">Preview: 🐣 Easter</option><option value="valentines">Preview: 💜 Valentine's Day</option><option value="new_year">Preview: 🎆 New Year</option><option value="lunar_new_year">Preview: 🧧 Lunar New Year</option><option value="st_patricks">Preview: ☘️ St Patrick's Day</option><option value="nowruz">Preview: 🌸 Nowruz</option><option value="anzac">Preview: 🌺 Anzac Day</option><option value="mothers_day">Preview: 💐 Mother's Day</option><option value="fathers_day">Preview: 👔 Father's Day</option><option value="birthday">Preview: 🎂 Birthday</option><option value="summer">Preview: ☀️ Summer</option><option value="autumn">Preview: 🍂 Autumn</option><option value="winter">Preview: ❄️ Winter</option><option value="spring">Preview: 🌼 Spring</option></select>
+          <div class="status">Pick a preview to see a theme on every screen now; set it back to Automatic afterwards.</div>
+          <label>Family birthdays (name day/month)</label><input data-k="theme_birthdays" placeholder="Adam 14/03, Hayley 2/7, Zoey 21/11">
+          <label>Skip these holidays (comma separated: halloween, christmas, easter, valentines, new_year, lunar_new_year, st_patricks, nowruz, anzac, mothers_day, fathers_day)</label><input data-k="theme_off" placeholder="st_patricks">
+          <label><input type="checkbox" data-k="theme_seasons" style="width:auto"> On ordinary days, a gentle look for the season (summer, autumn, winter, spring)</label>
+          <label>Seasons for</label><select data-k="theme_hemisphere"><option value="south">Southern hemisphere (Australia — summer in December)</option><option value="north">Northern hemisphere</option></select>
+          <label><input type="checkbox" data-k="theme_effects" style="width:auto"> Falling effects (bats, snow, hearts, confetti…) on the phone and tablet screens</label>
+        </div>
         <div class="card"><h3>Ghost Hub tablet — home tiles</h3>
           <label>Home Assistant entities to show (comma separated)</label>
           <input data-k="tablet_entities" placeholder="light.kitchen, light.lounge, switch.coffee_machine, climate.living_room, scene.movie_night">
@@ -377,6 +388,14 @@ function fillForm() {
     if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
   });
   formFilled = true; dirty = false; markDirty(false);
+  if (document.getElementById("themeToday")) loadThemeToday();
+}
+async function loadThemeToday() {
+  try {
+    const r = await api("/admin/api/themes", {passive: true});
+    const t = r.today || {};
+    $("#themeToday").innerHTML = t.id ? `<b>Today: ${esc(t.emoji || "")} ${esc(t.name || t.id)}</b>${t.greeting ? " — “" + esc(t.greeting) + "”" : ""}` : "<b>Today: the normal Ghost.</b>";
+  } catch (e) { /* older server */ }
 }
 function markDirty(on) {
   dirty = on;

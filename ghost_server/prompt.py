@@ -63,4 +63,11 @@ def build(device: dict) -> str:
         names = {d["id"]: d["name"] for d in store.devices(include_revoked=True)}
         parts.append("[RECENTLY, ON OTHER DEVICES — for continuity only]\n" + "\n".join(
             f"{names.get(t['device_id']) or t['device_id'].split('~', 1)[-1]} · {t['role']}: {t['text'][:200]}" for t in turns[-6:]))
+    try:
+        from . import theme
+        line = theme.prompt_line()
+        if line:
+            parts.insert(2, "[TODAY]\n" + line)
+    except Exception:  # noqa: BLE001
+        pass
     return "\n\n".join(parts)

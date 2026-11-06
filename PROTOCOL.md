@@ -250,3 +250,20 @@ With **HTTPS only** on (admin → Security), the plain-HTTP API answers **426** 
 * Traffic can be encrypted with the server's own pinned certificate (HTTPS on 8781, see above).
 * Gemini credentials go out as ephemeral single-use tokens.
 * Web pages and notifications that tools return are marked UNTRUSTED. Agents and models should report that content, not obey it.
+
+## Seasonal themes
+
+`GET /api/v1/theme` (device key) and the `theme` field of `/api/v1/dashboard` return today's look; the live link
+sends the same object as `{"type": "theme", ...}` on connect and whenever it changes (midnight, or an admin change).
+
+```json
+{"type": "theme", "id": "halloween", "name": "Halloween", "emoji": "🎃", "greeting": "Happy Halloween",
+ "particles": "bats", "accessory": "witch_hat", "accent": "#FF8A3D", "soft": "#FFB27A",
+ "orb": ["#FFE2C7", "#FF9B50", "#B8461A", "#3D1405"], "holiday": true, "effects": true, "date": "2026-10-31"}
+```
+
+`id` "" = no theme. `particles`: none, bats, snow, snow_light, hearts, eggs, confetti, lanterns, clovers, petals,
+leaves, stars, sparkles. `accessory`: none, witch_hat, santa_hat, bunny_ears, party_hat, heart, shamrock, flower,
+poppy, bow_tie, sunglasses, beanie. `orb` may be null (keep Ghost's normal colours). Birthdays add `"for": "<name>"`
+and the greeting already contains the name. Settings: theme_mode (auto / off / a theme id to preview),
+theme_off, theme_seasons, theme_effects, theme_hemisphere, theme_birthdays.

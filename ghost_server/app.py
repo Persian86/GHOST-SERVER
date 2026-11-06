@@ -33,7 +33,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket,
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
-               prompt, quiet, security, store, tools)
+               prompt, quiet, security, store, theme, tools)
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -47,7 +47,8 @@ async def _lifespan(_app):
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
-          asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop())]
+          asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
+          asyncio.create_task(theme.theme_loop())]
     yield
     for t in bg:
         t.cancel()
@@ -181,6 +182,18 @@ def tls_cert():
         raise HTTPException(404, "HTTPS isn't set up")
     return Response(tls.pem(), media_type="application/x-x509-ca-cert",
                     headers={"Content-Disposition": "attachment; filename=ghost-server.crt"})
+
+
+@app.get("/api/v1/theme")
+def theme_now(dev: dict = Depends(device_auth)):
+    return theme.current()
+
+
+@app.get("/admin/api/themes")
+def admin_themes(_: bool = Depends(admin_auth)):
+    """For the admin card: every theme, which holidays exist, and today's."""
+    return {"themes": {k: {"name": v["name"], "emoji": v["emoji"]} for k, v in theme.THEMES.items()},
+            "holidays": theme.HOLIDAYS, "today": theme.current()}
 
 
 @app.get("/api/v1/health")
@@ -793,7 +806,8 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     await ws.send_json({"type": "welcome", "device_id": row["id"], "name": row["name"],
                         "assistant_name": store.get("assistant_name")})
     await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
-    for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot):
+    for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot,
+                 theme.current):
         try:
             await ws.send_json(await asyncio.to_thread(snap))
         except Exception:  # noqa: BLE001
@@ -1005,6 +1019,8 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         if store.get(k) != v:
             changed.append(k)
         store.put(k, v)
+    if any(k.startswith("theme_") for k in changed):
+        theme.push_soon()                 # the new look on every screen now
     if changed:                           # names only — never the values (keys, tokens)
         sec = {"approve_new_devices", "security_alerts"}
         off = [k for k in sec & set(changed) if not body.get(k)]

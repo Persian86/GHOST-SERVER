@@ -143,6 +143,13 @@ DEFAULTS: dict[str, Any] = {
     "meal_serves": 4,
     "meal_preferences": "",                                 # e.g. "kid-friendly, no seafood, one vegetarian night"
     "meal_pantry": "salt, pepper, olive oil, vegetable oil, water",   # never added to the shopping list
+    # seasonal themes (theme.py)
+    "theme_mode": "auto",                                   # auto | off | a theme id to preview it
+    "theme_off": "australia_day",                           # holidays NOT to dress up for (comma separated ids)
+    "theme_seasons": True,                                  # a gentle seasonal look on ordinary days
+    "theme_effects": True,                                  # falling bats / snow / hearts on the screens
+    "theme_hemisphere": "south",                            # south (Australia) | north — for the seasons
+    "theme_birthdays": "",                                  # "Adam 14/03, Hayley 2/7"
     # front door (door.py)
     "door_cameras": "",                                     # camera name(s) that see the front door
     "door_bell_entities": "",                               # HA entities that change when the bell is pressed
