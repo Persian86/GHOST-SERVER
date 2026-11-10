@@ -141,7 +141,11 @@ def people() -> list[dict]:
     _schema()
     rows = store.q("SELECT p.id, p.name, p.calendar, p.created_at, COUNT(f.id) AS samples FROM people p "
                    "LEFT JOIN face_prints f ON f.person_id = p.id GROUP BY p.id ORDER BY p.name")
-    return [dict(r) for r in rows]
+    from . import voices
+    voice_samples = {}
+    for p in voices.profiles():
+        voice_samples[p["person_id"]] = voice_samples.get(p["person_id"], 0) + p["samples"]
+    return [{**dict(r), "voice_samples": voice_samples.get(r["id"], 0)} for r in rows]
 
 
 def person(name: str) -> dict | None:
@@ -164,6 +168,10 @@ def delete_person(pid: int) -> None:
     store.x("DELETE FROM face_prints WHERE person_id = ?", (pid,))
     store.x("DELETE FROM people WHERE id = ?", (pid,))
     _invalidate()
+
+
+    from . import voices
+    voices.delete(pid)
 
 
 def _decode(image: str | bytes) -> bytes:
@@ -274,3 +282,4 @@ def last_seen() -> list[dict]:
         if e["name"] not in best or e["at"] > best[e["name"]]["at"]:
             best[e["name"]] = e
     return sorted(best.values(), key=lambda e: -e["at"])
+
