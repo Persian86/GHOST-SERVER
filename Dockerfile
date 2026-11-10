@@ -10,8 +10,10 @@ COPY tools_build/fetch_models.py /tmp/fetch_models.py
 RUN python /tmp/fetch_models.py /app/models && rm /tmp/fetch_models.py
 ENV GHOST_MODELS=/app/models
 COPY ghost_server ./ghost_server
+COPY third_party ./third_party
 COPY sdk ./sdk
 VOLUME ["/data"]
 EXPOSE 8780 8781
 HEALTHCHECK --interval=60s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8780/api/v1/health', timeout=4)" || exit 1
 CMD ["python", "-m", "ghost_server.app"]
+

@@ -33,7 +33,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket,
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
-               prompt, quiet, security, store, theme, tools)
+               prompt, quiet, security, store, theme, tools, voices)
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -506,7 +506,70 @@ async def faces_enroll(body: dict, request: Request, dev: dict = Depends(device_
                      dev["id"])
     if r.get("ok") and not store.get("faces_enabled"):
         store.put("faces_enabled", True)
+    if r.get("ok"):
+        person = faces.person(str(body.get("name") or ""))
+        if person:
+            r["voice_ticket"] = voices.ticket(dev["id"], person["id"])
+            r["voice_enrolled"] = any(p["person_id"] == person["id"] and p["device_id"] == dev["id"] for p in voices.profiles())
     return {**r, "ticket": tk}
+
+
+# Voice ID is household personalisation, not proof of identity for permissions.
+@app.post("/api/v1/voices/enroll/start")
+async def voice_enroll_start(body: dict, request: Request, dev: dict = Depends(device_auth)):
+    name = str(body.get("name") or "").strip()
+    person = await asyncio.to_thread(faces.person, name)
+    if not person:
+        raise HTTPException(400, "Add this person with Visual ID first")
+    token = str(body.get("ticket") or "")
+    try:
+        if not token:
+            await asyncio.to_thread(_admin_password_check, str(body.get("admin_password") or ""),
+                                    str(body.get("admin_code") or ""), _ip(request), "voice enrolment")
+            token = voices.ticket(dev["id"], person["id"])
+        return await asyncio.to_thread(voices.begin, token, dev["id"], name)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, f"Voice ID is unavailable: {exc}")
+
+
+@app.post("/api/v1/voices/enroll/sample")
+async def voice_enroll_sample(body: dict, dev: dict = Depends(device_auth)):
+    try:
+        if body.get("sample_rate", 16000) != 16000:
+            raise ValueError("Use 16 kHz mono PCM")
+        return await asyncio.to_thread(voices.enroll, str(body.get("ticket") or ""), dev["id"],
+                                       int(body.get("index", -1)), body.get("pcm") or "")
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(503, f"Voice ID is unavailable: {exc}")
+
+
+@app.post("/api/v1/voices/identify")
+async def voice_identify(body: dict, dev: dict = Depends(device_auth)):
+    try:
+        if body.get("sample_rate", 16000) != 16000:
+            raise ValueError("Use 16 kHz mono PCM")
+        return await asyncio.to_thread(voices.identify, body.get("pcm") or "", dev["id"])
+    except ValueError:
+        return {"person": None, "reason": "unclear_audio"}
+    except Exception:
+        # A missing model never turns an unrecognised voice into a known person.
+        return {"person": None, "reason": "unavailable"}
+
+
+@app.post("/admin/api/people/{pid}/voice/delete")
+def voice_delete(pid: int, _: bool = Depends(admin_auth)):
+    voices.delete(pid)
+    return {"ok": True}
 
 
 # ── photo frame ──────────────────────────────────────────────────────────────
@@ -1163,3 +1226,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

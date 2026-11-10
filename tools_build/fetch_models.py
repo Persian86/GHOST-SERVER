@@ -20,3 +20,14 @@ for folder, name, sha in MODELS:
     with open(os.path.join(dest, name), "wb") as f:
         f.write(data)
     print(f"{name}: ok ({len(data)} bytes)")
+
+
+# WeSpeaker English speaker embeddings, exported by sherpa-onnx (Apache-2.0).
+name = "wespeaker_en_voxceleb_resnet34_LM.onnx"
+url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/" + name
+data = urllib.request.urlopen(url, timeout=300).read()
+if hashlib.sha256(data).hexdigest() != "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012":
+    sys.exit("Speaker model checksum mismatch")
+with open(os.path.join(dest, name), "wb") as f:
+    f.write(data)
+print(f"{name}: ok ({len(data)} bytes)")
