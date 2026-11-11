@@ -432,7 +432,7 @@ async function drawSecurity() {
   if (!sec.settings.security_alerts) warn.push("security alerts are off");
   $("#secBanner").innerHTML = warn.length
     ? `<span style="color:var(--warn)">●</span> Could be safer: ${warn.join(" · ")}`
-    : `<span class="ok">●</span> All protections on`;
+    : `<span class="ok">●</span> Sign-in and pairing protections on`;
   if (shownCodes) {
     $("#tfa").innerHTML = `<div class="ok">Save these backup codes somewhere safe — each one works once if you lose your phone. They won't be shown again.</div>
       <div style="font:600 16px/1.9 ui-monospace,monospace;columns:2;margin:8px 0">${shownCodes.map(esc).join("<br>")}</div>
