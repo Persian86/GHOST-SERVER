@@ -172,6 +172,8 @@ def delete_person(pid: int) -> None:
 
     from . import voices
     voices.delete(pid)
+    from . import personal
+    personal.remove(pid)
 
 
 def _decode(image: str | bytes) -> bytes:
@@ -282,4 +284,5 @@ def last_seen() -> list[dict]:
         if e["name"] not in best or e["at"] > best[e["name"]]["at"]:
             best[e["name"]] = e
     return sorted(best.values(), key=lambda e: -e["at"])
+
 

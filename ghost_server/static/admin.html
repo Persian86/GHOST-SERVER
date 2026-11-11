@@ -210,10 +210,21 @@
     </section>
 
     <section data-tab="People">
-      <div class="card"><h3>People Ghost recognises</h3>
-        <div class="status">Add someone on the kitchen tablet: <b>Settings → Visual ID → Add a person</b> (it asks for this admin password). Take 3–5 photos in different light. Delete a person here and every face sample of theirs goes too.</div>
+      <div class="card"><h3>People profiles &amp; recognition</h3>
+        <div class="status">Scans are optional. To enrol a face, use the tablet: <b>Settings → Visual ID → Add a person</b> (admin password required). Deleting a person removes their recognition samples, reply preferences and device assignments.</div>
         <table id="people"></table>
       </div>
+
+      <h2>Personal replies &amp; vocabulary</h2>
+      <div class="card"><h3>Create a person without a scan</h3>
+        <div class="muted">No camera or microphone enrolment is required. Existing recognised people are available too.</div>
+        <div class="row" style="margin-top:8px"><input id="personalNewName" maxlength="40" placeholder="Person's name"><button class="b" onclick="addPersonalPerson()">Add person</button></div>
+      </div>
+      <div class="card" style="margin-top:12px"><h3>Personal device assignments</h3>
+        <div class="muted">Choose whose reply preferences apply to each personal device. Leave rooms/shared tablets unassigned. This is not a login or a permission change; face and voice matches never select a private profile automatically.</div>
+        <table id="personalDevices"></table></div>
+      <div id="personalForms" style="margin-top:12px"></div>
+      <div id="personalStatus" class="status" role="status"></div>
       <h2>Recently seen</h2><div class="card"><table id="seen"></table></div>
     </section>
 
@@ -551,6 +562,7 @@ async function test(what, btn) {
 async function drawPeople() {
   const r = await api("/admin/api/people");
   peopleList = r.people;
+  await drawPersonal();
   $("#people").innerHTML = r.people.map(p => `<tr><td style="width:160px"><b>${esc(p.name)}</b><div class="muted">${p.samples} face sample${p.samples==1?"":"s"}</div></td>
     <td><input id="cal${p.id}" value="${esc(p.calendar||"")}" placeholder="Their own iCal link (optional) — shown when they're recognised"></td>
     <td style="width:230px"><button class="b" onclick="person(${p.id},{calendar:document.getElementById('cal${p.id}').value})">Save</button>
@@ -560,10 +572,53 @@ async function drawPeople() {
   $("#seen").innerHTML = r.seen.map(e => `<tr><td style="width:160px">${esc(e.name)}</td><td>${esc(e.device)}</td><td class="muted">${ago(e.at)}</td></tr>`).join("")
     || "<tr><td class='muted'>No one recognised since the server started.</td></tr>";
 }
+
+let personalData = null;
+async function drawPersonal() {
+  personalData = await api('/admin/api/personal',{passive:true});
+  $('#personalDevices').innerHTML=personalData.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${esc(d.kind)}</div></td><td><select aria-label="Personal replies for ${esc(d.name)}" onchange="assignPersonal('${d.id}',this.value)"><option value="">Shared / unassigned</option>${personalData.people.map(p=>`<option value="${p.id}" ${p.id===d.person_id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></td></tr>`).join('') || '<tr><td>No paired devices.</td></tr>';
+  $('#personalForms').innerHTML=personalData.people.map(p=>{
+    const v=p.preferences,id=p.id,options=(items,selected)=>Object.entries(items).map(([k,label])=>`<option value="${k}" ${k===selected?'selected':''}>${esc(label)}</option>`).join('');
+    return `<div class="card" style="margin-bottom:12px"><h3>${esc(p.name)}</h3>
+      <label>Preferred name in replies</label><input id="prefName${id}" maxlength="60" value="${esc(v.display_name)}" placeholder="Use their profile name">
+      <div class="grid"><div><label>Reply length</label><select id="prefLength${id}">${options({short:'Short',balanced:'Balanced',detailed:'Detailed'},v.reply_length)}</select></div>
+      <div><label>Reply language</label><select id="prefLanguage${id}">${options(personalData.languages,v.language)}</select></div>
+      <div><label>Units in spoken/written replies</label><select id="prefUnits${id}">${options({auto:'Follow the conversation',metric:'Metric',imperial:'Imperial'},v.units)}</select></div></div>
+      <label>Vocabulary hints — heard phrase → intended name or phrase</label>
+      <textarea id="prefVocab${id}" rows="5" placeholder="Zoe → Zoey&#10;parramata → Parramatta">${esc(v.vocabulary.map(x=>x.heard+' → '+x.intended).join('\n'))}</textarea>
+      <div class="muted">Up to 30 one-line hints, one per line. Use names/phrases, not passwords, codes or message contents. These guide interpretation; they do not train speech recognition, rewrite commands or change Ghost's voice.</div>
+      <div class="row" style="margin-top:10px"><button class="b p" onclick="savePersonal(${id})">Save reply preferences</button><button class="b" onclick="resetPersonal(${id})">Reset preferences</button></div></div>`;
+  }).join('') || '<div class="muted">Create or enrol a person to add personal reply preferences.</div>';
+}
+function vocabularyLines(text) {
+  const seen=new Set();
+  const rows=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).map(line=>{
+    const parts=line.split(/\s*(?:→|->)\s*/);
+    if(parts.length!==2 || !parts[0] || !parts[1])throw new Error('Use heard → intended on each vocabulary line.');
+    const key=parts[0].toLocaleLowerCase();if(seen.has(key))throw new Error('Each heard phrase must be unique.');seen.add(key);
+    return {heard:parts[0],intended:parts[1]};
+  });
+  if(rows.length>30)throw new Error('Use at most 30 vocabulary hints.');return rows;
+}
+async function personalAction(action) {
+  try {await action();$('#personalStatus').textContent='Saved. Start a new conversation to use updated preferences.';}
+  catch(e){$('#personalStatus').textContent=e.message || 'Could not save personal replies.';}
+}
+async function addPersonalPerson(){await personalAction(async()=>{
+  await api('/admin/api/personal/people',{method:'POST',body:JSON.stringify({name:val('personalNewName')})});
+  $('#personalNewName').value='';await drawPeople();
+});}
+async function savePersonal(id){await personalAction(async()=>{
+  const body={display_name:val('prefName'+id),reply_length:val('prefLength'+id),language:val('prefLanguage'+id),units:val('prefUnits'+id),vocabulary:vocabularyLines(document.getElementById('prefVocab'+id).value)};
+  await api('/admin/api/personal/people/'+id,{method:'PUT',body:JSON.stringify(body)});
+});}
+async function resetPersonal(id){if(!confirm('Reset this person’s reply preferences and vocabulary? Device assignments stay in place.'))return;await personalAction(async()=>{await api('/admin/api/personal/people/'+id,{method:'DELETE'});await drawPersonal();});}
+async function assignPersonal(id,pid){await personalAction(async()=>{await api('/admin/api/personal/devices/'+id,{method:'PUT',body:JSON.stringify({person_id:pid?Number(pid):null})});});}
+
 async function person(id, body) { await api("/admin/api/people/" + id, {method: "POST", body: JSON.stringify(body)}); drawPeople(); }
 function renamePerson(id) { const n = prompt("New name"); if (n) person(id, {name: n}); }
 let peopleList = [];
-function delPerson(id) { const name = (peopleList.find(p => p.id === id) || {}).name || "this person"; if (confirm(`Delete ${name} and all their face samples?`)) person(id, {delete: true}); }
+function delPerson(id) { const name = (peopleList.find(p => p.id === id) || {}).name || "this person"; if (confirm(`Delete ${name}, their recognition samples, personal reply preferences and device assignments?`)) person(id, {delete: true}); }
 async function mem(body) { await api("/admin/api/memory", {method: "POST", body: JSON.stringify(body)}); ["factText","ruleText"].forEach(i => document.getElementById(i).value = ""); refresh(); }
 async function rename(id) { const n = prompt("New name"); if (n) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({name: n})}); refresh(); } }
 async function revoke(id) { const name = devName(id); if (confirm(`Remove ${name}? It will need pairing again.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
@@ -587,4 +642,5 @@ boot();
 </script>
 </body>
 </html>
+
 
