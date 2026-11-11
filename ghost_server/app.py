@@ -44,6 +44,8 @@ async def _lifespan(_app):
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
+    from . import routines
+    routines.recover()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
@@ -1238,6 +1240,62 @@ async def test(what: str, _: bool = Depends(admin_auth)):
 
 
 
+
+
+@app.get("/admin/api/routine-home-options")
+async def routine_home_options(_:bool=Depends(admin_auth)):
+    from .tools import home
+    try:
+        def read():
+            states=home._req("GET","/api/states").json()
+            return [{"id":x["entity_id"],"name":str((x.get("attributes") or {}).get("friendly_name") or x["entity_id"])} for x in states if str(x.get("entity_id","")).split('.')[0] in ("light","fan","media_player")]
+        return {"connected":True,"items":await asyncio.to_thread(read)}
+    except Exception:return {"connected":False,"items":[],"error":"Home Assistant controls could not be loaded."}
+
+@app.get("/admin/api/routines")
+def admin_routines(_:bool=Depends(admin_auth)):
+    from . import routines
+    return {"routines":routines.definitions(),"runs":routines.runs(),
+            "devices":[{"id":d["id"],"name":d["name"],"permitted":bool(d["approved"] and access.tool_allowed(d["id"],"routines"))} for d in store.devices() if d["id"]!="dev_admin"],
+            "access_enforced":access.enabled()}
+
+@app.post("/admin/api/routines")
+def routine_create(body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import routines
+    try: rid=routines.save(body)
+    except (ValueError,PermissionError) as exc:raise HTTPException(400,str(exc))
+    security.log("Routine created "+rid,_ip(request));return {"ok":True,"id":rid}
+
+@app.put("/admin/api/routines/{rid}")
+def routine_save(rid:str,body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import routines
+    try: routines.save(body,rid)
+    except (ValueError,PermissionError) as exc:raise HTTPException(400,str(exc))
+    security.log("Routine updated "+rid,_ip(request));return {"ok":True}
+
+@app.delete("/admin/api/routines/{rid}")
+def routine_delete(rid:str,request:Request,_:bool=Depends(admin_auth)):
+    from . import routines
+    try: routines.delete(rid)
+    except ValueError as exc:raise HTTPException(404,str(exc))
+    security.log("Routine deleted "+rid,_ip(request));return {"ok":True}
+
+@app.post("/admin/api/routines/{rid}/start")
+def routine_start(rid:str,body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import routines
+    if set(body)!={"device_id"}:raise HTTPException(400,"Choose the source device")
+    try: result=routines.start(rid,body["device_id"])
+    except (ValueError,PermissionError) as exc:raise HTTPException(400,str(exc))
+    security.log("Routine started "+result["id"],_ip(request),device_id=result["device_id"]);return result
+
+@app.post("/admin/api/routine-runs/{run_id}/{action}")
+def routine_control(run_id:str,action:str,request:Request,_:bool=Depends(admin_auth)):
+    from . import routines
+    if action not in ("resume","cancel"):raise HTTPException(400,"Choose resume or cancel")
+    try: result=(routines.resume if action=="resume" else routines.cancel)(run_id)
+    except (ValueError,PermissionError) as exc:raise HTTPException(400,str(exc))
+    security.log("Routine "+action+" "+run_id,_ip(request),device_id=result["device_id"]);return result
+
 @app.get("/admin/api/personal")
 def personal_get(_:bool=Depends(admin_auth)):
     from . import personal
@@ -1330,6 +1388,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
