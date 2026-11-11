@@ -209,6 +209,28 @@
       <h2>Standing rules</h2><div class="card"><table id="rules"></table></div>
     </section>
 
+
+    <section data-tab="Routines">
+      <h2>Routines</h2>
+      <div class="card"><h3>One request, a few familiar steps</h3>
+        <div class="muted">Save a routine, then ask Ghost to start it by name or run it here. Nothing runs when you save. No schedules or location triggers are added. Home changes follow your household access policy and may pause for owner approval on Security.</div>
+        <label>Run on / report to</label><select id="routineRunDevice" aria-label="Routine source device"></select>
+        <div id="routineList" style="margin-top:12px"></div>
+      </div>
+      <div class="card" style="margin-top:12px"><h3 id="routineEditorTitle">New routine</h3>
+        <div class="row"><button class="b" onclick="routineTemplate('work')">Workday starter</button><button class="b" onclick="routineTemplate('evening')">Evening check-in</button><button class="b" onclick="routineTemplate('blank')">New blank routine</button></div>
+        <label>Name to ask Ghost for</label><input id="routineName" maxlength="60" placeholder="Start my workday">
+        <label>Where this routine is available</label><select id="routineAssignedDevice"></select>
+        <label><input type="checkbox" id="routineEnabled" style="width:auto" checked> Enabled</label>
+        <div id="routineSteps"></div>
+        <div class="row" style="margin-top:10px"><button class="b" onclick="addRoutineStep()">Add step</button><button class="b" onclick="loadRoutineHome()">Load lights, fans &amp; players</button><button class="b p" onclick="saveRoutine()">Save routine</button></div>
+        <div class="muted" style="margin-top:8px">Up to eight steps. Home control supports an exact light, fan or media player. No locks, alarms, arbitrary commands, scripts or nested routines.</div>
+      </div>
+      <h2>Progress &amp; recent runs</h2><div id="routineRuns"></div>
+      <div id="routineStatus" class="status" role="status"></div>
+      <div class="muted">Cancel stops later steps; an action already sent may finish. Completed steps are not repeated on resume. If the server restarts during work, review the effects and cancel the interrupted run before starting again.</div>
+    </section>
+
     <section data-tab="People">
       <div class="card"><h3>People profiles &amp; recognition</h3>
         <div class="status">Scans are optional. To enrol a face, use the tablet: <b>Settings → Visual ID → Add a person</b> (admin password required). Deleting a person removes their recognition samples, reply preferences and device assignments.</div>
@@ -306,7 +328,7 @@
 </div>
 
 <script>
-const TABS = ["Devices", "Brain & keys", "Memory", "People", "Security", "Activity", "Talk"];
+const TABS = ["Devices", "Brain & keys", "Memory", "People", "Routines", "Security", "Activity", "Talk"];
 let tab = "Devices", data = null;
 const $ = s => document.querySelector(s), val = id => document.getElementById(id).value.trim();
 // names come from devices that pair themselves, so never put them inside onclick="…" — pass ids and look names up
@@ -373,13 +395,14 @@ function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if (t === "Security") drawSecurity(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if (t === "Security") drawSecurity(); }
 async function refresh(passive) {
   data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
   $("#hdr").textContent = `v${data.version} · ${on}/${data.devices.length} devices online · ${data.tools.length} tools`;
   $("#srvAddr").textContent = location.origin;
   if (tab === "Security") drawSecurity();
+  if(tab === "Routines") drawRoutines();
   $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
     <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
@@ -573,6 +596,61 @@ async function drawPeople() {
     || "<tr><td class='muted'>No one recognised since the server started.</td></tr>";
 }
 
+
+let routineData=null,routineEditing=null,routineDraft=[{kind:'briefing'}],routineHome=[],routineEditorReady=false;
+const routineKinds={briefing:'Household briefing',weather:'Weather',timer:'Focus / kitchen timer',home:'Home control',message:'Reply message'};
+function routineSelect(items,value){return Object.entries(items).map(([id,label])=>`<option value="${esc(id)}" ${id===value?'selected':''}>${esc(label)}</option>`).join('');}
+function routineDevices(value,any){return (any?'<option value="">Any permitted personal device</option>':'<option value="">Choose a source device</option>')+(routineData?.devices||[]).map(d=>`<option value="${d.id}" ${d.id===value?'selected':''} ${d.permitted?'':'disabled'}>${esc(d.name)}${d.permitted?'':' — restricted/unapproved'}</option>`).join('');}
+async function drawRoutines(){
+  const prior=$('#routineRunDevice').value;
+  routineData=await api('/admin/api/routines',{passive:true});
+  $('#routineRunDevice').innerHTML=routineDevices(prior,false);
+  $('#routineList').innerHTML=routineData.routines.map(r=>`<div class="card" style="margin-top:8px"><b>${esc(r.name)}</b><div class="muted">${r.steps.length} steps · ${r.enabled?'enabled':'disabled'}${r.device_id?' · '+esc((routineData.devices.find(d=>d.id===r.device_id)||{}).name||'assigned device'):''}</div><div class="row" style="margin-top:8px"><button class="b" onclick="editRoutine('${r.id}')">Edit</button><button class="b p" ${r.enabled?'':'disabled'} onclick="startRoutine('${r.id}')">Start</button><button class="b danger" onclick="deleteRoutine('${r.id}')">Delete</button></div></div>`).join('')||'<div class="muted">No routines yet. Choose a starter below.</div>';
+  $('#routineRuns').innerHTML=routineData.runs.slice(0,60).map(r=>`<div class="card" style="margin-bottom:10px"><b>${esc(r.name)}</b><div class="muted">${esc(r.status.replaceAll('_',' '))} · ${r.next_step}/${r.steps.length} steps completed · ${esc((routineData.devices.find(d=>d.id===r.device_id)||{}).name||'original device')}</div><details><summary>Step results</summary>${r.results.map(x=>`<div style="white-space:pre-wrap;margin-top:8px">${x.step+1}. ${esc(x.text)}</div>`).join('')||'<div class="muted">No step result yet.</div>'}</details><div class="row" style="margin-top:8px">${r.status==='waiting_approval'?`<button class="b p" onclick="controlRoutine('${r.id}','resume')">Resume after owner approval</button>`:''}${['running','cancelling','waiting_approval','interrupted'].includes(r.status)?`<button class="b" onclick="controlRoutine('${r.id}','cancel')">Cancel remaining steps</button>`:''}</div></div>`).join('')||'<div class="muted">No runs yet.</div>';
+  if(!routineEditorReady){routineEditorReady=true;routineTemplate('blank');}
+}
+function routineTemplate(kind){
+  if(routineEditorReady && routineEditing && !confirm('Replace this editor with a new routine? Unsaved changes will be discarded.'))return;
+  routineEditing=null;$('#routineEditorTitle').textContent='New routine';$('#routineEnabled').checked=true;
+  $('#routineAssignedDevice').innerHTML=routineDevices('',true);
+  $('#routineName').value=kind==='work'?'Start my workday':kind==='evening'?'Evening check-in':'';
+  routineDraft=kind==='work'?[{kind:'briefing'},{kind:'timer',seconds:1500,label:'Focus'}]:kind==='evening'?[{kind:'weather',city:''},{kind:'message',text:'Have a restful evening.'}]:[{kind:'briefing'}];
+  renderRoutineSteps();
+}
+function readRoutineDraft(){return routineDraft.map((s,i)=>{
+  const field=k=>$('#rs'+i+k).value;
+  if(s.kind==='weather')return {kind:s.kind,city:field('city').trim()};
+  if(s.kind==='message')return {kind:s.kind,text:field('text').trim()};
+  if(s.kind==='timer'){const minutes=Number(field('minutes'));if(!Number.isFinite(minutes)||minutes<=0)throw Error('Enter a positive timer duration.');return {kind:s.kind,seconds:Math.round(minutes*60),label:field('label').trim()};}
+  if(s.kind==='home')return {kind:s.kind,entity_id:field('entity'),action:field('action')};
+  return {kind:'briefing'};
+});}
+function renderRoutineSteps(){
+  $('#routineSteps').innerHTML=routineDraft.map((s,i)=>{
+    let fields='';
+    if(s.kind==='weather')fields=`<label>City (blank uses home city)</label><input id="rs${i}city" maxlength="80" value="${esc(s.city||'')}">`;
+    if(s.kind==='message')fields=`<label>Message in the completion reply</label><input id="rs${i}text" maxlength="300" value="${esc(s.text||'')}">`;
+    if(s.kind==='timer')fields=`<label>Minutes (up to 1440)</label><input id="rs${i}minutes" type="number" min="0.017" max="1440" step="any" value="${(s.seconds||1500)/60}"><label>Timer label</label><input id="rs${i}label" maxlength="40" value="${esc(s.label||'')}">`;
+    if(s.kind==='home'){
+      const options=Object.fromEntries(routineHome.map(x=>[x.id,x.name+' ('+x.id+')']));if(s.entity_id && !options[s.entity_id])options[s.entity_id]='Unavailable / not loaded: '+s.entity_id;
+      fields=`<label>Exact home control</label><select id="rs${i}entity"><option value="">Load and choose a light, fan or player</option>${routineSelect(options,s.entity_id||'')}</select><label>Action</label><select id="rs${i}action">${routineSelect({on:'Turn on',off:'Turn off',toggle:'Toggle'},s.action||'off')}</select>`;
+    }
+    return `<div class="card" style="margin-top:10px"><label>Step ${i+1}</label><select aria-label="Step ${i+1} type" onchange="changeRoutineKind(${i},this.value)">${routineSelect(routineKinds,s.kind)}</select>${fields}<div class="row" style="margin-top:8px"><button class="b" ${i===0?'disabled':''} onclick="moveRoutineStep(${i},-1)">Move up</button><button class="b" ${i===routineDraft.length-1?'disabled':''} onclick="moveRoutineStep(${i},1)">Move down</button><button class="b" ${routineDraft.length===1?'disabled':''} onclick="removeRoutineStep(${i})">Remove step</button></div></div>`;
+  }).join('');
+}
+function routineEditChange(fn){try{routineDraft=readRoutineDraft();fn();renderRoutineSteps();}catch(e){$('#routineStatus').textContent=e.message;}}
+function changeRoutineKind(i,kind){routineEditChange(()=>{routineDraft[i]=kind==='timer'?{kind,seconds:1500,label:''}:kind==='home'?{kind,entity_id:'',action:'off'}:kind==='weather'?{kind,city:''}:kind==='message'?{kind,text:''}:{kind};});}
+function addRoutineStep(){routineEditChange(()=>{if(routineDraft.length>=8)throw Error('Use at most eight steps.');routineDraft.push({kind:'briefing'});});}
+function removeRoutineStep(i){routineEditChange(()=>{if(routineDraft.length>1)routineDraft.splice(i,1);});}
+function moveRoutineStep(i,d){routineEditChange(()=>{const j=i+d;if(j>=0 && j<routineDraft.length)[routineDraft[i],routineDraft[j]]=[routineDraft[j],routineDraft[i]];});}
+async function routineAction(fn){try{await fn();await drawRoutines();}catch(e){$('#routineStatus').textContent=e.message||'Routine request failed.';}}
+function editRoutine(id){const r=routineData.routines.find(r=>r.id===id);if(!r)return;routineEditing=id;$('#routineEditorTitle').textContent='Edit routine';$('#routineName').value=r.name;$('#routineEnabled').checked=r.enabled;$('#routineAssignedDevice').innerHTML=routineDevices(r.device_id,true);routineDraft=structuredClone(r.steps);renderRoutineSteps();}
+async function saveRoutine(){await routineAction(async()=>{const body={name:$('#routineName').value.trim(),enabled:$('#routineEnabled').checked,device_id:$('#routineAssignedDevice').value,steps:readRoutineDraft()};const r=await api('/admin/api/routines'+(routineEditing?'/'+routineEditing:''),{method:routineEditing?'PUT':'POST',body:JSON.stringify(body)});if(r.id)routineEditing=r.id;$('#routineStatus').textContent='Routine saved. Nothing has run.';});}
+async function startRoutine(id){await routineAction(async()=>{const r=routineData.routines.find(x=>x.id===id),did=r.device_id||$('#routineRunDevice').value;if(!did)throw Error('Choose the source device first.');if(!confirm('Start '+r.name+' now? This runs the saved steps on behalf of the selected device.'))return;const run=await api('/admin/api/routines/'+id+'/start',{method:'POST',body:JSON.stringify({device_id:did})});$('#routineStatus').textContent='Run '+run.id+': '+run.status;});}
+async function controlRoutine(id,action){await routineAction(async()=>{await api('/admin/api/routine-runs/'+id+'/'+action,{method:'POST'});$('#routineStatus').textContent=action==='cancel'?'Remaining steps cancelled; an in-progress action may finish.':'Resume requested; completed steps will not repeat.';});}
+async function deleteRoutine(id){if(!confirm('Delete this routine and cancel its remaining steps? Previous effects cannot be undone.'))return;await routineAction(async()=>{await api('/admin/api/routines/'+id,{method:'DELETE'});$('#routineStatus').textContent='Routine deleted.';});}
+async function loadRoutineHome(){await routineAction(async()=>{routineDraft=readRoutineDraft();const r=await api('/admin/api/routine-home-options');if(!r.connected)throw Error(r.error);routineHome=r.items;renderRoutineSteps();$('#routineStatus').textContent='Available home controls loaded.';});}
+
 let personalData = null;
 async function drawPersonal() {
   personalData = await api('/admin/api/personal',{passive:true});
@@ -642,5 +720,6 @@ boot();
 </script>
 </body>
 </html>
+
 
 

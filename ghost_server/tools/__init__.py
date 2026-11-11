@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 TOOLS: dict[str, "Tool"] = {}
-_MODULES = ("brain", "memory", "home", "marquee", "web", "documents", "devices", "tasks", "security", "quiet", "household")
+_MODULES = ("brain", "memory", "home", "marquee", "web", "documents", "devices", "tasks", "security", "quiet", "household", "routines")
 _loaded = False
 
 
@@ -98,4 +98,5 @@ def run(name: str, args: dict | None, ctx: Ctx) -> str:
     except Exception as e:
         traceback.print_exc()
         return f"The {name} tool failed: {type(e).__name__}: {e}"
+
 
