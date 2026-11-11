@@ -1397,3 +1397,48 @@ if __name__ == "__main__":
 
 
 
+
+
+# Manual Help uses device credentials and owner-configured lists, never a model tool.
+async def _help_call(fn,*args):
+    try:return await asyncio.to_thread(fn,*args)
+    except PermissionError as exc:raise HTTPException(403,str(exc))
+    except ValueError as exc:raise HTTPException(400,str(exc))
+
+
+@app.post("/api/v1/help/register")
+async def help_register(dev: dict = Depends(device_auth)):
+    from . import emergency
+    return await _help_call(emergency.register,dev['id'])
+
+
+@app.get("/api/v1/help")
+async def help_inbox(dev: dict = Depends(device_auth)):
+    from . import emergency
+    return await _help_call(emergency.inbox,dev['id'])
+
+
+@app.post("/api/v1/help")
+async def help_start(body: dict,dev: dict = Depends(device_auth)):
+    from . import emergency
+    return await _help_call(emergency.start,dev['id'],body)
+
+
+@app.post("/api/v1/help/{token}/{action}")
+async def help_action(token: str,action: str,dev: dict = Depends(device_auth)):
+    from . import emergency
+    return await _help_call(emergency.mark,token,dev['id'],action)
+
+
+@app.get("/admin/api/help")
+async def help_admin(_: bool = Depends(admin_auth)):
+    from . import emergency
+    return await _help_call(emergency.admin_snapshot)
+
+
+@app.put("/admin/api/help")
+async def help_config(body: dict,request: Request,_: bool = Depends(admin_auth)):
+    from . import emergency
+    result=await _help_call(emergency.configure,body)
+    security.log("Help configuration changed",_ip(request))
+    return {'ok':True,'settings':result}
