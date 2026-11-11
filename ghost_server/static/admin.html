@@ -85,6 +85,24 @@
       <div class="grid" id="devList"></div>
     </section>
 
+    <section data-tab="Help">
+      <h2>Help &amp; family alerts — Stage 7A</h2>
+      <div class="card">
+        <div class="muted">Manual requests between updated Android phones. No SMS, calls, lights, sirens or automatic escalation in this stage. Open “Help &amp; family alerts” once on each updated phone to register it here. Notification delivery depends on phone settings and connectivity.</div>
+        <label><input style="width:auto" type="checkbox" id="helpEnabled"> Enable Help requests</label>
+        <label><input style="width:auto" type="checkbox" id="helpTest"> Test mode — every request is labelled TEST</label>
+        <label>Saved home address (shared only when the user selects “I am at home”)</label><input id="helpAddress" maxlength="300" autocomplete="off">
+        <div class="muted">Location is never substituted automatically. Configure only phones and recipients you trust. Removing a phone here immediately removes its access to request details.</div>
+        <table><thead><tr><th>Phone</th><th>Can request help</th><th>Receives requests</th></tr></thead><tbody id="helpDevices"></tbody></table>
+        <button class="b p" onclick="saveHelp()">Save Help setup</button>
+        <button class="b" onclick="loadHelp(true)">Reload setup</button>
+        <div id="helpStatus" class="status" role="status"></div>
+      </div>
+      <h2>Requests from the last 24 hours</h2>
+      <div class="muted">“Sent to connection” is not confirmed phone receipt. Acknowledgement means someone pressed “I have seen this request”; it does not confirm help is on the way. Requests expire after one hour. Refresh does not resend alerts.</div>
+      <div id="helpHistory" class="grid"></div>
+    </section>
+
     <section data-tab="Brain & keys">
       <div class="grid">
         <div class="card"><h3>Household</h3>
@@ -333,7 +351,7 @@
 </div>
 
 <script>
-const TABS = ["Devices", "Brain & keys", "Memory", "People", "Routines", "Security", "Activity", "Talk"];
+const TABS = ["Devices", "Brain & keys", "Memory", "People", "Routines", "Help", "Security", "Activity", "Talk"];
 let tab = "Devices", data = null;
 const $ = s => document.querySelector(s), val = id => document.getElementById(id).value.trim();
 // names come from devices that pair themselves, so never put them inside onclick="…" — pass ids and look names up
@@ -400,7 +418,7 @@ function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if (t === "Security") drawSecurity(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") loadHelp(); if (t === "Security") drawSecurity(); }
 async function refresh(passive) {
   data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
@@ -408,6 +426,7 @@ async function refresh(passive) {
   $("#srvAddr").textContent = location.origin;
   if (tab === "Security") drawSecurity();
   if(tab === "Routines") drawRoutines();
+  if(tab === "Help") loadHelp();
   $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
     <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
@@ -729,6 +748,40 @@ async function sendChat() {
 }
 boot();
 </script>
+
+<script>
+let helpLoaded=false,helpSnapshot=null;
+async function loadHelp(force=false){
+  try {
+    const r=await api('/admin/api/help',{passive:true});helpSnapshot=r;
+    if(!helpLoaded||force){
+      $('#helpEnabled').checked=r.settings.enabled;$('#helpTest').checked=r.settings.test_mode;
+      $('#helpAddress').value=r.settings.home_address;
+      $('#helpDevices').innerHTML=r.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${d.ready?'Updated Help screen registered':'Open Help on the updated phone first'}${d.approved?'':' · awaiting approval'}</div></td><td><input style="width:auto" type="checkbox" data-help-source="${esc(d.id)}" ${r.settings.initiators.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'} aria-label="Allow ${esc(d.name)} to request help"></td><td><input style="width:auto" type="checkbox" data-help-recipient="${esc(d.id)}" ${r.settings.recipients.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'} aria-label="Send requests to ${esc(d.name)}"></td></tr>`).join('');
+      helpLoaded=true;
+    }
+    $('#helpHistory').innerHTML=r.items.map(i=>`<div class="card"><h3>${i.test?'TEST — ':'HELP — '}${esc(i.source_name)}</h3><div>${i.cancelled?'Cancelled':i.expired?'Expired':'Active'} · ${esc(new Date(i.created*1000).toLocaleString())}</div><div class="muted">${helpLocation(i.location)}</div>${i.deliveries.map(d=>`<p>${esc(d.name)}: ${d.acknowledged?'Person acknowledged seeing it':d.received?'Phone received; person has not acknowledged':d.transport==='sent_to_connection'?'Sent to connection; phone receipt unconfirmed':'Delivery unconfirmed'}</p>`).join('')}<div class="muted">No emergency services contacted.</div></div>`).join('')||'<div class="card">No recent Help requests.</div>';
+  }catch(e){$('#helpStatus').textContent=e.message||'Could not load Help.';}
+}
+function helpLocation(loc){
+  if(loc.kind==='saved_home')return 'Saved home address selected by user (not GPS): '+esc(loc.address);
+  if(loc.kind==='last_known')return 'LAST KNOWN phone position: '+esc(loc.latitude)+', '+esc(loc.longitude)+' · '+esc(new Date(loc.at*1000).toLocaleString())+' · accuracy ~'+esc(loc.accuracy_m)+' m';
+  return 'Location unavailable / not shared';
+}
+async function saveHelp(){
+  try {
+    const enabled=$('#helpEnabled').checked,test_mode=$('#helpTest').checked;
+    if(enabled&&!test_mode&&!confirm('Enable LIVE family Help alerts? No emergency services, SMS or calls are included.'))return;
+    const body={enabled,test_mode,home_address:$('#helpAddress').value,
+      initiators:[...document.querySelectorAll('[data-help-source]:checked')].map(e=>e.dataset.helpSource),
+      recipients:[...document.querySelectorAll('[data-help-recipient]:checked')].map(e=>e.dataset.helpRecipient)};
+    await api('/admin/api/help',{method:'PUT',body:JSON.stringify(body)});
+    $('#helpStatus').textContent='Saved. Use the phone Help screen to send a clearly labelled test before live use.';
+    await loadHelp(true);
+  }catch(e){$('#helpStatus').textContent=e.message||'Could not save Help setup.';}
+}
+</script>
+
 </body>
 </html>
 

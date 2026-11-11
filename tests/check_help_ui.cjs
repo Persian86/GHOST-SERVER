@@ -1,0 +1,26 @@
+const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('assert');
+const html=fs.readFileSync(path.join(__dirname,'../ghost_server/static/admin.html'),'utf8');
+const source=[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m=>m[1]).join('\n');
+const nodes=new Map(),node=k=>{if(!nodes.has(k))nodes.set(k,{innerHTML:'',textContent:'',value:'',checked:false,style:{},addEventListener(){},classList:{toggle(){},add(){},remove(){}}});return nodes.get(k)};
+const ctx={console,window:{addEventListener(){}},document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){}},location:{hostname:'localhost',origin:'http://localhost',protocol:'http:'},setInterval:()=>0,setTimeout:()=>0,fetch:async()=>({ok:true,json:async()=>({logged_in:false})}),confirm:()=>true};
+vm.createContext(ctx);vm.runInContext(source,ctx);
+ctx.sample={settings:{enabled:false,test_mode:true,initiators:[],recipients:[],home_address:'Saved home'},devices:[{id:'dev_x',name:'<script>bad</script>',ready:true,approved:true}],items:[{source_name:'<img src=x>',test:true,cancelled:0,expired:false,created:1,location:{kind:'saved_home',address:'<script>address</script>'},deliveries:[{name:'<b>contact</b>',transport:'sent_to_connection',received:0,acknowledged:0}]}]};
+(async()=>{
+  assert(vm.runInContext(`TABS.includes('Help')`,ctx));
+  vm.runInContext('api=async()=>sample;',ctx);
+  await vm.runInContext('loadHelp()',ctx);
+  assert(node('#helpDevices').innerHTML.includes('&lt;script&gt;bad'));
+  const history=node('#helpHistory').innerHTML;
+  assert(!history.includes('<img')&&!history.includes('<script>address'));
+  assert(history.includes('phone receipt unconfirmed')&&history.includes('No emergency services contacted'));
+  node('#helpAddress').value='Unsaved edit';node('#helpEnabled').checked=true;
+  await vm.runInContext('loadHelp()',ctx);
+  assert.equal(node('#helpAddress').value,'Unsaved edit');assert(node('#helpEnabled').checked);
+  vm.runInContext('captured=null;api=async(url,opts)=>{if(opts?.method===\'PUT\')captured={url,body:JSON.parse(opts.body)};return sample;};',ctx);
+  node('#helpTest').checked=true;
+  await vm.runInContext('saveHelp()',ctx);
+  assert.equal(vm.runInContext('captured.url',ctx),'/admin/api/help');
+  assert.equal(vm.runInContext('captured.body.home_address',ctx),'Unsaved edit');
+  assert.equal(vm.runInContext('captured.body.test_mode',ctx),true);
+  console.log('PASS: Help tab, escaped recipients/location/history, honest delivery states, draft preservation and setup payload');
+})().catch(e=>{console.error(e);process.exitCode=1});
