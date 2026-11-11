@@ -28,8 +28,10 @@ def reply(device: dict, text: str, voice: bool = False) -> dict:
     from .claude import route
     from .tools.brain import claude
     store.add_turn(device["id"], "user", text)
-    decls = tools.declarations("chat")
-    own = hub.conns[device["id"]].capabilities if hub.is_online(device["id"]) else []
+    from . import access
+    source = device.get("hub_id") or device["id"]
+    decls = [d for d in tools.declarations("chat") if access.tool_allowed(source,d["name"])]
+    own = hub.conns[device["id"]].capabilities if hub.is_online(device["id"]) and not access.limited(source) else []
     decls += [{"name": SELF + c["name"], "description": "[on THIS device] " + c.get("description", ""),
                "parameters": c.get("parameters") or {"type": "OBJECT", "properties": {}}} for c in own]
     system = build(device)
@@ -40,7 +42,7 @@ def reply(device: dict, text: str, voice: bool = False) -> dict:
                    f"'{r}' as the area/room when you use the smart home.")
     system += "\n\n" + (VOICE_NOTE if voice else "This is a TEXT chat; markdown is fine.")
     history = [{"role": "system", "content": system}]
-    for t in store.recent_turns(12, device["id"])[:-1]:
+    for t in ([] if access.limited(source) else store.recent_turns(12, device["id"])[:-1]):
         history.append({"role": "assistant" if t["role"] == "assistant" else "user", "content": t["text"]})
     history.append({"role": "user", "content": text})
     llm = claude(fast=route(history) == "fast")
@@ -55,6 +57,11 @@ def reply(device: dict, text: str, voice: bool = False) -> dict:
         for c in calls:
             used.append(c.name)
             if c.name.startswith(SELF):
+                denial = access.authorize_action(source,"device_action",{"device_id":device["id"],"action":c.name[len(SELF):],"args":c.args})
+                if denial:
+                    result = denial
+                    history.append({"role":"tool","tool_call_id":c.id,"content":result})
+                    continue
                 r = hub.call_sync(device["id"], c.name[len(SELF):], c.args)
                 result = str(r.get("result")) if r.get("ok") else f"failed: {r.get('error')}"
             else:
@@ -65,3 +72,4 @@ def reply(device: dict, text: str, voice: bool = False) -> dict:
         answer = "I got stuck in a loop of tool calls — try rephrasing."
     store.add_turn(device["id"], "assistant", answer)
     return {"text": answer, "tools": used}
+

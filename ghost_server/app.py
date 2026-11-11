@@ -88,6 +88,13 @@ def _ip(request) -> str:
     return getattr(getattr(request, "client", None), "host", "") or ""
 
 
+from . import access
+
+def _close_device_link(did, code=1000, reason="access policy changed"):
+    conn = hub.conns.get(did)
+    if conn is not None and hub.loop is not None:
+        asyncio.run_coroutine_threadsafe(conn.ws.close(code=code,reason=reason),hub.loop)
+
 WAITING = "Waiting for approval — approve this device on the Ghost Server admin page (Security)"
 
 
@@ -111,6 +118,10 @@ def device_auth(request: Request, authorization: str | None = Header(None)) -> d
     if row is None:
         raise HTTPException(401, "Unknown or revoked device key — pair this device again")
     _check_device(row, _ip(request), request.url.scheme == "https")
+    try:
+        access.check_route(row["id"],request.method,request.url.path)
+    except PermissionError as exc:
+        raise HTTPException(403,str(exc))
     store.touch_device(row["id"])
     return {"id": row["id"], "name": row["name"], "kind": row["kind"]}
 
@@ -249,9 +260,12 @@ def device_approve_from_owner(did: str, body: dict, request: Request, dev: dict 
     """Approve or reject a waiting device from the owner's own phone or PC (the app asks for the
     fingerprint / phone PIN first). Only for devices still waiting — never to undo a removal or
     approve something already removed."""
+    if access.enabled() and access.role(dev["id"]) != "owner":
+        raise HTTPException(403,"Only an owner-profile device can approve devices")
     allowed = [x.strip().lower() for x in str(store.get("approve_from") or "").split(",") if x.strip()]
     ok = (any(a == dev["name"].lower() or a in dev["name"].lower() for a in allowed) if allowed
           else quiet.is_mine(dev["kind"], dev["name"]))
+    if access.enabled(): ok = access.role(dev["id"]) == "owner"
     if dev["kind"] not in ("phone", "desktop", "laptop") or not ok:
         raise HTTPException(403, "Only the owner's own phone or PC can approve devices")
     cur = store.device(did)
@@ -288,16 +302,25 @@ async def session(dev: dict = Depends(device_auth)):
         "assistant_name": store.get("assistant_name"),
         "owner_name": store.get("owner_name"),
         "system_instruction": prompt.build(d),
-        "server_tools": tools.declarations("live"),
+        "server_tools": [t for t in tools.declarations("live") if access.tool_allowed(d["id"],t["name"])],
+        "access": {"enabled":access.enabled(),"role":access.role(d["id"])},
         "gemini": creds,
         "server_time": time.time(),
         "key": {"rotate_days": int(store.get("key_rotate_days") or 30),
                 "age_days": round((time.time() - float(d.get("key_at") or d.get("created_at") or 0)) / 86400, 1)},
     }
+    if access.limited(d["id"]) and "api_key" in creds:
+        creds.pop("api_key",None)
+        creds["error"] = "A short-lived voice token is required for this restricted device."
+    if access.limited(d["id"]):
+        out["owner_name"] = ""
+        if not creds.get("token"):
+            out["gemini"] = {"model":creds.get("model"),"voice":creds.get("voice"),
+                             "api_version":creds.get("api_version"),"error":"Restricted devices require a short-lived voice token."}
     # Away mode: phones and tablets keep a copy of the Gemini key so they can still
     # talk (with their own tools + web search) when they can't reach the server.
     key = str(store.get("gemini_api_key") or "").strip()
-    if store.get("away_mode") and key and d.get("kind") in ("phone", "tablet"):
+    if not access.limited(d["id"]) and store.get("away_mode") and key and d.get("kind") in ("phone", "tablet"):
         out["offline"] = {"api_key": key, "model": store.get("gemini_live_model"),
                           "voice": store.get("gemini_voice")}
     return out
@@ -582,6 +605,8 @@ async def photos_list(dev: dict = Depends(device_auth)):
 async def photo(n: int, k: str = "", w: int = 1600, authorization: str | None = Header(None)):
     if store.device_by_key(_key_from(authorization, k)) is None:
         raise HTTPException(401, "Unknown device key")
+    try: access.check_route(store.device_by_key(_key_from(authorization,k))["id"],"GET","/photos/")
+    except PermissionError as exc: raise HTTPException(403,str(exc))
     data = await asyncio.to_thread(photos.image, n, w)
     if data is None:
         raise HTTPException(404, "No such photo")
@@ -626,7 +651,7 @@ async def events(body: dict, dev: dict = Depends(device_auth)):
     store.add_event(dev["id"], str(body.get("type", "event")), body.get("data") or {})
     if body.get("type") == "status":
         store.touch_device(dev["id"], info=body.get("data") or {})
-    if body.get("type") == "presence":
+    if body.get("type") == "presence" and not access.limited(dev["id"]):
         state = str((body.get("data") or {}).get("state", ""))
         if state in PRESENCE and str(store.get(f"on_{state}") or "").strip():
             asyncio.get_running_loop().run_in_executor(None, run_presence, dict(store.device(dev["id"])), state)
@@ -685,6 +710,8 @@ async def home_tiles_for(ids: str = "", dev: dict = Depends(device_auth)):
 
 @app.post("/api/v1/home/lights-off")
 async def home_lights_off(dev: dict = Depends(device_auth)):
+    denial = access.authorize_action(dev["id"],"home_lights_off",{})
+    if denial: return {"ok":False,"error":denial}
     try:
         return await asyncio.to_thread(dashboard.all_lights_off)
     except Exception as e:  # noqa: BLE001
@@ -697,6 +724,8 @@ async def home_switch(body: dict, dev: dict = Depends(device_auth)):
     eid = str(body.get("entity_id", ""))
     if not re.fullmatch(r"[a-z_]+\.[A-Za-z0-9_]+", eid):
         raise HTTPException(400, "bad entity_id")
+    denial = access.authorize_action(dev["id"],"home_tile",{"entity_id":eid,"action":str(body.get("action","toggle"))})
+    if denial: return {"ok":False,"error":denial}
     try:
         return await asyncio.to_thread(dashboard.switch, eid, str(body.get("action", "toggle")))
     except Exception as e:  # noqa: BLE001
@@ -832,7 +861,11 @@ async def devices_ep(dev: dict = Depends(device_auth)):
 
 @app.get("/files/{fid}")
 async def get_file(fid: str, request: Request, k: str = "", authorization: str | None = Header(None)):
-    ok = store.device_by_key(_key_from(authorization, k)) is not None
+    device = store.device_by_key(_key_from(authorization,k))
+    if device is not None:
+        try: access.check_route(device["id"],"GET","/files/")
+        except PermissionError as exc: raise HTTPException(403,str(exc))
+    ok = device is not None
     if not ok:
         ok = security.session_ok(request.cookies.get("ghost_admin", ""))
     if not ok:
@@ -868,24 +901,30 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     store.touch_device(row["id"])
     await ws.send_json({"type": "welcome", "device_id": row["id"], "name": row["name"],
                         "assistant_name": store.get("assistant_name")})
-    await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
+    if not access.limited(row["id"]):
+        await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
     for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot,
                  theme.current):
         try:
+            if access.limited(row["id"]): continue
             await ws.send_json(await asyncio.to_thread(snap))
         except Exception:  # noqa: BLE001
             pass
     try:
         while True:
             msg = await ws.receive_json()
+            current_device = store.device(row["id"])
+            if current_device is None or current_device["revoked"] or not current_device["approved"]:
+                await ws.close(code=4401,reason="device no longer approved")
+                break
             kind = msg.get("type")
             if kind == "hello":
                 caps = [c for c in (msg.get("capabilities") or []) if isinstance(c, dict) and c.get("name")][:60]
                 conn.capabilities, conn.info = caps, msg.get("info") or {}
                 store.touch_device(row["id"], capabilities=caps, info=conn.info)
-                await ws.send_json({"type": "ready", "server_tools": [t["name"] for t in tools.declarations("live")]})
+                await ws.send_json({"type": "ready", "server_tools": [t["name"] for t in tools.declarations("live") if access.tool_allowed(row["id"],t["name"])]})
             elif kind == "result":
-                hub.resolve(msg)
+                hub.resolve(msg, row["id"])
             elif kind == "event":
                 store.add_event(row["id"], str(msg.get("event", "event")), msg.get("data") or {})
             elif kind == "ping":
@@ -1061,6 +1100,7 @@ def overview(_: bool = Depends(admin_auth)):
     from .tools.tasks import TASKS
     devs = store.devices()
     for d in devs:
+        d["access_role"] = access.role(d["id"],configured=True)
         d["online"] = hub.is_online(d["id"])
         if d["online"]:
             d["capabilities"] = hub.conns[d["id"]].capabilities
@@ -1073,6 +1113,8 @@ def overview(_: bool = Depends(admin_auth)):
 
 @app.put("/admin/api/settings")
 def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    if "household_access" in body and not isinstance(body["household_access"],bool):
+        raise HTTPException(400,"Household access must be on or off")
     changed = []
     for k, v in body.items():
         if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
@@ -1084,8 +1126,12 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         store.put(k, v)
     if any(k.startswith("theme_") for k in changed):
         theme.push_soon()                 # the new look on every screen now
+    if "household_access" in changed:
+        access.invalidate()
+        for conn in list(hub.conns.values()):
+            _close_device_link(conn.device_id)
     if changed:                           # names only — never the values (keys, tokens)
-        sec = {"approve_new_devices", "security_alerts"}
+        sec = {"household_access", "approve_new_devices", "security_alerts"}
         off = [k for k in sec & set(changed) if not body.get(k)]
         security.log("Settings changed: " + ", ".join(sorted(changed))[:180], _ip(request),
                      "warn" if off else "ok",
@@ -1094,6 +1140,19 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         quiet.tick_soon()
     return {"ok": True, "settings": store.all_settings()}
 
+
+
+@app.get("/admin/api/action-approvals")
+def action_approvals(_:bool=Depends(admin_auth)):
+    return {"enabled":access.enabled(),"requests":access.pending()}
+
+@app.post("/admin/api/action-approvals/{token}")
+def action_decide(token:str,body:dict,request:Request,_:bool=Depends(admin_auth)):
+    if not isinstance(body.get("approve"),bool):raise HTTPException(400,"Choose approve or decline")
+    try: access.decide(token,body["approve"])
+    except ValueError as exc:raise HTTPException(409,str(exc))
+    security.log("Action request "+token+(" approved" if body["approve"] else " declined"),_ip(request))
+    return {"ok":True,"executed":False}
 
 @app.post("/admin/api/pair-code")
 def pair_code(request: Request, _: bool = Depends(admin_auth)):
@@ -1107,6 +1166,12 @@ def device_edit(did: str, body: dict, request: Request, _: bool = Depends(admin_
     cur = store.device(did)
     if cur is None:
         raise HTTPException(404, "No such device")
+    if "access_role" in body:
+        try: access.set_role(did,str(body["access_role"]))
+        except ValueError as exc: raise HTTPException(400,str(exc))
+        access.invalidate()
+        security.log(f"Device access profile changed to {body['access_role']}",_ip(request),"warn",did)
+        _close_device_link(did,reason="access profile changed")
     if body.get("approve") and not body.get("revoke"):
         store.approve_device(did)
         store.x("UPDATE devices SET key_at = ? WHERE id = ? AND key_at = 0", (time.time(), did))
@@ -1116,7 +1181,7 @@ def device_edit(did: str, body: dict, request: Request, _: bool = Depends(admin_
         store.revoke_device(did)
         c = hub.conns.get(did)
         if c:
-            asyncio.ensure_future(c.ws.close(code=4401, reason="revoked"))
+            _close_device_link(did,code=4401,reason="revoked")
     if body.get("name"):
         store.rename_device(did, str(body["name"]))
     return {"ok": True}
@@ -1226,4 +1291,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

@@ -35,6 +35,7 @@ class Hub:
     def __init__(self) -> None:
         self.conns: dict[str, AgentConn] = {}
         self.pending: dict[str, asyncio.Future] = {}
+        self.pending_owner: dict[str, str] = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ── connection lifecycle ─────────────────────────────────────────────────
@@ -57,8 +58,12 @@ class Hub:
         return device_id in self.conns
 
     # ── messages from agents ─────────────────────────────────────────────────
-    def resolve(self, msg: dict) -> None:
-        fut = self.pending.pop(str(msg.get("id") or ""), None)
+    def resolve(self, msg: dict, device_id: str = "") -> None:
+        cid = str(msg.get("id") or "")
+        if self.pending_owner.get(cid) != device_id:
+            return
+        self.pending_owner.pop(cid, None)
+        fut = self.pending.pop(cid, None)
         if fut is not None and not fut.done():
             fut.set_result(msg)
 
@@ -66,6 +71,9 @@ class Hub:
     async def send(self, device_id: str, msg: dict) -> bool:
         c = self.conns.get(device_id)
         if c is None:
+            return False
+        from . import access
+        if not access.outgoing_allowed(device_id,msg):
             return False
         # Do Not Disturb: hold what would be said, unless it's allowed through
         if msg.get("type") in ("say", "task_done"):
@@ -84,13 +92,16 @@ class Hub:
         cid = "c_" + secrets.token_hex(6)
         fut = asyncio.get_running_loop().create_future()
         self.pending[cid] = fut
+        self.pending_owner[cid] = device_id
         if not await self.send(device_id, {"type": "call", "id": cid, "tool": tool, "args": args or {}}):
             self.pending.pop(cid, None)
+            self.pending_owner.pop(cid, None)
             return {"ok": False, "error": "that device is offline"}
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
             self.pending.pop(cid, None)
+            self.pending_owner.pop(cid, None)
             return {"ok": False, "error": "the device did not answer in time"}
 
     async def broadcast(self, msg: dict, except_id: str = "") -> int:
@@ -152,3 +163,4 @@ def find_device(name: str, online_only: bool = True) -> Optional[dict]:
         if hits:
             return hits[0]
     return None
+

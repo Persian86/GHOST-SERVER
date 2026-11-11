@@ -111,6 +111,9 @@ def device_action(args: dict, ctx: Ctx) -> str:
             raw = json.loads(raw)
         except Exception:
             raw = {"value": raw}
+    from .. import access
+    denial = access.authorize_action(ctx.device_id,"device_action",{"device_id":d["id"],"action":action,"args":raw})
+    if denial: return denial
     res = hub.call_sync(d["id"], action, raw)
     if res.get("ok"):
         return f"{d['name']}: {res.get('result') or 'done'}"
@@ -199,3 +202,4 @@ def find_phone(args: dict, ctx: Ctx) -> str:
         out.append(f"{d['name']}: {res.get('result') or 'ringing'}" if res.get("ok")
                    else f"{d['name']} couldn't ring: {res.get('error', 'no answer')}")
     return " ".join(out)
+

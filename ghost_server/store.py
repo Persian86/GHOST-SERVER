@@ -101,6 +101,7 @@ def x(sql: str, args: tuple = ()) -> int:
 
 # ── settings ─────────────────────────────────────────────────────────────────
 DEFAULTS: dict[str, Any] = {
+    "household_access": False,  # opt-in; admin assigns device access ceilings
     "owner_name": "",
     "assistant_name": "Ghost",
     "city": "Melbourne",
@@ -230,6 +231,8 @@ def redeem_pair_code(code: str, name: str, kind: str, info: dict | None = None) 
       "VALUES (?,?,?,?,?,?,?,?,?)",
       (device_id, (name or kind or "device")[:60], (kind or "agent")[:30], _hash(key),
        json.dumps(info or {}), time.time(), time.time(), approved, time.time()))
+    from . import access
+    access.initial(device_id)
     return device_id, key
 
 
@@ -413,3 +416,4 @@ def file(fid: str) -> dict | None:
 
 def files(limit: int = 50) -> list[dict]:
     return [dict(r) for r in q("SELECT * FROM files ORDER BY created_at DESC LIMIT ?", (limit,))]
+

@@ -349,9 +349,10 @@ def overview(current_token: str = "") -> dict:
         "pending": [{"id": d["id"], "name": d["name"], "kind": d["kind"], "ip": (d.get("ips") or [""])[-1],
                      "asked": ago(d.get("created_at") or 0)} for d in pending],
         "keys": keys,
-        "settings": {k: store.get(k) for k in ("approve_new_devices", "security_alerts", "key_rotate_days",
+        "settings": {k: store.get(k) for k in ("household_access", "approve_new_devices", "security_alerts", "key_rotate_days",
                                                 "admin_idle_hours", "https_only", "approve_from",
                                                 "admin_lock_minutes")},
         "tls": _tls(),
         "log": events,
     }
+

@@ -90,8 +90,12 @@ def run(name: str, args: dict | None, ctx: Ctx) -> str:
     if t is None:
         return f"Unknown tool '{name}'."
     try:
+        from .. import access
+        if not access.tool_allowed(ctx.device_id, name):
+            return "Permission denied by this device's household access profile."
         out = t.handler(dict(args or {}), ctx)
         return out if isinstance(out, str) else str(out)
     except Exception as e:
         traceback.print_exc()
         return f"The {name} tool failed: {type(e).__name__}: {e}"
+
