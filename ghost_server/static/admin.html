@@ -238,6 +238,11 @@
       </div>
 
       <h2>Personal replies &amp; vocabulary</h2>
+      <div class="card"><h3>Conversation handoff</h3>
+        <label><input type="checkbox" id="handoffEnabled" onchange="setHandoff(this.checked)"> Allow requested recaps between personal phones and desktops</label>
+        <div class="muted">Off by default. Assign both devices to the same person below. Shared tablets and speakers are excluded. Ask Ghost to leave a recap on another device, then ask to accept it there within ten minutes. Nothing is announced remotely. Turning this off clears pending recaps.</div>
+        <div id="handoffStatus" class="status" role="status"></div>
+      </div>
       <div class="card"><h3>Create a person without a scan</h3>
         <div class="muted">No camera or microphone enrolment is required. Existing recognised people are available too.</div>
         <div class="row" style="margin-top:8px"><input id="personalNewName" maxlength="40" placeholder="Person's name"><button class="b" onclick="addPersonalPerson()">Add person</button></div>
@@ -651,9 +656,15 @@ async function controlRoutine(id,action){await routineAction(async()=>{await api
 async function deleteRoutine(id){if(!confirm('Delete this routine and cancel its remaining steps? Previous effects cannot be undone.'))return;await routineAction(async()=>{await api('/admin/api/routines/'+id,{method:'DELETE'});$('#routineStatus').textContent='Routine deleted.';});}
 async function loadRoutineHome(){await routineAction(async()=>{routineDraft=readRoutineDraft();const r=await api('/admin/api/routine-home-options');if(!r.connected)throw Error(r.error);routineHome=r.items;renderRoutineSteps();$('#routineStatus').textContent='Available home controls loaded.';});}
 
+async function setHandoff(on){
+  try { await api('/admin/api/settings',{method:'PUT',body:JSON.stringify({handoff_enabled:on})});
+    data.settings.handoff_enabled=on;$('#handoffStatus').textContent=on?'Handoff enabled. Start a new conversation to load its tool.':'Handoff disabled; pending recaps cleared.';
+  } catch(e) { $('#handoffEnabled').checked=!on;$('#handoffStatus').textContent=e.message||'Could not save handoff setting.'; }
+}
 let personalData = null;
 async function drawPersonal() {
   personalData = await api('/admin/api/personal',{passive:true});
+  $('#handoffEnabled').checked=data?.settings?.handoff_enabled===true;
   $('#personalDevices').innerHTML=personalData.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${esc(d.kind)}</div></td><td><select aria-label="Personal replies for ${esc(d.name)}" onchange="assignPersonal('${d.id}',this.value)"><option value="">Shared / unassigned</option>${personalData.people.map(p=>`<option value="${p.id}" ${p.id===d.person_id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></td></tr>`).join('') || '<tr><td>No paired devices.</td></tr>';
   $('#personalForms').innerHTML=personalData.people.map(p=>{
     const v=p.preferences,id=p.id,options=(items,selected)=>Object.entries(items).map(([k,label])=>`<option value="${k}" ${k===selected?'selected':''}>${esc(label)}</option>`).join('');

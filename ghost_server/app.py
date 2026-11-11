@@ -1117,6 +1117,8 @@ def overview(_: bool = Depends(admin_auth)):
 def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
     if "household_access" in body and not isinstance(body["household_access"],bool):
         raise HTTPException(400,"Household access must be on or off")
+    if "handoff_enabled" in body and type(body["handoff_enabled"]) is not bool:
+        raise HTTPException(400,"Conversation handoff must be on or off")
     changed = []
     for k, v in body.items():
         if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
@@ -1126,6 +1128,9 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         if store.get(k) != v:
             changed.append(k)
         store.put(k, v)
+    if "handoff_enabled" in changed:
+        from . import handoff
+        handoff.clear()
     if any(k.startswith("theme_") for k in changed):
         theme.push_soon()                 # the new look on every screen now
     if "household_access" in changed:
