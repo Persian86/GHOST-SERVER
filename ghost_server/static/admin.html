@@ -219,6 +219,18 @@
 
     <section data-tab="Security">
       <div class="card" id="secBanner" style="margin-bottom:14px"></div>
+      <div class="card" style="margin-bottom:14px"><h3>Household access</h3>
+        <label><input type="checkbox" style="width:auto" id="s_access" onchange="setHouseholdAccess(this.checked)"> Enforce device access profiles and owner action approval</label>
+        <div class="muted">Off keeps existing behaviour. Owner/Adult devices retain household access; Child/Guest devices get general conversation, weather, news and reasoning only. Mark your personal device Owner before enabling. New devices paired while enabled start as Guest.</div>
+        <div class="muted" style="margin-top:8px">A profile is the ceiling for everyone using that device. Face/voice recognition cannot raise it. It does not erase cached/offline data: configure a device before handing it to someone else.</div>
+        <table id="accessDevices" style="margin-top:10px"></table>
+      </div>
+      <div class="card" style="margin-bottom:14px"><h3>Actions awaiting owner approval</h3>
+        <div class="muted">When household access is on, remote device actions and Home Assistant changes need owner approval. Review the exact request below. Approving does not execute it: retry the same action from the requesting device within five minutes. Each approval works once.</div>
+        <div id="actionApprovals" style="margin-top:10px"></div>
+        <div id="actionStatus" class="status" role="status"></div>
+      </div>
+
       <div class="grid">
         <div class="card"><h3>Two-step login</h3>
           <div class="muted">Signing in needs your password <i>and</i> a 6-digit code from an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password…).</div>
@@ -406,16 +418,21 @@ document.addEventListener("input", e => { if (e.target.dataset && e.target.datas
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 async function makeCode() { const r = await api("/admin/api/pair-code", {method: "POST"}); $("#pairCode").textContent = r.code; }
 // ── Security tab ──────────────────────────────────────────────────────────────
-let sec = null, tfaSetup = null, shownCodes = null;
+let sec = null, tfaSetup = null, shownCodes = null, actionRequests = {};
 async function drawSecurity() {
   sec = await api("/admin/api/security");
+  $("#s_access").checked = !!sec.settings.household_access;
+  $("#accessDevices").innerHTML = data.devices.filter(d=>d.id!=="dev_admin").map(d=>`<tr><td>${esc(d.name)}<div class="muted">${esc(d.kind)}</div></td><td><select aria-label="Access profile for ${esc(d.name)}" onchange="setAccessRole('${d.id}',this.value)">${["owner","adult","child","guest"].map(r=>`<option value="${r}" ${r===(d.access_role||"adult")?"selected":""}>${r[0].toUpperCase()+r.slice(1)}</option>`).join("")}</select></td></tr>`).join("") || "<tr><td>No devices paired.</td></tr>";
+  const approvals = await api("/admin/api/action-approvals",{passive:true});
+  actionRequests = Object.fromEntries(approvals.requests.map(a=>[a.id,a]));
+  $("#actionApprovals").innerHTML = approvals.requests.map(a=>`<div class="card"><b>${esc(a.name)} · ${esc(a.operation)}</b><div class="muted">Expires ${esc(new Date(a.expires*1000).toLocaleTimeString())}</div><pre style="white-space:pre-wrap;overflow:auto;max-height:180px;word-break:break-word">${esc(JSON.stringify(JSON.parse(a.arguments),null,2))}</pre><div class="row"><button class="b p" onclick="reviewAction('${a.id}',true)">Approve once</button><button class="b danger" onclick="reviewAction('${a.id}',false)">Decline</button></div></div>`).join("") || '<div class="muted">No actions awaiting approval.</div>';
   const t = sec.two_step, warn = [];
   if (!t.on) warn.push("two-step login is off");
   if (!sec.settings.approve_new_devices) warn.push("new devices don't need approval");
   if (!sec.settings.security_alerts) warn.push("security alerts are off");
   $("#secBanner").innerHTML = warn.length
     ? `<span style="color:var(--warn)">●</span> Could be safer: ${warn.join(" · ")}`
-    : `<span class="ok">●</span> All protections on`;
+    : `<span class="ok">●</span> Sign-in and pairing protections on`;
   if (shownCodes) {
     $("#tfa").innerHTML = `<div class="ok">Save these backup codes somewhere safe — each one works once if you lose your phone. They won't be shown again.</div>
       <div style="font:600 16px/1.9 ui-monospace,monospace;columns:2;margin:8px 0">${shownCodes.map(esc).join("<br>")}</div>
@@ -488,6 +505,24 @@ async function newBackup() {
 async function signOutOthers() { const r = await api("/admin/api/sessions/others", {method: "POST"}); drawSecurity(); }
 async function endSess(id) { await api(`/admin/api/sessions/${id}/end`, {method: "POST"}); drawSecurity(); }
 async function logout() { await api("/admin/logout", {method: "POST"}); location.reload(); }
+async function setHouseholdAccess(on) {
+  if (!confirm(on ? "Enable server-enforced device profiles? Remote actions and home changes will need approval here." : "Turn off household access enforcement and restore legacy device access?")) {drawSecurity();return;}
+  await secSet('household_access',on);await refresh();
+}
+async function setAccessRole(id,role) {
+  if (!confirm(`Set ${devName(id)} to ${role}? This is a device-wide ceiling, not a recognised person's identity.`)){drawSecurity();return;}
+  await api('/admin/api/devices/'+id,{method:'POST',body:JSON.stringify({access_role:role})});await refresh();
+}
+async function reviewAction(id,approve) {
+  const request=actionRequests[id];
+  if(!request){await drawSecurity();return;}
+  if(approve && !confirm(`Approve once for ${request.name}?\n${request.operation}\n${JSON.stringify(JSON.parse(request.arguments),null,2)}\n\nThis does not execute the action. It permits one matching retry before expiry.`))return;
+  try {
+    await api('/admin/api/action-approvals/'+id,{method:'POST',body:JSON.stringify({approve})});
+    $("#actionStatus").textContent=approve?'Approved once. Retry the same action from the requesting device before expiry.':'Action declined.';
+    await drawSecurity();
+  } catch(e) {$("#actionStatus").textContent=e.message || 'Could not review this request.';}
+}
 async function secSet(k, v) { await api("/admin/api/settings", {method: "PUT", body: JSON.stringify({[k]: v})}); data.settings[k] = v; drawSecurity(); }
 async function approve(id) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({approve: true})}); refresh(); if (tab === "Security") drawSecurity(); }
 async function reject(id) { const name = devName(id); if (confirm(`Reject ${name}? It won't be able to connect.`)) { await api("/admin/api/devices/" + id, {method: "POST", body: JSON.stringify({revoke: true})}); refresh(); } }
@@ -552,3 +587,4 @@ boot();
 </script>
 </body>
 </html>
+

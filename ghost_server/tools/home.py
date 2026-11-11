@@ -124,6 +124,11 @@ def _run(parameters: dict, ctx: Ctx) -> str:
     act = str(parameters.get("action") or "").lower().strip()
     target = str(parameters.get("target") or "").strip()
     try:
+        from .. import access
+        if act == "ask":
+            # Bind approval to the exact request, including confirmed; a model boolean is not approval.
+            denial = access.authorize_action(ctx.device_id,"home_assistant",parameters)
+            if denial: return denial
         if act == "ask":
             return _ask(str(parameters.get("text") or target))
         states = _req("GET", "/api/states").json()
@@ -133,6 +138,8 @@ def _run(parameters: dict, ctx: Ctx) -> str:
                 return _done("home summary", summary=summary(states))
             hits = match_entities(states, target)
             if not hits:
+                if access.enabled():
+                    return _failed("status", "no matching entity; use an explicit Home Assistant request with owner approval")
                 return _ask(f"what is the status of {target}")
             return _done("check device", status="; ".join(_describe(s) for s in hits))
 
@@ -145,14 +152,19 @@ def _run(parameters: dict, ctx: Ctx) -> str:
             hits = match_entities(states, target, (act,))
             if not hits:
                 return _failed(f"run {act}", f"no {act} called '{target}'")
+            denial = access.authorize_action(ctx.device_id,"home_service",{"domain":act,"service":"turn_on","data":{"entity_id":hits[0]["entity_id"]}})
+            if denial: return denial
             code = _call(act, "turn_on", {"entity_id": hits[0]["entity_id"]})
             return _done(f"run {act}", name=hits[0]["attributes"].get("friendly_name"), http=code)
 
         if act in ("on", "off", "toggle", "set", "open", "close", "lock", "unlock"):
             hits = match_entities(states, target)
             if not hits:
+                if access.enabled():
+                    return _failed("home_assistant", "no matching entity; use an explicit Home Assistant request with owner approval")
                 return _ask(f"{'turn ' + act if act in ('on', 'off') else act} {target}")
             done = []
+            plan = []
             for s in hits:
                 eid = s["entity_id"]
                 dom = eid.split(".")[0]
@@ -188,8 +200,14 @@ def _run(parameters: dict, ctx: Ctx) -> str:
                     if not parameters.get("confirmed"):
                         return (f"CONFIRMATION NEEDED: {service.replace('_', ' ')} {name} is a security action. "
                                 "Ask the user to confirm out loud, then call again with confirmed=true.")
-                _call(dom, service, data)
+                plan.append({"domain":dom,"service":service,"data":data})
                 done.append(name)
+            # Review the entire resolved batch before any write. Per-entity approvals
+            # could otherwise toggle an early entity again on a later retry.
+            denial = access.authorize_action(ctx.device_id,"home_service",{"services":plan})
+            if denial: return denial
+            for item in plan:
+                _call(item["domain"],item["service"],item["data"])
             # Read back what actually happened
             after = {s["entity_id"]: s for s in _req("GET", "/api/states").json()}
             seen = "; ".join(_describe(after[s["entity_id"]]) for s in hits if s["entity_id"] in after)
@@ -221,3 +239,4 @@ user's spoken confirmation first.""", {
     })
 def home_assistant(args: dict, ctx: Ctx) -> str:
     return _run(args, ctx)
+
