@@ -101,6 +101,7 @@ def x(sql: str, args: tuple = ()) -> int:
 
 # ── settings ─────────────────────────────────────────────────────────────────
 DEFAULTS: dict[str, Any] = {
+    "handoff_enabled": False,
     "household_access": False,  # opt-in; admin assigns device access ceilings
     "owner_name": "",
     "assistant_name": "Ghost",
@@ -416,4 +417,5 @@ def file(fid: str) -> dict | None:
 
 def files(limit: int = 50) -> list[dict]:
     return [dict(r) for r in q("SELECT * FROM files ORDER BY created_at DESC LIMIT ?", (limit,))]
+
 
