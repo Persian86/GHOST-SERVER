@@ -1237,6 +1237,45 @@ async def test(what: str, _: bool = Depends(admin_auth)):
     return {"ok": ok, "message": msg}
 
 
+
+@app.get("/admin/api/personal")
+def personal_get(_:bool=Depends(admin_auth)):
+    from . import personal
+    return personal.snapshot()
+
+@app.post("/admin/api/personal/people")
+def personal_create(body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import personal
+    try: person=personal.create(body.get("name",""))
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    security.log("Personal reply profile created",_ip(request))
+    return person
+
+@app.put("/admin/api/personal/people/{pid}")
+def personal_save(pid:int,body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import personal
+    try: result=personal.save(pid,body)
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    security.log("Personal reply preferences updated",_ip(request))
+    return {"ok":True,"preferences":result}
+
+@app.delete("/admin/api/personal/people/{pid}")
+def personal_reset(pid:int,request:Request,_:bool=Depends(admin_auth)):
+    from . import personal
+    try: personal.reset(pid)
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    security.log("Personal reply preferences reset",_ip(request))
+    return {"ok":True}
+
+@app.put("/admin/api/personal/devices/{did}")
+def personal_assign(did:str,body:dict,request:Request,_:bool=Depends(admin_auth)):
+    from . import personal
+    if set(body)!={"person_id"}:raise HTTPException(400,"Choose a person or shared/unassigned")
+    try: personal.assign(did,body["person_id"])
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    security.log("Personal reply assignment updated",_ip(request),device_id=did)
+    return {"ok":True}
+
 @app.get("/admin/api/people")
 def admin_people(_: bool = Depends(admin_auth)):
     return {"people": faces.people(), "seen": faces.last_seen(), "enabled": bool(store.get("faces_enabled"))}
@@ -1291,5 +1330,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
