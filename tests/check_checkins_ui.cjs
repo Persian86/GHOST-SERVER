@@ -1,0 +1,21 @@
+const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('assert');
+const html=fs.readFileSync(path.join(__dirname,'../ghost_server/static/admin.html'),'utf8');
+for(const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
+const source=[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].find(m=>m[1].includes('let checkinLoaded='))[1];
+const elements=new Map(),el=id=>{if(!elements.has(id))elements.set(id,{checked:false,innerHTML:'',textContent:''});return elements.get(id)};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let saved=null,confirmCount=0,allow=false;
+const response={settings:{enabled:true,test_mode:true,participants:['a'],recipients:['b']},scheduler_healthy:false,devices:[{id:'a',name:'<script>bad()</script>',ready:true,approved:true}],items:[]};
+const ctx={Date,JSON,esc,$:el,document:{querySelectorAll:()=>[]},confirm:()=>{confirmCount++;return allow},api:async(url,opts)=>{if(opts?.method==='PUT'){saved=JSON.parse(opts.body);return {ok:true}}return response}};
+vm.createContext(ctx);vm.runInContext(source,ctx);
+(async()=>{
+ await ctx.loadCheckins();assert(el('#checkinDevices').innerHTML.includes('&lt;script&gt;'));assert(el('#checkinScheduler').textContent.includes('unavailable'));
+ el('#checkinEnabled').checked=false;await ctx.loadCheckins();assert.equal(el('#checkinEnabled').checked,false,'Refresh erased an unsaved draft');
+ el('#checkinEnabled').checked=true;el('#checkinTest').checked=false;await ctx.saveCheckins();assert(confirmCount>0&&saved===null,'Live configuration bypassed confirmation');
+ el('#checkinTest').checked=true;await ctx.saveCheckins();assert(saved.enabled&&saved.test_mode);
+ response.items=[{id:'ci_'+'a'.repeat(24),source_name:'<b>private</b>',test:true,status:'alerted',due:1,escalate:2,deliveries:[{name:'<script>family</script>',stage:'missed',transport:'unconfirmed'}]}];
+ await ctx.loadCheckins();const output=el('#checkinHistory').innerHTML;assert(!output.includes('<script>'));assert(output.includes('uncertain; not replayed'));
+ saved=null;el('#checkinTest').checked=true;await ctx.saveCheckins();assert(saved===null,'Active timer cancellation bypassed confirmation');
+ assert.equal(ctx.checkinState('safe'),'Participant checked in');assert(ctx.checkinState('recovery_missed').includes('unavailable'));
+ console.log('PASS: Check-in scripts parse, escape data, retain drafts, disclose scheduler failure and confirm live/cancelling changes');
+})().catch(e=>{console.error(e);process.exit(1)});
