@@ -69,11 +69,9 @@ def build(device: dict) -> str:
     rules = store.rules()
     if rules:
         parts.append("[STANDING INSTRUCTIONS — follow them]\n" + "\n".join(f"- {r['text']}" for r in rules))
-    turns = [t for t in store.recent_turns(8) if t["device_id"] != device.get("id")]
-    if turns:
-        names = {d["id"]: d["name"] for d in store.devices(include_revoked=True)}
-        parts.append("[RECENTLY, ON OTHER DEVICES — for continuity only]\n" + "\n".join(
-            f"{names.get(t['device_id']) or t['device_id'].split('~', 1)[-1]} · {t['role']}: {t['text'][:200]}" for t in turns[-6:]))
+    # Raw transcripts belong to their source device. Cross-device continuity is
+    # an explicit, authorised handoff, never an implicit global-history read.
+    # Household facts/rules above remain deliberately shared memory.
     try:
         from . import theme
         line = theme.prompt_line()
@@ -84,5 +82,6 @@ def build(device: dict) -> str:
     if personal_line:
         parts.append(personal_line)
     return "\n\n".join(parts)
+
 
 
