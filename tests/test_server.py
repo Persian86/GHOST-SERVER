@@ -98,7 +98,10 @@ def test_shared_memory_across_devices(server, admin, tmp_path):
     b.call_tool("standing_rule", {"action": "add", "rule": "Always use Celsius"})
     assert "Always use Celsius" in a.session()["system_instruction"]
     a.log_turns([{"role": "user", "text": "remind me to call the plumber"}])
-    assert "plumber" in b.session()["system_instruction"]
+    assert "plumber" not in b.session()["system_instruction"]
+    from ghost_server import store
+    did=json.loads(a.state_file.read_text())["device_id"]
+    assert any("plumber" in t["text"] for t in store.recent_turns(8,did))
 
 
 def test_device_to_device_routing_and_announce(server, admin, tmp_path):
@@ -1248,3 +1251,4 @@ def test_admin_auto_lock(server, admin, monkeypatch):
     finally:
         monkeypatch.setattr(security.time, "time", _t.time)
         store.put("admin_lock_minutes", 15)
+

@@ -31,7 +31,7 @@ def files() -> list[Path]:
         found = []
         if root.is_dir():
             for p in root.rglob("*"):
-                if p.suffix.lower() in EXTS and not any(part.startswith((".", "@", "#")) for part in p.parts):
+                if p.suffix.lower() in EXTS and not any(part.startswith((".", "@", "#")) for part in p.relative_to(root).parts):
                     found.append(p)
                     if len(found) >= 5000:
                         break
@@ -65,3 +65,4 @@ def image(index: int, width: int = 1600) -> bytes | None:
             im.thumbnail((width, width))
             im.save(out, "JPEG", quality=85)
     return out.read_bytes()
+

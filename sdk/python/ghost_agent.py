@@ -122,7 +122,7 @@ class GhostAgent:
         return self._post("/api/v1/chat", {"text": text}, 200)
 
     def log_turns(self, turns: list[dict]) -> None:
-        """[{role: user|assistant, text}] — lets other devices pick up the thread."""
+        """Log this device's transcript. Cross-device continuity requires an authorised handoff."""
         self._post("/api/v1/turns", {"turns": turns}, 15)
 
     def event(self, type_: str, data: dict) -> None:
@@ -249,3 +249,4 @@ class GhostAgent:
                 result = await asyncio.to_thread(self.call_tool, fc.name, args)
             responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"result": result}))
         await live_session.send_tool_response(function_responses=responses)
+
