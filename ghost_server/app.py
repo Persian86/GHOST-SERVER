@@ -44,13 +44,14 @@ async def _lifespan(_app):
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
-    from . import routines
+    from . import routines, breakin
     routines.recover()
+    breakin.recover()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
-          asyncio.create_task(theme.theme_loop())]
+          asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop())]
     yield
     for t in bg:
         t.cancel()
@@ -1442,3 +1443,62 @@ async def help_config(body: dict,request: Request,_: bool = Depends(admin_auth))
     result=await _help_call(emergency.configure,body)
     security.log("Help configuration changed",_ip(request))
     return {'ok':True,'settings':result}
+
+
+@app.post('/api/v1/breakin/register')
+async def breakin_register(dev: dict = Depends(device_auth)):
+    from . import breakin
+    return await _help_call(breakin.register,dev['id'])
+
+
+@app.get('/api/v1/breakin')
+async def breakin_inbox(dev: dict = Depends(device_auth)):
+    from . import breakin
+    return await _help_call(breakin.inbox,dev['id'])
+
+
+@app.post('/api/v1/breakin/prepare')
+async def breakin_prepare(body: dict,dev: dict = Depends(device_auth)):
+    from . import breakin
+    return await _help_call(breakin.prepare,dev['id'],body)
+
+
+@app.post('/api/v1/breakin')
+async def breakin_start(body: dict,dev: dict = Depends(device_auth)):
+    from . import breakin
+    return await _help_call(breakin.start,dev['id'],body)
+
+
+@app.post('/api/v1/breakin/{token}/{action}')
+async def breakin_action(token: str,action: str,dev: dict = Depends(device_auth)):
+    from . import breakin
+    return await _help_call(breakin.mark,token,dev['id'],action)
+
+
+@app.get('/admin/api/breakin')
+async def breakin_admin(_: bool = Depends(admin_auth)):
+    from . import breakin
+    return await _help_call(breakin.admin_snapshot)
+
+
+@app.get('/admin/api/breakin/targets')
+async def breakin_targets(_: bool = Depends(admin_auth)):
+    from . import breakin
+    return await _help_call(breakin.check_targets)
+
+
+@app.put('/admin/api/breakin')
+async def breakin_config(body: dict,request: Request,_: bool = Depends(admin_auth)):
+    from . import breakin
+    result=await _help_call(breakin.configure,body)
+    security.log('Break-in configuration changed',_ip(request))
+    return {'ok':True,'settings':result}
+
+
+@app.post('/admin/api/breakin/{token}/stop')
+async def breakin_admin_stop(token: str,request: Request,_: bool = Depends(admin_auth)):
+    from . import breakin
+    result=await _help_call(breakin.stop,token)
+    security.log('Break-in stop requested by owner',_ip(request))
+    return result
+

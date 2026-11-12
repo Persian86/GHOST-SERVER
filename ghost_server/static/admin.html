@@ -101,6 +101,25 @@
       <h2>Requests from the last 24 hours</h2>
       <div class="muted">“Sent to connection” is not confirmed phone receipt. Acknowledgement means someone pressed “I have seen this request”; it does not confirm help is on the way. Requests expire after one hour. Refresh does not resend alerts.</div>
       <div id="helpHistory" class="grid"></div>
+      <h2>Break-in mode — Stage 7B</h2>
+      <div class="card">
+        <div class="muted">Selected controllers review and confirm a plan on their phone. Test mode simulates home actions and sends labelled TEST alerts to selected Ghost phones. Live mode uses the exact lights and duration-capable sirens below. Emergency calling remains a separate phone dialler action.</div>
+        <label><input id="breakinEnabled" type="checkbox" style="width:auto"> Enable Break-in requests</label>
+        <label><input id="breakinTest" type="checkbox" style="width:auto"> Force TEST mode</label>
+        <label>Lights — comma-separated exact Home Assistant IDs</label><input id="breakinLights" placeholder="light.hall, light.front_porch">
+        <label>Sirens — comma-separated exact IDs, supporting on, off and duration</label><input id="breakinSirens" placeholder="siren.house">
+        <label>Siren time limit (30–600 seconds)</label><input id="breakinDuration" type="number" min="30" max="600" value="120">
+        <label>Saved home address — shared only when the controller selects it</label><input id="breakinAddress" maxlength="300" autocomplete="off">
+        <div class="muted">An empty target list gives family alerts only. Stop closes the request and attempts to stop its sirens; safety lights stay on. Saving setup closes any active request and attempts to stop its sirens. Use Home Assistant or the physical controls if a stop is unconfirmed.</div>
+        <table><thead><tr><th>Phone</th><th>Controller: start, stop and view</th><th>Receives family alerts</th></tr></thead><tbody id="breakinDevices"></tbody></table>
+        <button class="b p" onclick="saveBreakIn()">Save Break-in setup</button>
+        <button class="b" onclick="loadBreakIn(true)">Reload Break-in setup</button>
+        <button class="b" onclick="checkBreakInTargets()">Check Home Assistant targets</button>
+        <div id="breakinStatus" class="status" role="status"></div>
+        <div id="breakinTargetStatus" class="status" role="status"></div>
+      </div>
+      <div id="breakinHistory" class="grid"></div>
+
     </section>
 
     <section data-tab="Brain & keys">
@@ -418,7 +437,7 @@ function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") loadHelp(); if (t === "Security") drawSecurity(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") { loadHelp(); loadBreakIn(); } if (t === "Security") drawSecurity(); }
 async function refresh(passive) {
   data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
@@ -426,7 +445,7 @@ async function refresh(passive) {
   $("#srvAddr").textContent = location.origin;
   if (tab === "Security") drawSecurity();
   if(tab === "Routines") drawRoutines();
-  if(tab === "Help") loadHelp();
+  if(tab === "Help") { loadHelp(); loadBreakIn(); }
   $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
     <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
@@ -787,3 +806,44 @@ async function saveHelp(){
 
 
 
+
+
+<script>
+let breakinLoaded=false,breakinSnapshot=null;
+const breakinClosed=['stopped','test_stopped','not_started'];
+function breakinState(value){return ({pending:'Queued; not sent',attempting:'Sending; result unconfirmed',accepted:'Home Assistant accepted the command; verify device',failed:'Command rejected',unconfirmed:'Result unconfirmed; check Home Assistant',not_sent:'Not sent',simulated:'TEST: simulated',simulated_stop:'TEST: stop simulated',not_needed:'No siren stop needed',connection_changed:'Home Assistant connection changed; use its controls',queued:'Request saved / queued',executing:'Sending commands',active:'Request active; check results below',test_active:'TEST request active',stopping:'Stop requested; result pending',stopped:'Request closed; verify operated devices',test_stopped:'TEST request closed',not_started:'Not started: permission or setup changed',activation_unconfirmed:'Restart: activation was not replayed',stop_unconfirmed:'Stop unconfirmed; check Home Assistant',deadline_missed:'Stop deadline missed while unavailable; verify sirens'})[value]||value;}
+async function loadBreakIn(force=false){
+  try{
+    const r=await api('/admin/api/breakin',{passive:true});breakinSnapshot=r;
+    if(!breakinLoaded||force){
+      $('#breakinEnabled').checked=r.settings.enabled;$('#breakinTest').checked=r.settings.test_mode;
+      $('#breakinLights').value=r.settings.lights.join(', ');$('#breakinSirens').value=r.settings.sirens.join(', ');
+      $('#breakinDuration').value=r.settings.duration_s;$('#breakinAddress').value=r.settings.home_address;
+      $('#breakinDevices').innerHTML=r.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${d.ready?'Break-in screen registered':'Open Break-in mode on the updated phone first'}${d.approved?'':' · awaiting approval'}</div></td><td><input type="checkbox" style="width:auto" data-breakin-source="${esc(d.id)}" ${r.settings.initiators.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'}></td><td><input type="checkbox" style="width:auto" data-breakin-recipient="${esc(d.id)}" ${r.settings.recipients.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'}></td></tr>`).join('');
+      breakinLoaded=true;
+    }
+    $('#breakinHistory').innerHTML=r.items.map(i=>`<div class="card"><h3>${i.test?'TEST — ':''}Break-in request: ${esc(i.source_name)}</h3><div>${esc(breakinState(i.status))} · ${esc(new Date(i.created*1000).toLocaleString())}</div><div>${helpLocation(i.location)}</div>${i.actions.map(a=>`<p>${esc(a.entity)}: ${esc(breakinState(a.state))}${a.stop_state?' · '+esc(breakinState(a.stop_state)):''}</p>`).join('')}${i.deliveries.map(d=>`<p>${esc(d.name)}: ${d.acknowledged?'Person acknowledged seeing it':d.received?'Phone received; person has not acknowledged':d.transport==='sent_to_connection'?'Sent to connection; receipt unconfirmed':'Delivery unconfirmed'}</p>`).join('')}<div class="muted">No emergency services contacted. Physical operation is not confirmed by command acceptance.</div>${breakinClosed.includes(i.status)?'':`<button class="b" onclick="stopBreakIn('${esc(i.id)}')">Stop sirens and close request</button>`}</div>`).join('')||'<div class="card">No recent Break-in requests.</div>';
+  }catch(e){$('#breakinStatus').textContent=e.message||'Could not load Break-in mode.';}
+}
+function breakinIds(value){return value.split(',').map(v=>v.trim()).filter(Boolean);}
+async function saveBreakIn(){
+  try{
+    const enabled=$('#breakinEnabled').checked,test_mode=$('#breakinTest').checked;
+    if(enabled&&!test_mode&&!confirm('Enable LIVE Break-in mode? Confirmed phone plans can turn on the listed lights and sirens and alert selected family phones.'))return;
+    if(breakinSnapshot&&breakinSnapshot.items.some(i=>!breakinClosed.includes(i.status))&&!confirm('Saving closes the active request and attempts to stop its sirens. Continue?'))return;
+    const body={enabled,test_mode,home_address:$('#breakinAddress').value,duration_s:Number($('#breakinDuration').value),lights:breakinIds($('#breakinLights').value),sirens:breakinIds($('#breakinSirens').value),
+      initiators:[...document.querySelectorAll('[data-breakin-source]:checked')].map(e=>e.dataset.breakinSource),recipients:[...document.querySelectorAll('[data-breakin-recipient]:checked')].map(e=>e.dataset.breakinRecipient)};
+    await api('/admin/api/breakin',{method:'PUT',body:JSON.stringify(body)});
+    $('#breakinStatus').textContent='Saved. Send a labelled TEST request from the phone before enabling live home actions.';await loadBreakIn(true);
+  }catch(e){$('#breakinStatus').textContent=e.message||'Could not save Break-in setup.';}
+}
+async function checkBreakInTargets(){
+  try{const r=await api('/admin/api/breakin/targets');$('#breakinTargetStatus').textContent=r.items.map(v=>v.entity+': '+(v.ready?'available':'not ready — '+v.reason)).join(' · ')||'No saved home targets; family alerts only.';}
+  catch(e){$('#breakinTargetStatus').textContent=e.message||'Home Assistant is unavailable.';}
+}
+async function stopBreakIn(id){
+  if(!/^bi_[a-f0-9]{24}$/.test(id)||!confirm('Stop this request’s sirens and leave safety lights on? Verify the result in Home Assistant.'))return;
+  try{await api('/admin/api/breakin/'+id+'/stop',{method:'POST',body:'{}'});await loadBreakIn();}
+  catch(e){$('#breakinStatus').textContent=e.message||'Stop could not be confirmed. Use Home Assistant or physical controls.';}
+}
+</script>
