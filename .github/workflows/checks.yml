@@ -16,6 +16,7 @@ jobs:
           node-version: '22'
       - run: node tests/check_breakin_ui.cjs
       - run: node tests/check_checkins_ui.cjs
+      - run: node tests/check_testcalls_ui.cjs
       - run: python -m pytest tests -q
         env:
           GHOST_DATA: .ghost-test-data
