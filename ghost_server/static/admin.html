@@ -119,6 +119,19 @@
         <div id="breakinTargetStatus" class="status" role="status"></div>
       </div>
       <div id="breakinHistory" class="grid"></div>
+      <h2>Missed check-ins — Stage 7C</h2>
+      <div class="card">
+        <div class="muted">A person schedules one check-in on their phone. At the due time Ghost sends a private reminder; if they do not check in during the grace period, selected family phones receive an alert. No alarms, location sharing or calls. TEST sends real, labelled phone notifications.</div>
+        <label><input id="checkinEnabled" type="checkbox" style="width:auto"> Enable one-time check-ins</label>
+        <label><input id="checkinTest" type="checkbox" style="width:auto"> Force TEST mode</label>
+        <table><thead><tr><th>Phone</th><th>Can schedule their own check-in</th><th>Receives missed check-ins</th></tr></thead><tbody id="checkinDevices"></tbody></table>
+        <div class="muted">Open Check-ins on each updated phone first. Saving setup cancels existing timers. Selected recipients can view the schedule and its status; a missed check-in does not prove an emergency.</div>
+        <button class="b p" onclick="saveCheckins()">Save Check-in setup</button>
+        <button class="b" onclick="loadCheckins(true)">Reload Check-in setup</button>
+        <div id="checkinStatus" class="status" role="status"></div>
+        <div id="checkinScheduler" class="status" role="status"></div>
+      </div>
+      <div id="checkinHistory" class="grid"></div>
 
     </section>
 
@@ -437,7 +450,7 @@ function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") { loadHelp(); loadBreakIn(); } if (t === "Security") drawSecurity(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); } if (t === "Security") drawSecurity(); }
 async function refresh(passive) {
   data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
@@ -445,7 +458,7 @@ async function refresh(passive) {
   $("#srvAddr").textContent = location.origin;
   if (tab === "Security") drawSecurity();
   if(tab === "Routines") drawRoutines();
-  if(tab === "Help") { loadHelp(); loadBreakIn(); }
+  if(tab === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); }
   $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
     <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
@@ -846,4 +859,39 @@ async function stopBreakIn(id){
   try{await api('/admin/api/breakin/'+id+'/stop',{method:'POST',body:'{}'});await loadBreakIn();}
   catch(e){$('#breakinStatus').textContent=e.message||'Stop could not be confirmed. Use Home Assistant or physical controls.';}
 }
+</script>
+
+<script>
+let checkinLoaded=false,checkinSnapshot=null;
+const checkinActive=['waiting','reminded','alerted'];
+function checkinState(value){return ({waiting:'Waiting for the check-in time',reminded:'Check-in due; grace period running',alerted:'Check-in missed; check delivery results',safe:'Participant checked in',cancelled:'Cancelled by participant',cancelled_by_owner:'Cancelled by owner setup/control',cancelled_access_changed:'Cancelled: participant access changed',expired:'Expired without a recorded check-in',recovery_missed:'Server unavailable too long; alert window missed'})[value]||value;}
+function checkinDelivery(d){return d.acknowledged?'Person acknowledged seeing the missed check-in':d.received?'Phone received; no human acknowledgement':({pending:'Not sent yet',sending:'Sending; receipt unconfirmed',sent_to_connection:'Sent to connection; phone receipt unconfirmed',not_confirmed:'Delivery unconfirmed',unconfirmed:'Send result uncertain; not replayed',not_sent:'Not sent'})[d.transport]||'Delivery unconfirmed';}
+async function loadCheckins(force=false){
+  try{
+    const r=await api('/admin/api/checkins',{passive:true});checkinSnapshot=r;
+    $('#checkinScheduler').textContent=r.scheduler_healthy?'Server scheduler running; phone delivery still depends on connectivity and settings.':'Scheduler unavailable or starting. Do not rely on scheduled alerts.';
+    if(!checkinLoaded||force){
+      $('#checkinEnabled').checked=r.settings.enabled;$('#checkinTest').checked=r.settings.test_mode;
+      $('#checkinDevices').innerHTML=r.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${d.ready?'Check-ins registered':'Open Check-ins on the updated phone first'}${d.approved?'':' · awaiting approval'}</div></td><td><input type="checkbox" style="width:auto" data-checkin-participant="${esc(d.id)}" ${r.settings.participants.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'}></td><td><input type="checkbox" style="width:auto" data-checkin-recipient="${esc(d.id)}" ${r.settings.recipients.includes(d.id)?'checked':''} ${d.ready&&d.approved?'':'disabled'}></td></tr>`).join('');
+      checkinLoaded=true;
+    }
+    $('#checkinHistory').innerHTML=r.items.map(i=>`<div class="card"><h3>${i.test?'TEST — ':''}Check-in: ${esc(i.source_name)}</h3><div>${esc(checkinState(i.status))}</div><p>Due: ${esc(new Date(i.due*1000).toLocaleString())}<br>Family alert after grace: ${esc(new Date(i.escalate*1000).toLocaleString())}</p>${i.deliveries.map(d=>`<p>${esc(d.name)} (${esc(d.stage)}): ${esc(checkinDelivery(d))}</p>`).join('')}<div class="muted">Acknowledgement does not finish a check-in or mean help is on the way. No emergency services contacted.</div>${checkinActive.includes(i.status)?`<button class="b" onclick="cancelCheckin('${esc(i.id)}')">Cancel this check-in</button>`:''}</div>`).join('')||'<div class="card">No recent check-ins.</div>';
+  }catch(e){$('#checkinStatus').textContent=e.message||'Could not load Check-ins.';}
+}
+async function saveCheckins(){
+  try{
+    const enabled=$('#checkinEnabled').checked,test_mode=$('#checkinTest').checked;
+    if(enabled&&!test_mode&&!confirm('Allow live missed check-in alerts to selected family phones after the participant confirms a timer?'))return;
+    if(checkinSnapshot?.items.some(i=>checkinActive.includes(i.status))&&!confirm('Saving cancels active check-ins. Continue?'))return;
+    const body={enabled,test_mode,participants:[...document.querySelectorAll('[data-checkin-participant]:checked')].map(e=>e.dataset.checkinParticipant),recipients:[...document.querySelectorAll('[data-checkin-recipient]:checked')].map(e=>e.dataset.checkinRecipient)};
+    await api('/admin/api/checkins',{method:'PUT',body:JSON.stringify(body)});
+    $('#checkinStatus').textContent='Saved. Schedule a labelled TEST on the phone to verify reminder and family delivery.';await loadCheckins(true);
+  }catch(e){$('#checkinStatus').textContent=e.message||'Could not save Check-in setup.';}
+}
+async function cancelCheckin(id){
+  if(!/^ci_[a-f0-9]{24}$/.test(id)||!confirm('Cancel this check-in? Already sent alerts cannot be recalled.'))return;
+  try{await api('/admin/api/checkins/'+id+'/cancel',{method:'POST',body:'{}'});await loadCheckins();}
+  catch(e){$('#checkinStatus').textContent=e.message||'Cancellation unconfirmed. Refresh status.';}
+}
+
 </script>

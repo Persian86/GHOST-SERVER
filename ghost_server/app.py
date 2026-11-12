@@ -44,14 +44,16 @@ async def _lifespan(_app):
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
-    from . import routines, breakin
+    from . import routines, breakin, checkins
     routines.recover()
     breakin.recover()
+    checkins.recover()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
-          asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop())]
+          asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop()),
+          asyncio.create_task(checkins.scheduler_loop())]
     yield
     for t in bg:
         t.cancel()
@@ -1501,4 +1503,51 @@ async def breakin_admin_stop(token: str,request: Request,_: bool = Depends(admin
     result=await _help_call(breakin.stop,token)
     security.log('Break-in stop requested by owner',_ip(request))
     return result
+
+# Check-ins are explicitly scheduled by a person, never by a model tool.
+@app.post('/api/v1/checkins/register')
+async def checkin_register(dev: dict = Depends(device_auth)):
+    from . import checkins
+    return await _help_call(checkins.register,dev['id'])
+
+
+@app.get('/api/v1/checkins')
+async def checkin_inbox(dev: dict = Depends(device_auth)):
+    from . import checkins
+    return await _help_call(checkins.inbox,dev['id'])
+
+
+@app.post('/api/v1/checkins')
+async def checkin_start(body: dict,dev: dict = Depends(device_auth)):
+    from . import checkins
+    return await _help_call(checkins.start,dev['id'],body)
+
+
+@app.post('/api/v1/checkins/{token}/{action}')
+async def checkin_action(token: str,action: str,body: dict,dev: dict = Depends(device_auth)):
+    from . import checkins
+    return await _help_call(checkins.mark,token,dev['id'],action,body)
+
+
+@app.get('/admin/api/checkins')
+async def checkin_admin(_: bool = Depends(admin_auth)):
+    from . import checkins
+    return await _help_call(checkins.admin_snapshot)
+
+
+@app.put('/admin/api/checkins')
+async def checkin_config(body: dict,request: Request,_: bool = Depends(admin_auth)):
+    from . import checkins
+    result=await _help_call(checkins.configure,body)
+    security.log('Check-in configuration changed',_ip(request))
+    return {'ok':True,'settings':result}
+
+
+@app.post('/admin/api/checkins/{token}/cancel')
+async def checkin_admin_cancel(token: str,request: Request,_: bool = Depends(admin_auth)):
+    from . import checkins
+    result=await _help_call(checkins.cancel_by_owner,token)
+    security.log('Check-in cancelled by owner',_ip(request))
+    return result
+
 
