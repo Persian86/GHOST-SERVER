@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
                prompt, quiet, security, store, theme, tools, voices)
@@ -44,16 +44,17 @@ async def _lifespan(_app):
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
-    from . import routines, breakin, checkins
+    from . import routines, breakin, checkins, testcalls
     routines.recover()
     breakin.recover()
     checkins.recover()
+    testcalls.recover()
     hub.loop = asyncio.get_running_loop()
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
           asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop()),
-          asyncio.create_task(checkins.scheduler_loop())]
+          asyncio.create_task(checkins.scheduler_loop()), asyncio.create_task(testcalls.safety_loop())]
     yield
     for t in bg:
         t.cancel()
@@ -1549,5 +1550,78 @@ async def checkin_admin_cancel(token: str,request: Request,_: bool = Depends(adm
     result=await _help_call(checkins.cancel_by_owner,token)
     security.log('Check-in cancelled by owner',_ip(request))
     return result
+
+# Stage 7D: telephone test controls; no model tool can initiate a call.
+@app.post('/api/v1/testcalls/register')
+async def testcall_register(dev: dict = Depends(device_auth)):
+    from . import testcalls
+    return await _help_call(testcalls.register,dev['id'])
+
+
+@app.get('/api/v1/testcalls')
+async def testcall_inbox(dev: dict = Depends(device_auth)):
+    from . import testcalls
+    return await _help_call(testcalls.inbox,dev['id'])
+
+
+@app.post('/api/v1/testcalls')
+async def testcall_start(body: dict,request: Request,dev: dict = Depends(device_auth)):
+    from . import testcalls
+    return await _help_call(testcalls.start,dev['id'],body,request.url.scheme=='https')
+
+
+@app.post('/api/v1/testcalls/{token}/stop')
+async def testcall_stop(token: str,dev: dict = Depends(device_auth)):
+    from . import testcalls
+    return await _help_call(testcalls.stop,token,dev['id'])
+
+
+@app.get('/admin/api/testcalls')
+async def testcall_admin(_: bool = Depends(admin_auth)):
+    from . import testcalls
+    return await _help_call(testcalls.admin_snapshot)
+
+
+@app.put('/admin/api/testcalls')
+async def testcall_config(body: dict,request: Request,_: bool = Depends(admin_auth)):
+    from . import testcalls
+    if body.get('enabled') and body.get('dry_run') is False and request.url.scheme!='https':
+        raise HTTPException(403,'Use HTTPS to allow real telephone tests.')
+    result=await _help_call(testcalls.configure,body)
+    security.log('Telephone test configuration changed',_ip(request))
+    return {'ok':True,'settings':result}
+
+
+@app.post('/admin/api/testcalls/{token}/stop')
+async def testcall_admin_stop(token: str,request: Request,_: bool = Depends(admin_auth)):
+    from . import testcalls
+    result=await _help_call(testcalls.stop,token)
+    security.log('Telephone test end requested by owner',_ip(request))
+    return result
+
+
+@app.post('/api/v1/testcalls/provider/{token}/{endpoint:path}')
+async def testcall_provider(token: str,endpoint: str,request: Request):
+    from urllib.parse import parse_qsl
+    from . import testcalls
+    try:
+        if (not re.fullmatch(r'tc_[a-f0-9]{24}',token) or
+            not re.fullmatch(r'answer|consent|status|turn/[0-4]',endpoint) or request.url.query or
+            request.headers.get('content-type','').split(';')[0].strip()!='application/x-www-form-urlencoded'):
+            raise ValueError()
+        raw=bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw)>8192:raise ValueError()
+        pairs=parse_qsl(raw.decode('utf-8'),keep_blank_values=True,errors='strict',max_num_fields=40)
+        params=dict(pairs)
+        if len(params)!=len(pairs):raise ValueError()
+        if not testcalls.validate_signature(token,endpoint,params,request.headers.get('X-Twilio-Signature','')):
+            raise ValueError()
+        xml=await asyncio.to_thread(testcalls.provider,token,endpoint,params)
+        return Response(xml,media_type='application/xml',headers={'Cache-Control':'no-store'})
+    except (ValueError,PermissionError):
+        raise HTTPException(403,'Invalid provider callback.')
+
 
 

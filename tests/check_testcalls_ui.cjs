@@ -1,0 +1,22 @@
+const fs=require('fs'),vm=require('vm'),path=require('path'),assert=require('assert');
+const html=fs.readFileSync(path.join(__dirname,'../ghost_server/static/admin.html'),'utf8');
+for(const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
+const source=[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].find(m=>m[1].includes('let testcallLoaded='))[1];
+const elements=new Map(),el=id=>{if(!elements.has(id))elements.set(id,{checked:false,innerHTML:'',textContent:''});return elements.get(id)};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let saved=null,confirms=0;
+const response={settings:{enabled:true,dry_run:true,initiators:['a'],contacts:[{id:'test_contact_1',name:'<script>contact</script>',number:'+61400000001',consent:true}]},provider_configured:false,ai_configured:false,devices:[{id:'a',name:'<script>phone</script>',ready:true,approved:true}],items:[]};
+const row={querySelector:s=>({'[data-id]':{value:'test_contact_1'},'[data-name]':{value:'Test contact'},'[data-number]':{value:'+61400000001'},'[data-consent]':{checked:true}})[s]};
+const ctx={Number,JSON,esc,$:el,document:{querySelectorAll:s=>s==='[data-testcall-contact]'?[row]:[]},confirm:()=>{confirms++;return false},api:async(url,opts)=>{if(opts?.method==='PUT'){saved=JSON.parse(opts.body);return {ok:true}}return response}};
+vm.createContext(ctx);vm.runInContext(source,ctx);
+(async()=>{
+ await ctx.loadTestCalls();assert(el('#testcallDevices').innerHTML.includes('&lt;script&gt;'));assert(el('#testcallContacts').innerHTML.includes('&lt;script&gt;'));assert(el('#testcallReady').textContent.includes('missing'));
+ el('#testcallEnabled').checked=false;await ctx.loadTestCalls();assert(!el('#testcallEnabled').checked,'Refresh erased an unsaved draft');
+ el('#testcallEnabled').checked=true;el('#testcallDry').checked=false;await ctx.saveTestCalls();assert(confirms>0&&saved===null,'Real calling bypassed confirmation');
+ el('#testcallDry').checked=true;await ctx.saveTestCalls();assert(saved.dry_run&&saved.contacts[0].consent&&saved.contacts[0].number==='+61400000001');
+ response.items=[{id:'tc_'+'a'.repeat(24),contact_name:'<script>private</script>',number:'+61400000001',status:'create_unconfirmed',provider_status:'<script>status</script>',turns:0,consented:false,can_stop:true}];
+ await ctx.loadTestCalls();const output=el('#testcallHistory').innerHTML;assert(!output.includes('<script>'));assert(output.includes('uncertain')&&output.includes('do not place another call'));
+ saved=null;await ctx.saveTestCalls();assert(saved===null,'Active call ending bypassed confirmation');
+ assert(ctx.testcallState('stop_unconfirmed').includes('unconfirmed'));
+ console.log('PASS: Telephone controls escape data, retain drafts, confirm paid calls/config changes and disclose uncertainty');
+})().catch(e=>{console.error(e);process.exit(1)});

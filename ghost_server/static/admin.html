@@ -132,6 +132,21 @@
         <div id="checkinScheduler" class="status" role="status"></div>
       </div>
       <div id="checkinHistory" class="grid"></div>
+      <h2>Telephone conversation tests — Stage 7D</h2>
+      <div class="card">
+        <div class="muted">Ghost can make a short AI conversation test to a previously consenting Australian landline/mobile contact. The contact must press 1 before speech processing starts. No emergency calls, automatic escalation, recordings or household tool access. DRY RUN places no call and contacts no provider.</div>
+        <label><input id="testcallEnabled" type="checkbox" style="width:auto"> Enable telephone tests</label>
+        <label><input id="testcallDry" type="checkbox" style="width:auto"> Force DRY RUN — no telephone calls</label>
+        <div id="testcallReady" class="status" role="status"></div>
+        <table><thead><tr><th>Phone</th><th>Can confirm a telephone test</th></tr></thead><tbody id="testcallDevices"></tbody></table>
+        <h3>Consenting test contacts</h3>
+        <div class="muted">Ordinary +61 landline/mobile numbers only. Confirm permission with each person beforehand. Numbers are stored on this server and shown to selected initiators. Saving setup ends active tests. Real calls may incur provider charges and require HTTPS, Twilio environment settings and the existing Anthropic key. See STAGE_7D.md.</div>
+        <table><thead><tr><th>Name</th><th>Telephone number</th><th>Prior test permission confirmed</th></tr></thead><tbody id="testcallContacts"></tbody></table>
+        <button class="b p" onclick="saveTestCalls()">Save Telephone test setup</button>
+        <button class="b" onclick="loadTestCalls(true)">Reload Telephone test setup</button>
+        <div id="testcallStatus" class="status" role="status"></div>
+      </div>
+      <div id="testcallHistory" class="grid"></div>
 
     </section>
 
@@ -450,7 +465,7 @@ function drawTabs() {
   $("#tabs").innerHTML = TABS.map(t => `<button class="${t===tab?'on':''}" onclick="go('${t}')">${t}</button>`).join("");
   document.querySelectorAll("section").forEach(s => s.classList.toggle("hidden", s.dataset.tab !== tab));
 }
-function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); } if (t === "Security") drawSecurity(); }
+function go(t) { tab = t; drawTabs(); if (t === "People") drawPeople(); if(t === "Routines") drawRoutines(); if(t === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); loadTestCalls(); } if (t === "Security") drawSecurity(); }
 async function refresh(passive) {
   data = await api("/admin/api/overview", passive ? {passive: true} : {});
   const on = data.devices.filter(d => d.online).length;
@@ -458,7 +473,7 @@ async function refresh(passive) {
   $("#srvAddr").textContent = location.origin;
   if (tab === "Security") drawSecurity();
   if(tab === "Routines") drawRoutines();
-  if(tab === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); }
+  if(tab === "Help") { loadHelp(); loadBreakIn(); loadCheckins(); loadTestCalls(); }
   $("#devList").innerHTML = data.devices.filter(d => d.id !== "dev_admin").map(d => !d.approved ? `
     <div class="card" style="border-color:var(--warn)"><h3><span class="dot"></span>${esc(d.name)}</h3>
       <div class="muted">${esc(d.kind)} · <span style="color:var(--warn)">waiting for approval</span>${d.ips && d.ips.length ? " · " + esc(d.ips[d.ips.length-1]) : ""}</div>
@@ -892,6 +907,41 @@ async function cancelCheckin(id){
   if(!/^ci_[a-f0-9]{24}$/.test(id)||!confirm('Cancel this check-in? Already sent alerts cannot be recalled.'))return;
   try{await api('/admin/api/checkins/'+id+'/cancel',{method:'POST',body:'{}'});await loadCheckins();}
   catch(e){$('#checkinStatus').textContent=e.message||'Cancellation unconfirmed. Refresh status.';}
+}
+
+</script>
+
+<script>
+let testcallLoaded=false,testcallSnapshot=null;
+const testcallActive=['queued','dialling','awaiting_consent','active','processing','create_unconfirmed','stop_requested','stop_unconfirmed','restart_unconfirmed'];
+function testcallState(s){return ({dry_run:'DRY RUN completed — no telephone call placed',queued:'Saved; not yet sent',dialling:'Request sent; telephone outcome unconfirmed',awaiting_consent:'Provider accepted; waiting for contact consent',active:'Contact opted in; conversation active',processing:'Preparing a short reply',create_unconfirmed:'Create result uncertain — do not place another call',stop_requested:'End requested; provider result pending',stop_unconfirmed:'End unconfirmed — check Twilio call controls',restart_unconfirmed:'Restart interrupted test — verify provider status',not_started:'Not started: access or setup changed',declined:'Contact declined or did not consent',ended:'Conversation ended / end accepted; check provider status',completed:'Provider reports call completed',busy:'Provider reports busy','no-answer':'Provider reports no answer',failed:'Provider reports failed',canceled:'Provider reports canceled'})[s]||s;}
+async function loadTestCalls(force=false){
+  try{
+    const r=await api('/admin/api/testcalls',{passive:true});testcallSnapshot=r;
+    $('#testcallReady').textContent='Twilio settings: '+(r.provider_configured?'present (not connectivity-tested)':'missing or invalid')+' · AI key: '+(r.ai_configured?'present':'missing')+'. No test call is placed by this check.';
+    if(!testcallLoaded||force){
+      $('#testcallEnabled').checked=r.settings.enabled;$('#testcallDry').checked=r.settings.dry_run;
+      $('#testcallDevices').innerHTML=r.devices.map(d=>`<tr><td>${esc(d.name)}<div class="muted">${d.ready?'Telephone tests registered':'Open Telephone test calls on the updated phone first'}</div></td><td><input type="checkbox" style="width:auto" data-testcall-source="${esc(d.id)}" ${r.settings.initiators.includes(d.id)?'checked':''} ${d.ready&&d.approved||r.settings.initiators.includes(d.id)?'':'disabled'}></td></tr>`).join('');
+      $('#testcallContacts').innerHTML=Array.from({length:5},(_,n)=>{const c=r.settings.contacts[n]||{};return `<tr data-testcall-contact="${n}"><td><input data-name maxlength="60" value="${esc(c.name||'')}" aria-label="Contact name"></td><td><input data-number inputmode="tel" value="${esc(c.number||'')}" placeholder="+614XXXXXXXX" aria-label="Telephone number"></td><td><input data-consent type="checkbox" style="width:auto" ${c.consent?'checked':''} aria-label="Prior test permission confirmed"><input data-id type="hidden" value="${esc(c.id||'test_contact_'+(n+1))}"></td></tr>`;}).join('');
+      testcallLoaded=true;
+    }
+    $('#testcallHistory').innerHTML=r.items.map(i=>`<div class="card"><h3>${esc(i.contact_name)} — ${esc(i.number)}</h3><p>${esc(testcallState(i.status))}</p><p>Contact consent: ${i.consented?'Keypad opt-in recorded':'Not recorded'} · Turns: ${Number(i.turns)||0}<br>Provider status: ${esc(i.provider_status||'unconfirmed')}</p><div class="muted">No emergency services contacted. A completed call does not mean assistance was arranged.</div>${i.can_stop?`<button class="b" onclick="stopTestCall('${esc(i.id)}')">End this telephone test</button>`:''}</div>`).join('')||'<div class="card">No recent telephone tests.</div>';
+  }catch(e){$('#testcallStatus').textContent=e.message||'Could not load Telephone tests.';}
+}
+async function saveTestCalls(){
+  try{
+    const enabled=$('#testcallEnabled').checked,dry_run=$('#testcallDry').checked;
+    if(enabled&&!dry_run&&!confirm('Allow paid calls to these previously consenting test contacts after explicit phone confirmation? This does not enable emergency calling.'))return;
+    if(testcallSnapshot?.items.some(i=>i.can_stop)&&!confirm('Saving setup requests an end to active telephone tests. Continue?'))return;
+    const contacts=[...document.querySelectorAll('[data-testcall-contact]')].map(row=>({id:row.querySelector('[data-id]').value,name:row.querySelector('[data-name]').value.trim(),number:row.querySelector('[data-number]').value.trim(),consent:row.querySelector('[data-consent]').checked})).filter(c=>c.name||c.number);
+    const body={enabled,dry_run,contacts,initiators:[...document.querySelectorAll('[data-testcall-source]:checked')].map(e=>e.dataset.testcallSource)};
+    await api('/admin/api/testcalls',{method:'PUT',body:JSON.stringify(body)});$('#testcallStatus').textContent='Saved. Use DRY RUN before arranging a supervised real test.';await loadTestCalls(true);
+  }catch(e){$('#testcallStatus').textContent=e.message||'Could not save Telephone test setup.';}
+}
+async function stopTestCall(id){
+  if(!/^tc_[a-f0-9]{24}$/.test(id)||!confirm('End this telephone test? Verify the provider result if the connection is unavailable.'))return;
+  try{await api('/admin/api/testcalls/'+id+'/stop',{method:'POST',body:'{}'});await loadTestCalls();}
+  catch(e){$('#testcallStatus').textContent=e.message||'End unconfirmed. Check Twilio call controls.';}
 }
 
 </script>
