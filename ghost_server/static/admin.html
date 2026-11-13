@@ -157,6 +157,8 @@
           <label>Assistant name</label><input data-k="assistant_name">
           <label>City (weather + local highlights)</label><input data-k="city">
           <label>News country</label><input data-k="news_country">
+          <label>GNews API key (server only)</label><input data-k="gnews_api_key" type="password" autocomplete="new-password">
+          <p class="muted">Australian top headlines for the Home news panel. The key stays on Ghost Server. Leave blank to use the existing news feed.</p>
           <label>Time zone</label><input data-k="timezone">
         </div>
         <div class="card"><h3>Claude — the brain</h3>
@@ -183,7 +185,7 @@
         </div>
         <div class="card"><h3>Security cameras</h3>
           <div class="status">Cameras already in Home Assistant appear automatically. Add any others (NVR channels, Reolink, Hikvision, Tapo…) below, one per line:</div>
-          <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = rtsp://admin:password@192.168.80.50:554/h264Preview_01_sub&#10;Backyard = rtsp://admin:password@192.168.80.51:554/Streaming/Channels/102"></textarea>
+          <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = paste the camera stream URL here&#10;Backyard = paste another camera stream URL"></textarea>
           <div class="status">Use each camera's <b>sub-stream</b> if it has one — it's lighter and plenty for a tablet. Passwords stay on the server; devices only ever get a short-lived viewing link.</div>
         </div>
         <div class="card"><h3>Front door</h3>

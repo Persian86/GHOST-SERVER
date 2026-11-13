@@ -105,6 +105,12 @@ def view(tok: str) -> list[Cam] | None:
     return v[1]
 
 
+def remaining(tok: str) -> float:
+    with _vlock:
+        v = _views.get(tok)
+    return max(0, v[0] - time.time()) if v else 0
+
+
 # ── streams ──────────────────────────────────────────────────────────────────
 async def mjpeg(cam: Cam):
     """(content_type, async byte iterator) for a live MJPEG stream of this camera."""
@@ -183,32 +189,8 @@ def describe(cam: Cam, question: str) -> str:
 
 # ── the viewer page ──────────────────────────────────────────────────────────
 def page(tok: str, cams: list[Cam]) -> str:
-    n = len(cams)
-    cols = 1 if n == 1 else 2 if n <= 4 else 3
-    tiles = "\n".join(
-        f'<figure><img src="/cam/{tok}/stream/{i}" data-src="/cam/{tok}/stream/{i}" alt="">'
-        f'<figcaption>{html.escape(c.name)}</figcaption></figure>' for i, c in enumerate(cams))
-    title = html.escape(cams[0].name if n == 1 else "Cameras")
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
-<style>
- html,body{{margin:0;height:100%;background:#000;color:#E6E0FF;font-family:system-ui,sans-serif}}
- main{{display:grid;grid-template-columns:repeat({cols},1fr);gap:6px;height:100vh;padding:6px;box-sizing:border-box}}
- figure{{margin:0;position:relative;background:#07060D;border-radius:10px;overflow:hidden;display:flex}}
- img{{width:100%;height:100%;object-fit:contain}}
- figcaption{{position:absolute;left:10px;top:8px;background:#0009;padding:3px 10px;border-radius:12px;font-size:14px}}
- figcaption::before{{content:"● ";color:#ff4d6d}}
- #clock{{position:fixed;right:14px;top:10px;background:#0009;padding:3px 10px;border-radius:12px;font-size:14px}}
-</style></head><body><main>{tiles}</main><div id="clock"></div>
-<script>
- // reconnect a feed that drops; tap a tile to see just that camera
- document.querySelectorAll('img').forEach(function(im){{
-   im.onerror=function(){{setTimeout(function(){{im.src=im.dataset.src+'?r='+Date.now()}},3000)}};
-   im.parentElement.onclick=function(){{var all=document.querySelectorAll('figure');
-     var solo=document.body.dataset.solo===im.dataset.src;
-     all.forEach(function(f){{f.style.display=(solo||f===im.parentElement)?'flex':'none'}});
-     document.querySelector('main').style.gridTemplateColumns=solo?'repeat({cols},1fr)':'1fr';
-     document.body.dataset.solo=solo?'':im.dataset.src;}};
- }});
- setInterval(function(){{document.getElementById('clock').textContent=new Date().toLocaleTimeString()}},1000);
-</script></body></html>"""
+    import json
+    from pathlib import Path
+    template = Path(__file__).with_name("camera_viewer.html").read_text(encoding="utf-8")
+    data = json.dumps([c.name for c in cams]).replace("<", "\\u003c")
+    return template.replace("__CAMERA_BASE__", json.dumps("/cam/" + tok)).replace("__CAMERA_DATA__", data)

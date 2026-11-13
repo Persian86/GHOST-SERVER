@@ -186,6 +186,10 @@ def switch(entity_id: str, action: str) -> dict:
 
 # ── headlines ────────────────────────────────────────────────────────────────
 def headlines() -> list[dict]:
+    from .news_feed import top_headlines
+    rows = top_headlines()
+    if rows:
+        return rows
     from .tools.web import ddg_news
     country, city = store.get("news_country") or "Australia", store.get("city") or "Melbourne"
     rows = ddg_news(f"{country} news today", 4) + ddg_news(f"{city} news today", 3)
@@ -194,7 +198,8 @@ def headlines() -> list[dict]:
         t = (r.get("title") or "").strip()
         if t and t.lower() not in seen:
             seen.add(t.lower())
-            out.append({"title": t, "source": r.get("source", ""), "url": r.get("url", "")})
+            out.append({"title": t, "source": r.get("source", ""), "url": r.get("url", ""),
+                        "summary": r.get("body", ""), "published": "", "provider": "News"})
     return out[:6]
 
 
