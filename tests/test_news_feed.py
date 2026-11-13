@@ -20,12 +20,13 @@ def test_gnews_key_only_used_server_side(settings, monkeypatch):
         assert kwargs["params"]["country"] == "au"
         return httpx.Response(200, json={"articles": [
             {"title": "A headline", "url": "https://publisher.test/story", "description": "Highlights",
-             "source": {"name": "Publisher"}, "publishedAt": "2026-11-13T00:00:00Z"},
+             "source": {"name": "Publisher"}, "image": "https://images.publisher.test/picture.jpg", "publishedAt": "2026-11-13T00:00:00Z"},
             {"title": "duplicate", "url": "https://publisher.test/story"},
             {"title": "bad", "url": "javascript:alert(1)"}]})
     monkeypatch.setattr(httpx, "get", get)
     rows = news_feed.top_headlines()
     assert len(rows) == 1 and rows[0]["source"] == "Publisher"
+    assert rows[0]["image"] == "https://images.publisher.test/picture.jpg"
     assert rows[0]["summary"] == "Highlights" and rows[0]["provider"] == "GNews"
     assert "private-key" not in json.dumps(rows)
     assert dashboard.headlines() == rows
@@ -58,3 +59,8 @@ def test_gnews_setting_is_masked(monkeypatch):
     settings = store.all_settings()
     assert settings["gnews_api_key"] == "•••-key"
     assert "super-secret" not in json.dumps(settings)
+
+
+@pytest.mark.parametrize("url", ["http://publisher.test/x", "javascript:alert(1)", "https://user:password@publisher.test/x"])
+def test_thumbnail_metadata_accepts_only_https_without_credentials(url):
+    assert news_feed.public_url(url) == ""

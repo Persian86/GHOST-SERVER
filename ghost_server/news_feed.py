@@ -53,7 +53,7 @@ def top_headlines() -> list[dict]:
             source = a.get("source") or {}
             rows.append({"title": title, "url": url, "source": str(source.get("name") or "")[:100]
                          if isinstance(source, dict) else "", "published": str(a.get("publishedAt") or "")[:40],
-                         "summary": str(a.get("description") or "")[:500], "provider": "GNews"})
+                         "summary": str(a.get("description") or "")[:500], "image": public_url(a.get("image")), "provider": "GNews"})
         return rows[:6]
     except (httpx.HTTPError, ValueError, TypeError, AttributeError):
         return []
