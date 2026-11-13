@@ -1,0 +1,47 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Ghost Cameras</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0a12;color:#f1edff;font:16px system-ui,sans-serif}
+header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px;background:#191623}button{min-height:46px;border:1px solid #625973;border-radius:12px;background:#302947;color:#fff;padding:8px 16px;font:inherit;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:3px solid #cab7ff}.danger{background:#823a50}#notice{padding:8px 14px;min-height:40px;color:#d9d0ea}#rec{color:#ffb2bd;font-weight:bold}main{height:calc(100vh - 155px);height:calc(100dvh - 155px);min-height:240px;display:grid;gap:8px;padding:8px}figure{position:relative;margin:0;overflow:hidden;border-radius:14px;background:#000;touch-action:none}figure img{width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none;transform-origin:center}figcaption{position:absolute;top:8px;left:8px;padding:4px 10px;border-radius:12px;background:#000b;pointer-events:none}#saved{padding:12px}#saved h2{margin:8px}article{padding:14px;border:1px solid #474050;border-radius:14px;margin:12px 0;max-width:960px}article img,article video{display:block;width:100%;max-height:65vh;object-fit:contain;background:#000;border-radius:8px;margin:12px 0}article p{overflow-wrap:anywhere}#zoom{display:flex;gap:6px;align-items:center}[hidden]{display:none!important}@media(max-width:600px){button{padding:6px 10px}main{height:calc(100dvh - 220px)}}
+</style></head><body>
+<header><button id="all">All cameras</button><span id="zoom"><button id="minus" aria-label="Zoom out">−</button><span id="scale">1×</span><button id="plus" aria-label="Zoom in">+</button><button id="reset">Reset</button></span><button id="capture">Save photo</button><button id="record">Record video</button><button id="stop" class="danger" hidden>Stop recording</button><span id="rec" aria-live="polite"></span><button id="gallery">Saved</button></header>
+<div id="notice" role="status" aria-live="polite">Tap a camera to enlarge it. Photos and video are saved on Ghost Server / NAS.</div>
+<main id="feeds"></main><section id="saved" hidden><h2>Saved on Ghost Server / NAS</h2><p>Recordings are video only, up to five minutes. Photos save the full camera image.</p><div id="items"></div></section>
+<script>
+'use strict';
+const cameras=__CAMERA_DATA__,base=__CAMERA_BASE__;
+const $=id=>document.getElementById(id), main=$('feeds'), notice=$('notice');
+let selected=-1,z=1,x=0,y=0,active=null,poll=null,busy=false,inGallery=false;
+const pointers=new Map();let previous=null,moved=false;
+const columns=cameras.length===1?1:cameras.length<=4?2:3;
+function message(s){notice.textContent=s}
+async function api(path,method='GET'){
+ const r=await fetch(base+path,{method,headers:{'X-Ghost-Camera':'1'},cache:'no-store'});
+ let data;try{data=await r.json()}catch(_){throw Error('Ghost Server did not respond. Try again.')}
+ if(!r.ok)throw Error(data.detail||'Camera request failed');return data;
+}
+function controls(){const solo=selected>=0&&!inGallery;$('zoom').hidden=!solo;$('capture').disabled=!solo||busy;$('record').disabled=!solo||!!active||busy;$('stop').hidden=!active;$('all').textContent=inGallery?'Live cameras':'All cameras';$('gallery').disabled=inGallery}
+function clamp(){z=Math.max(1,Math.min(6,z));const frame=main.children[selected];if(!frame)return;const w=frame.clientWidth,h=frame.clientHeight,im=frame.querySelector('img'),fit=im.naturalWidth?Math.min(w/im.naturalWidth,h/im.naturalHeight):1,iw=im.naturalWidth?im.naturalWidth*fit:w,ih=im.naturalHeight?im.naturalHeight*fit:h,mx=Math.max(0,(iw*z-w)/2),my=Math.max(0,(ih*z-h)/2);x=Math.max(-mx,Math.min(mx,x));y=Math.max(-my,Math.min(my,y));frame.querySelector('img').style.transform=`translate(${x}px,${y}px) scale(${z})`;$('scale').textContent=z.toFixed(1)+'×'}
+function reset(){z=1;x=y=0;clamp()}
+function solo(i){selected=i;main.style.gridTemplateColumns='1fr';[...main.children].forEach((f,n)=>f.hidden=n!==i);reset();controls();message('Pinch or use + / − to zoom. Drag to pan. Photos save the full image. Video has no audio.')}
+function all(){inGallery=false;$('saved').hidden=true;main.hidden=false;[...main.children].forEach(f=>{f.hidden=false;f.querySelector('img').style.transform=''});selected=-1;main.style.gridTemplateColumns=`repeat(${columns},1fr)`;controls();if(cameras.length===1)solo(0)}
+function gesture(){const p=[...pointers.values()];if(p.length===1)return {cx:p[0].x,cy:p[0].y,d:0};if(p.length>=2)return {cx:(p[0].x+p[1].x)/2,cy:(p[0].y+p[1].y)/2,d:Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y)};return null}
+cameras.forEach((name,i)=>{
+ const f=document.createElement('figure'),im=document.createElement('img'),label=document.createElement('figcaption');label.textContent=name;im.alt=name;im.src=base+'/stream/'+i;im.onerror=()=>setTimeout(()=>{im.src=base+'/stream/'+i+'?r='+Date.now()},3000);f.append(im,label);main.append(f);f.tabIndex=0;f.setAttribute('role','button');f.setAttribute('aria-label','Enlarge '+name);
+ f.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();solo(i)}};
+ f.onpointerdown=e=>{f.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});previous=gesture();moved=false};
+ f.onpointermove=e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});const g=gesture();if(selected===i&&previous&&g){if(Math.abs(g.cx-previous.cx)+Math.abs(g.cy-previous.cy)>2||g.d!==previous.d)moved=true;if(g.d&&previous.d)z*=g.d/previous.d;if(z>1){x+=g.cx-previous.cx;y+=g.cy-previous.cy}clamp()}previous=g};
+ f.onpointerup=e=>{pointers.delete(e.pointerId);previous=gesture();if(!moved&&selected!==i)solo(i)};f.onpointercancel=e=>{pointers.delete(e.pointerId);previous=gesture()};
+ f.onwheel=e=>{if(selected!==i)return;e.preventDefault();z*=e.deltaY<0?1.15:.87;clamp()};f.ondblclick=reset;
+});
+$('all').onclick=all;$('plus').onclick=()=>{z*=1.25;clamp()};$('minus').onclick=()=>{z/=1.25;clamp()};$('reset').onclick=reset;window.addEventListener('resize',clamp);
+$('capture').onclick=async()=>{busy=true;controls();try{await api('/capture/'+selected,'POST');message('Photo saved on Ghost Server / NAS. Open Saved to view it.')}catch(e){message(e.message)}finally{busy=false;controls()}};
+async function check(){if(!active)return;try{const r=await api('/recording/'+active.id);if(r.state!=='recording'){clearInterval(poll);active=null;$('rec').textContent='';message(r.state==='saved'?'Video saved on Ghost Server / NAS. Open Saved to play it.':'Recording could not be saved. Check the camera connection and server storage.');controls()}}catch(e){message(e.message)}}
+$('record').onclick=async()=>{busy=true;controls();try{active=await api('/recordings/'+selected,'POST');$('rec').textContent='● Recording — '+active.name+' (5 min max)';message('Recording video only. Stop to save it.');poll=setInterval(check,2000)}catch(e){message(e.message)}finally{busy=false;controls()}};
+$('stop').onclick=async()=>{if(!active)return;$('stop').disabled=true;message('Finishing video…');try{await api('/recording/'+active.id+'/stop','POST');await check()}catch(e){message(e.message)}finally{$('stop').disabled=false}};
+async function gallery(){inGallery=true;main.hidden=true;$('saved').hidden=false;controls();$('items').textContent='Loading saved items…';try{const rows=await api('/media');$('items').textContent=rows.length?'':'No photos or videos saved yet.';rows.forEach(item=>{const card=document.createElement('article'),text=document.createElement('p'),media=document.createElement(item.kind==='photo'?'img':'video'),del=document.createElement('button');text.textContent=item.name+' · '+new Date(item.created*1000).toLocaleString();media.src=base+'/media/'+item.id;if(item.kind==='video'){media.controls=true;media.preload='none';media.playsInline=true}else{media.alt='Saved photo from '+item.name;media.loading='lazy'};del.textContent='Delete';del.onclick=async()=>{if(del.dataset.confirm!=='yes'){del.dataset.confirm='yes';del.textContent='Delete permanently? Tap again';setTimeout(()=>{del.dataset.confirm='';del.textContent='Delete'},5000);return}del.disabled=true;try{await api('/media/'+item.id,'DELETE');card.remove()}catch(e){message(e.message);del.disabled=false}};card.append(text,media,del);$('items').append(card)})}catch(e){$('items').textContent=e.message}}
+$('gallery').onclick=gallery;
+window.addEventListener('pagehide',()=>{if(active)fetch(base+'/recording/'+active.id+'/stop',{method:'POST',headers:{'X-Ghost-Camera':'1'},keepalive:true}).catch(()=>{})});
+all();
+</script></body></html>

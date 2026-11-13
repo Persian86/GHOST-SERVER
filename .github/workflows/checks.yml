@@ -10,10 +10,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r requirements.txt pytest
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: node tests/check_camera_viewer.cjs
       - run: node tests/check_breakin_ui.cjs
       - run: node tests/check_checkins_ui.cjs
       - run: node tests/check_testcalls_ui.cjs

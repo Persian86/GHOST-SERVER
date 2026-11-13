@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
                prompt, quiet, security, store, theme, tools, voices)
+from . import news_feed  # registers the server-only, masked GNews setting
 from .hub import AgentConn, hub
 
 from contextlib import asynccontextmanager
@@ -44,6 +45,8 @@ async def _lifespan(_app):
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
+    from . import camera_media
+    camera_media.recover()
     from . import routines, breakin, checkins, testcalls
     routines.recover()
     breakin.recover()
@@ -56,6 +59,7 @@ async def _lifespan(_app):
           asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop()),
           asyncio.create_task(checkins.scheduler_loop()), asyncio.create_task(testcalls.safety_loop())]
     yield
+    await camera_media.shutdown()
     for t in bg:
         t.cancel()
 
@@ -790,6 +794,10 @@ async def quiet_set(body: dict, dev: dict = Depends(device_auth)):
     return quiet.snapshot(dev["kind"], dev["name"])
 
 
+from .camera_media import router as camera_media_router
+app.include_router(camera_media_router)
+
+
 @app.post("/api/v1/cameras/view")
 async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
     """A short-lived link (/cam/<token>) that shows one camera, or 'all' as a grid."""
@@ -806,7 +814,7 @@ async def cam_page(tok: str):
     if cams is None:
         return HTMLResponse("<body style='background:#000;color:#aaa;font-family:sans-serif;padding:40px'>"
                             "This camera link has expired — ask Ghost to show the cameras again.</body>", 410)
-    return cameras.page(tok, cams)
+    return HTMLResponse(cameras.page(tok, cams), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 @app.get("/cam/{tok}/stream/{i}")
@@ -1132,6 +1140,9 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         if store.get(k) != v:
             changed.append(k)
         store.put(k, v)
+    if set(changed) & {"gnews_api_key", "news_country", "city"}:
+        with dashboard._lock:
+            dashboard._cache.pop("headlines", None)
     if "handoff_enabled" in changed:
         from . import handoff
         handoff.clear()

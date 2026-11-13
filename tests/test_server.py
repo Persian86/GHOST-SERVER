@@ -347,7 +347,7 @@ def test_cameras_rtsp_view_stream_and_show(server, admin, tmp_path, monkeypatch)
     v = httpx.post(server + "/api/v1/cameras/view", headers=H, json={"camera": "backyard"}).json()
     assert v["title"] == "Backyard" and v["path"].startswith("/cam/")
     page = httpx.get(server + v["path"]).text
-    assert "/stream/0" in page and "Backyard" in page and cam_url not in page             # no camera URL leaks
+    assert "/stream/" in page and "Backyard" in page and cam_url not in page             # no camera URL leaks
     with httpx.stream("GET", server + v["path"] + "/stream/0", timeout=30) as r:
         assert r.status_code == 200 and "multipart/x-mixed-replace" in r.headers["content-type"]
         got = b""
