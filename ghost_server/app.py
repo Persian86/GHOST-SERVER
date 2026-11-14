@@ -693,9 +693,9 @@ def run_presence(dev: dict, state: str) -> str:
 
 
 @app.get("/api/v1/dashboard")
-async def dashboard_ep(dev: dict = Depends(device_auth)):
+async def dashboard_ep(partial: bool = False, dev: dict = Depends(device_auth)):
     """The Ghost Hub tablet's always-on screen: weather, calendar, home tiles, headlines."""
-    return await asyncio.to_thread(dashboard.build)
+    return await asyncio.to_thread(dashboard.build, partial)
 
 
 @app.get("/api/v1/home/entities")

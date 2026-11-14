@@ -16,9 +16,11 @@ import threading
 import time
 
 from . import store
+from .dashboard_cache import PanelCache, wait_briefly
 
 _cache: dict[str, tuple[float, object]] = {}
 _lock = threading.Lock()
+_panels = PanelCache(_cache, _lock)
 
 SWITCHABLE = {"light", "switch", "fan", "input_boolean", "scene", "script", "media_player"}
 READ_ONLY = {"lock", "alarm_control_panel", "cover", "climate", "sensor", "binary_sensor", "weather"}
@@ -50,7 +52,7 @@ def weather_data(city: str) -> dict | None:
     loc = g["results"][0]
     f = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=6, params={
         "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": "auto", "forecast_days": 4,
-        "current": "temperature_2m,weather_code,is_day",
+        "current": "temperature_2m,weather_code,is_day,precipitation,rain,showers,snowfall",
         "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"}).json()
     cur, day = f.get("current", {}), f.get("daily", {})
     days = []
@@ -58,8 +60,39 @@ def weather_data(city: str) -> dict | None:
         days.append({"date": date, "code": day["weather_code"][i], "desc": _WMO.get(day["weather_code"][i], "mixed"),
                      "min": round(day["temperature_2m_min"][i]), "max": round(day["temperature_2m_max"][i]),
                      "rain": (day.get("precipitation_probability_max") or [None] * 4)[i]})
-    return {"city": loc["name"], "temp": round(cur.get("temperature_2m", 0)), "code": cur.get("weather_code"),
-            "desc": _WMO.get(cur.get("weather_code"), "mixed"), "is_day": bool(cur.get("is_day", 1)), "days": days}
+    code = effective_weather_code(cur)
+    observed = None
+    try:
+        stamp = dt.datetime.fromisoformat(cur["time"])
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=dt.timezone(dt.timedelta(seconds=f.get("utc_offset_seconds", 0))))
+        observed = stamp.timestamp()
+    except (KeyError, ValueError, TypeError):
+        pass
+    snow = {71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains", 85: "snow showers", 86: "heavy snow showers"}
+    desc = "Rain" if code == 61 and cur.get("weather_code") not in (51,53,55,56,57,61,63,65,66,67,80,81,82) else snow.get(code, _WMO.get(code, "mixed"))
+    return {"city": loc["name"], "temp": round(cur.get("temperature_2m", 0)), "code": code,
+            "desc": desc, "is_day": bool(cur.get("is_day", 1)), "days": days,
+            "observed_at": observed, "precipitation": cur.get("precipitation", 0)}
+
+
+def effective_weather_code(current):
+    code = current.get("weather_code")
+    def positive(name):
+        try:
+            return float(current.get(name) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    if code in range(95, 100):
+        return code
+    if code in (*range(71,78),85,86) or positive("snowfall"):
+        return code if code in (*range(71,78),85,86) else 73
+    if code in (*range(51,68),80,81,82):
+        return code
+    if any(positive(k) for k in ("rain", "showers", "precipitation")):
+        return 61
+    return code
+
 
 
 # ── calendar ─────────────────────────────────────────────────────────────────
@@ -203,16 +236,38 @@ def headlines() -> list[dict]:
     return out[:6]
 
 
-def build() -> dict:
+def build(partial: bool = False) -> dict:
     city = str(store.get("city") or "Melbourne")
+    if not partial:
+        # Older phone/desktop clients keep their complete-response contract.
+        return {
+            "time": time.time(), "household": store.get("owner_name") or "", "assistant": store.get("assistant_name") or "Ghost",
+            "weather": _cached(f"weather:{city}", 600, lambda: weather_data(city)),
+            "calendar": _cached("calendar", 600, calendar_data) or {"connected": False, "today": [], "tomorrow": []},
+            "home": _cached("home", 5, home_tiles) or {"connected": False, "tiles": []},
+            "headlines": _cached("headlines", 1800, headlines) or [],
+            "features": {"faces": bool(store.get("faces_enabled")), "photo_frame_after": _int(store.get("photo_frame_after"), 5)},
+            "theme": _theme(),
+        }
+    loaders = {
+        "weather": (f"weather:{city}", 180, lambda: weather_data(city)),
+        "calendar": ("calendar", 600, calendar_data),
+        "home": ("home", 5, home_tiles),
+        "headlines": ("headlines", 1800, headlines),
+    }
+    jobs = [_panels.start(key, ttl, load) for key, ttl, load in loaders.values()]
+    wait_briefly(jobs)
+    snapshots = {name: _panels.snapshot(key) for name, (key, _, _) in loaders.items()}
     return {
         "time": time.time(),
         "household": store.get("owner_name") or "",
         "assistant": store.get("assistant_name") or "Ghost",
-        "weather": _cached(f"weather:{city}", 600, lambda: weather_data(city)),
-        "calendar": _cached("calendar", 600, calendar_data) or {"connected": False, "today": [], "tomorrow": []},
-        "home": _cached("home", 5, home_tiles) or {"connected": False, "tiles": []},
-        "headlines": _cached("headlines", 1800, headlines) or [],
+        "weather": snapshots["weather"][0],
+        "weather_updated_at": snapshots["weather"][2],
+        "calendar": snapshots["calendar"][0] or {"connected": False, "today": [], "tomorrow": []},
+        "home": snapshots["home"][0] or {"connected": False, "tiles": []},
+        "headlines": snapshots["headlines"][0] or [],
+        "panel_status": {name: value[1] for name, value in snapshots.items()},
         "features": {"faces": bool(store.get("faces_enabled")), "photo_frame_after": _int(store.get("photo_frame_after"), 5)},
         "theme": _theme(),
     }
