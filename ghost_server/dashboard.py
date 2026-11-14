@@ -45,11 +45,10 @@ def _cached(key: str, ttl: float, fn):
 def weather_data(city: str) -> dict | None:
     import httpx
     from .tools.web import _WMO
-    g = httpx.get("https://geocoding-api.open-meteo.com/v1/search", timeout=6,
-                  params={"name": city.split(",")[0].strip(), "count": 1}).json()
-    if not g.get("results"):
+    from .weather_location import resolve_weather_location
+    loc = resolve_weather_location(city)
+    if loc is None:
         return None
-    loc = g["results"][0]
     f = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=6, params={
         "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": "auto", "forecast_days": 4,
         "current": "temperature_2m,weather_code,is_day,precipitation,rain,showers,snowfall",
@@ -73,7 +72,9 @@ def weather_data(city: str) -> dict | None:
     desc = "Rain" if code == 61 and cur.get("weather_code") not in (51,53,55,56,57,61,63,65,66,67,80,81,82) else snow.get(code, _WMO.get(code, "mixed"))
     return {"city": loc["name"], "temp": round(cur.get("temperature_2m", 0)), "code": code,
             "desc": desc, "is_day": bool(cur.get("is_day", 1)), "days": days,
-            "observed_at": observed, "precipitation": cur.get("precipitation", 0)}
+            "observed_at": observed, "precipitation": cur.get("precipitation", 0),
+            "region": loc.get("admin1", ""), "country": loc.get("country", ""),
+            "latitude": loc["latitude"], "longitude": loc["longitude"]}
 
 
 def effective_weather_code(current):
