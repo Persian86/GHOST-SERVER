@@ -88,7 +88,7 @@ def test_current_precipitation_takes_priority_over_cloud_code(current, expected)
 def test_weather_fetch_requests_current_rain_and_keeps_report_time(monkeypatch):
     def get(url, **kwargs):
         if "geocoding" in url:
-            return httpx.Response(200, json={"results": [{"name": "Melbourne", "latitude": -37.8, "longitude": 145}]})
+            return httpx.Response(200, request=httpx.Request("GET",url), json={"results": [{"name": "Melbourne", "latitude": -37.8, "longitude": 145}]})
         assert "precipitation" in kwargs["params"]["current"] and "rain" in kwargs["params"]["current"]
         return httpx.Response(200, json={"utc_offset_seconds": 39600, "current": {
             "time": "2026-11-14T11:45", "temperature_2m": 15, "weather_code": 3,

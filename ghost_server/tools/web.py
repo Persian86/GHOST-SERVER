@@ -67,11 +67,10 @@ def web_search(args: dict, ctx: Ctx) -> str:
 
 def weather_text(city: str) -> str:
     import httpx
-    g = httpx.get("https://geocoding-api.open-meteo.com/v1/search", timeout=6,
-                  params={"name": city.split(",")[0].strip(), "count": 1}).json()
-    if not g.get("results"):
+    from ..weather_location import resolve_weather_location, weather_location_label
+    loc = resolve_weather_location(city)
+    if loc is None:
         return f"I couldn't find {city}."
-    loc = g["results"][0]
     f = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=6, params={
         "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": "auto", "forecast_days": 2,
         "current": "temperature_2m,weather_code",
@@ -80,7 +79,7 @@ def weather_text(city: str) -> str:
     rain = (day.get("precipitation_probability_max") or [None])[0]
     tmr = (f" Tomorrow {_WMO.get(day['weather_code'][1], 'mixed')}, {round(day['temperature_2m_min'][1])}–"
            f"{round(day['temperature_2m_max'][1])}°." if len(day.get("weather_code", [])) > 1 else "")
-    return (f"{loc['name']}: {round(cur.get('temperature_2m', 0))}° and {_WMO.get(cur.get('weather_code'), 'mixed')} "
+    return (f"{weather_location_label(loc)}: {round(cur.get('temperature_2m', 0))}° and {_WMO.get(cur.get('weather_code'), 'mixed')} "
             f"now, today {round(day['temperature_2m_min'][0])}–{round(day['temperature_2m_max'][0])}°"
             + (f", {rain}% chance of rain." if rain is not None else ".") + tmr)
 
