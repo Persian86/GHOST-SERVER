@@ -246,6 +246,8 @@
         </div>
         <div class="card"><h3>Marquee</h3>
           <label>Address</label><input data-k="marquee_url">
+          <label>Tablet app address (optional)</label><input data-k="marquee_app_url" placeholder="The Marquee address your tablet can open">
+          <p class="hint">Leave empty to use the address above. Set this if Ghost Server uses an internal container address that your tablet cannot reach.</p>
           <label>App key (kind: assistant)</label><input data-k="marquee_key" type="password">
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('marquee', this)">Test</button></div>
           <div class="status"></div>

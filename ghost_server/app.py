@@ -698,6 +698,15 @@ async def dashboard_ep(partial: bool = False, dev: dict = Depends(device_auth)):
     return await asyncio.to_thread(dashboard.build, partial)
 
 
+@app.get("/api/v1/marquee/launch")
+async def marquee_launch_ep(dev: dict = Depends(device_auth)):
+    """Marquee signs the user in itself; Ghost's assistant key is never shared."""
+    from . import access, marquee_launch
+    if not access.tool_allowed(dev['id'],'marquee'):
+        raise HTTPException(403,'Marquee is not allowed for this device')
+    return marquee_launch.public_launch()
+
+
 @app.get("/api/v1/home/entities")
 async def home_entities(dev: dict = Depends(device_auth)):
     """What can be pinned as a favourite on a phone."""

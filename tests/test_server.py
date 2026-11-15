@@ -1252,3 +1252,19 @@ def test_admin_auto_lock(server, admin, monkeypatch):
         monkeypatch.setattr(security.time, "time", _t.time)
         store.put("admin_lock_minutes", 15)
 
+
+def test_marquee_launch_is_paired_and_never_returns_the_assistant_key(server, admin, tmp_path):
+    from ghost_server import store
+    saved = {k: store.get(k) for k in ('marquee_url', 'marquee_app_url', 'marquee_key', 'household_access', 'approve_new_devices')}
+    try:
+        values = {'marquee_url': 'http://marquee-container:8420', 'marquee_app_url': 'https://media.example.test/marquee',
+                  'marquee_key': 'fixture-assistant-secret', 'household_access': False, 'approve_new_devices': False}
+        assert admin.put('/admin/api/settings', json=values).status_code == 200
+        assert httpx.get(server + '/api/v1/marquee/launch').status_code == 401
+        agent = _agent(server, admin, 'Media Tablet', 'tablet', tmp_path)
+        response = httpx.get(server + '/api/v1/marquee/launch', headers={'Authorization': 'Bearer ' + agent.key})
+        assert response.status_code == 200
+        assert response.json() == {'configured': True, 'url': 'https://media.example.test/marquee/'}
+        assert 'fixture-assistant-secret' not in response.text and 'marquee_key' not in response.text
+    finally:
+        admin.put('/admin/api/settings', json=saved)
