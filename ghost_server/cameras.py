@@ -119,7 +119,11 @@ async def mjpeg(cam: Cam):
         url = str(store.get("ha_url") or "").rstrip("/") + f"/api/camera_proxy_stream/{cam.id}"
         client = httpx.AsyncClient(timeout=httpx.Timeout(10, read=30), trust_env=False)
         req = client.build_request("GET", url, headers={"Authorization": f"Bearer {store.get('ha_token')}"})
-        resp = await client.send(req, stream=True)
+        try:
+            resp = await client.send(req, stream=True)
+        except BaseException:
+            await client.aclose()
+            raise
         if resp.status_code >= 300:
             await resp.aclose(); await client.aclose()
             raise RuntimeError(f"Home Assistant said HTTP {resp.status_code}")
@@ -136,8 +140,8 @@ async def mjpeg(cam: Cam):
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if cam.url.lower().startswith("rtsp"):
         args += ["-rtsp_transport", "tcp"]
-    args += ["-i", cam.url, "-an", "-r", str(FFMPEG_FPS), "-vf", "scale='min(1280,iw)':-2",
-             "-q:v", "6", "-f", "mpjpeg", "-boundary_tag", "ghostframe", "pipe:1"]
+    args += ["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "1000000", "-analyzeduration", "1000000", "-i", cam.url, "-an", "-r", str(FFMPEG_FPS), "-vf", "scale='min(1280,iw)':-2",
+             "-q:v", "6", "-flush_packets", "1", "-f", "mpjpeg", "-boundary_tag", "ghostframe", "pipe:1"]
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.DEVNULL)
 
@@ -193,4 +197,5 @@ def page(tok: str, cams: list[Cam]) -> str:
     from pathlib import Path
     template = Path(__file__).with_name("camera_viewer.html").read_text(encoding="utf-8")
     data = json.dumps([c.name for c in cams]).replace("<", "\\u003c")
+    template = template.replace("__CAMERA_WALL__", Path(__file__).with_name("camera_wall.js").read_text(encoding="utf-8"))
     return template.replace("__CAMERA_BASE__", json.dumps("/cam/" + tok)).replace("__CAMERA_DATA__", data)

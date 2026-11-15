@@ -15,8 +15,8 @@ const ctx={document:{getElementById:$,createElement:tag=>new Element(tag)},windo
 vm.createContext(ctx);
 const html=fs.readFileSync('ghost_server/camera_viewer.html','utf8');
 vm.runInContext(html.match(/<script>([\s\S]*?)<\/script>/)[1].replace('__CAMERA_DATA__','["Front","Back"]')
- .replace('__CAMERA_BASE__','"/cam/test-token"'),ctx);
-const feeds=$('feeds');assert.equal(feeds.children.length,2);assert.equal(feeds.children[0].children[0].src,'/cam/test-token/stream/0');
+ .replace('__CAMERA_BASE__','"/cam/test-token"').replace('__CAMERA_WALL__',''),ctx);
+const feeds=$('feeds');assert.equal(feeds.children.length,2);assert.equal(feeds.children[0].children[0].src,undefined); // Wall owns the single connection
 function touch(id,x,y){return{pointerId:id,clientX:x,clientY:y}}
 async function run(){
  assert.equal($('capture').disabled,true);

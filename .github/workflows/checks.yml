@@ -16,6 +16,7 @@ jobs:
         with:
           node-version: '22'
       - run: node tests/check_camera_viewer.cjs
+      - run: node tests/check_camera_wall.cjs
       - run: node tests/check_breakin_ui.cjs
       - run: node tests/check_checkins_ui.cjs
       - run: node tests/check_testcalls_ui.cjs
