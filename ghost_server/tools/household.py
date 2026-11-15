@@ -2,9 +2,29 @@
 from __future__ import annotations
 
 import time
+import math
 
 from . import Ctx, tool
 from .. import faces, household as hh
+from ..timer_selection import select as select_timers
+
+
+def _duration(args: dict, default: float = 0) -> float | None:
+    if not any(k in args for k in ("hours", "minutes", "seconds")):
+        return default
+    total = 0.
+    for key, scale in (("hours", 3600), ("minutes", 60), ("seconds", 1)):
+        raw = args.get(key, 0)
+        if isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        total += value * scale
+    return total if math.isfinite(total) and 1 <= total <= 24 * 3600 else None
 
 
 def _where(ctx: Ctx) -> tuple[str, str]:
@@ -20,24 +40,27 @@ def _who(ctx: Ctx) -> str:
 Set a timer: action=set with hours/minutes/seconds and an optional label ('pasta').
 Set an alarm: action=alarm with time ('6:30am', '18:00'), optional label, and days
 ('weekdays', 'weekends', 'every day', 'mon,wed', or empty for just once).
-Also: list, stop (silence a ringing one, or cancel; 'all' for everything), add (more time to one).""",
+Also: list, stop (silence a ringing one, or cancel; 'all' for everything), snooze (ringing only),
+add (more time). Give the timer's name when several exist. Ambiguous commands ask which one;
+never guess or repeat an action after it succeeds. kind can restrict selection to timer or alarm.""",
       {"type": "OBJECT", "properties": {
-          "action": {"type": "STRING", "description": "set | alarm | list | stop | add"},
+          "action": {"type": "STRING", "description": "set | alarm | list | stop | snooze | add"},
           "hours": {"type": "NUMBER"}, "minutes": {"type": "NUMBER"}, "seconds": {"type": "NUMBER"},
           "label": {"type": "STRING", "description": "Name of the timer/alarm, or which one to stop/add to"},
+          "kind": {"type": "STRING", "description": "Optional target type: timer | alarm"},
           "time": {"type": "STRING", "description": "Alarm time of day"},
           "days": {"type": "STRING", "description": "Repeat days for an alarm"}},
        "required": ["action"]})
 def timer(args: dict, ctx: Ctx) -> str:
     a = str(args.get("action", "")).lower()
-    secs = float(args.get("hours") or 0) * 3600 + float(args.get("minutes") or 0) * 60 + float(args.get("seconds") or 0)
     label = str(args.get("label") or "").strip()
     did, room = _where(ctx)
     if a in ("set", "start", "timer"):
-        if secs <= 0:
-            return "How long should the timer be?"
+        secs = _duration(args)
+        if not secs:
+            return "How long should the timer be? Use a duration from one second to 24 hours."
         t = hh.set_timer(secs, label, did, room)
-        return f"{(label + ' timer') if label else 'Timer'} set for {hh._dur(secs)}."
+        return f"{(t['label'] + ' timer') if t['label'] else 'Timer'} set for {hh._dur(secs)}."
     if a in ("alarm", "set_alarm", "wake"):
         r = hh.set_alarm(str(args.get("time") or ""), label, str(args.get("days") or ""), did, room)
         if not r:
@@ -48,31 +71,39 @@ def timer(args: dict, ctx: Ctx) -> str:
         return f"Alarm set for {_clock_words(when.hour, when.minute)} {when.strftime('%A')}{rep}."
     if a in ("list", "show", "status", "check"):
         live = hh.timers()
+        kind = str(args.get('kind') or '').lower()
+        if kind in ('timer','alarm'):
+            live = [t for t in live if t['kind']==kind]
         return "; ".join(hh.describe(t) for t in live) if live else "No timers or alarms are set."
     if a in ("stop", "cancel", "dismiss", "off", "snooze"):
-        hits = hh._find(label)
+        targets, question = select_timers(hh.timers(), label, a, did, str(args.get("kind") or ""))
+        if question:
+            return question
         if a == "snooze":
-            ring = [t for t in hits if t["status"] == "ringing"] or hits
-            if not ring:
-                return "Nothing is ringing."
-            hh.add_time(ring[0]["id"], (secs or 9 * 60))
-            return f"Snoozed for {hh._dur(secs or 9 * 60)}."
-        ringing = [t for t in hits if t["status"] == "ringing"]
-        targets = ringing or hits
-        if not targets:
-            return "There's nothing like that to stop."
+            secs = _duration(args, 9 * 60)
+            if not secs:
+                return "How long should I snooze it? Use a duration from one second to 24 hours."
+            changed = sum(hh.add_time(t["id"], secs) for t in targets)
+            return f"Snoozed for {hh._dur(secs)}." if changed == len(targets) else "Some selected timers or alarms changed before I could snooze them. Please check the timer controls."
+        changed = 0
         for t in targets:
             if t["status"] == "ringing" or t["kind"] == "timer":
-                hh.stop(t["id"])
+                changed += bool(hh.stop(t["id"]))
             else:
-                hh.cancel_alarm_forever(t["id"])
-        return f"Stopped {len(targets)}." if len(targets) > 1 else f"Stopped the {hh.describe(targets[0]).split(':')[0]}."
+                changed += bool(hh.cancel_alarm_forever(t["id"]))
+        if changed != len(targets):
+            return "Some selected timers or alarms changed before I could stop them. Please check the timer controls."
+        name = (targets[0]["label"] + " " + targets[0]["kind"]).strip()
+        return f"Stopped {changed}." if changed > 1 else f"Stopped the {name}."
     if a in ("add", "extend", "more"):
-        hits = hh._find(label)
-        if not hits or secs <= 0:
-            return "Which timer, and how much more time?"
-        hh.add_time(hits[0]["id"], secs)
-        return f"Added {hh._dur(secs)}."
+        secs = _duration(args)
+        if not secs:
+            return "How much more time? Use a duration from one second to 24 hours."
+        targets, question = select_timers(hh.timers(), label, a, did, str(args.get("kind") or ""))
+        if question:
+            return question
+        changed = sum(hh.add_time(t["id"], secs) for t in targets)
+        return f"Added {hh._dur(secs)}." if changed == len(targets) else "Some selected timers or alarms changed before I could extend them. Please check the timer controls."
     return "Use set, alarm, list, stop, snooze or add."
 
 
