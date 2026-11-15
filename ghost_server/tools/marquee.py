@@ -34,6 +34,8 @@ def marquee(args: dict, ctx: Ctx) -> str:
             text = str(args.get("text") or "").strip()
             if not text:
                 return "Say what to do, e.g. 'play Bluey on the lounge TV'."
+            if marquee_here.OPEN_LIBRARY.fullmatch(text):
+                return marquee_here.open_library(ctx)
             if (str(args.get("target") or "").lower() == "here" or marquee_here.HERE.search(text) or
                     (str(args.get("target") or "").lower() != "named" and ctx.via == "live"
                      and bool(ctx.extra.get("request_id")) and marquee_here.is_tablet(ctx))):

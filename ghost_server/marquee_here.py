@@ -9,6 +9,7 @@ from .hub import hub
 TOKEN = re.compile(r"[A-Za-z0-9_:.-]{1,240}\Z")
 CLIENT = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 HERE = re.compile(r"\s+(?:here|on this tablet|on this screen)\s*[.!?]?\s*$", re.I)
+OPEN_LIBRARY = re.compile(r"(?:open|show|launch)\s+(?:the\s+)?marquee(?:\s+(?:app|library|page))?(?:\s+(?:here|on this tablet|on this screen))?[.!?]?\Z", re.I)
 
 
 def native(device: str, action: str, token: str, **kwargs) -> dict:

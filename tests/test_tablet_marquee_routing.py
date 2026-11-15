@@ -40,6 +40,14 @@ def test_open_needs_permission_and_a_current_voice_token(tablet,monkeypatch):
     monkeypatch.setattr(here.access,'tool_allowed',lambda *a:True);tablet.extra={}
     assert 'update' in here.open_library(tablet)
 
+def test_open_library_words_are_not_mistaken_for_a_movie_title(tablet,monkeypatch):
+    calls=[]
+    monkeypatch.setattr(here,'native',lambda *a,**kw:calls.append(a) or {'ok':True})
+    monkeypatch.setattr(media,'_req',lambda *a,**kw:pytest.fail('Opening the page must not search for a movie'))
+    for text in ('open Marquee','show the Marquee library here','launch Marquee on this tablet'):
+        assert 'Opening' in media.marquee({'action':'command','text':text},tablet)
+    assert len(calls)==3 and all(c[1]=='open' for c in calls)
+
 def test_a_phone_keeps_existing_named_device_behaviour(monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setattr(here.store,'device',lambda did:{'kind':'phone'})
