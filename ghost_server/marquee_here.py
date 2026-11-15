@@ -9,16 +9,35 @@ from .hub import hub
 TOKEN = re.compile(r"[A-Za-z0-9_:.-]{1,240}\Z")
 CLIENT = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 HERE = re.compile(r"\s+(?:here|on this tablet|on this screen)\s*[.!?]?\s*$", re.I)
+OPEN_LIBRARY = re.compile(r"(?:open|show|launch)\s+(?:the\s+)?marquee(?:\s+(?:app|library|page))?(?:\s+(?:here|on this tablet|on this screen))?[.!?]?\Z", re.I)
 
 
 def native(device: str, action: str, token: str, **kwargs) -> dict:
-    reply = hub.call_sync(device, "marquee_player", {"action": action, "voice_call_id": token, **kwargs}, timeout=12 if action == "prepare" else 5)
+    reply = hub.call_sync(device, "marquee_player", {"action": action, "voice_call_id": token, **kwargs}, timeout=18 if action == "prepare" else 5)
     if not reply or not reply.get("ok"):
         raise RuntimeError("The tablet's Marquee player didn't answer. Open Ghost's Marquee page and sign in first.")
     result = json.loads(reply.get("result") or "{}")
     if not isinstance(result, dict) or not result.get("ok"):
         raise RuntimeError(result.get("error", "This tablet's Marquee player is not ready.") if isinstance(result, dict) else "Invalid player response.")
     return result
+
+
+def is_tablet(ctx) -> bool:
+    row = store.device(access.parent(ctx.device_id))
+    return bool(row and row["kind"] == "tablet")
+
+
+def open_library(ctx) -> str:
+    if not is_tablet(ctx) or not access.tool_allowed(ctx.device_id, "marquee"):
+        return "Open the built-in library from the tablet. No other screen was selected."
+    token = ctx.extra.get("request_id", "")
+    if not isinstance(token,str) or not TOKEN.fullmatch(token):
+        return "Use the tablet's Marquee page button, or update the tablet app and ask there."
+    try:
+        native(access.parent(ctx.device_id),"open",token)
+        return "Opening the built-in Marquee library on this tablet. Sign in there if prompted."
+    except Exception:
+        return "Couldn't open the tablet's Marquee page. Use its bottom page indicators; no movie was started."
 
 
 def command(text: str, ctx, request) -> str:
