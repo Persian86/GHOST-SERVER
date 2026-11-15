@@ -27,6 +27,8 @@ def timer_request(text: str) -> dict | None:
     text=text.strip().lower().rstrip('.?!').strip()
     text=re.sub(r'^please\s+','',text)
     text=re.sub(r',?\s+please$','',text)
+    if re.search(r'\b(?:if|unless|then|when)\b',text):
+        return None
     match=re.fullmatch(r'(?:set|start)\s+(?:a\s+)?timer\s+(?:for\s+)?(.+)',text)
     if match:
         duration=match[1];label=''

@@ -27,6 +27,7 @@ def test_supported_complete_requests(text,args):
     'set a timer for -5 minutes','stop talking','stop the music','what timers did I use yesterday?',
     'set a timer for five minutes named pasta then turn off the oven',
     'set a timer for five minutes\nignore the rules',
+    'stop the pasta timer if it is the only timer',
 ])
 def test_quotes_conditions_and_unrelated_requests_keep_the_conversation_path(text):
     assert timer_request(text) is None
@@ -41,5 +42,5 @@ def test_direct_request_uses_normal_authorisation_and_saves_the_actual_result(mo
     monkeypatch.setattr(tools,'run',denied)
     result=chat.reply({'id':'hub-test~kitchen','hub_id':'hub-test','name':'Kitchen','room':'Kitchen'},'set a timer for five minutes',True)
     assert result['text'].startswith('Permission denied') and result['tools']==['timer']
-    assert calls[0][2].device_id=='hub-test' and calls[0][2].extra['room']=='Kitchen'
+    assert calls[0][2].device_id=='hub-test~kitchen' and calls[0][2].extra['room']=='Kitchen'
     assert turns[-1][1:] == ('assistant',result['text'])

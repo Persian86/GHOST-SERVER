@@ -31,7 +31,9 @@ def reply(device: dict, text: str, voice: bool = False) -> dict:
     from .quick_commands import timer_request
     direct = timer_request(text)
     if direct is not None:
-        answer = tools.run('timer',direct,tools.Ctx(source,device['name'],'chat',{'room':device.get('room','')}))
+        # The dispatcher resolves the parent's access profile while the full
+        # room identity is retained for ringing the correct existing speaker.
+        answer = tools.run('timer',direct,tools.Ctx(device['id'],device['name'],'chat',{'room':device.get('room','')}))
         store.add_turn(device['id'],'assistant',answer)
         return {'text':answer,'tools':['timer']}
     from .claude import route
