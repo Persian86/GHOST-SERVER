@@ -16,6 +16,7 @@ import datetime as dt
 import re
 import secrets
 import time
+import math
 
 from . import store
 
@@ -149,31 +150,49 @@ def stop(timer_id: str) -> bool:
     if not rows:
         return False
     t = dict(rows[0])
+    if t["status"] not in ("running", "ringing"):
+        return False
     nxt = _next_alarm(t["alarm_time"], t["days"]) if t["kind"] == "alarm" and t["days"] else None
     if nxt:
-        store.x("UPDATE timers SET status='running', ends_at=?, rings=0, rang_at=0 WHERE id=?", (nxt, timer_id))
+        changed = _update_active("UPDATE timers SET status='running', ends_at=?, rings=0, rang_at=0 WHERE id=? AND status=? AND ends_at=?", (nxt, timer_id, t["status"], t["ends_at"]))
     else:
-        store.x("UPDATE timers SET status='done' WHERE id=?", (timer_id,))
+        changed = _update_active("UPDATE timers SET status='done' WHERE id=? AND status=? AND ends_at=?", (timer_id, t["status"], t["ends_at"]))
+    if not changed:
+        return False
     _push(timers_snapshot())
     _push({"type": "timer", "event": "stopped", "timer": {"id": timer_id}})
     return True
 
 
-def cancel_alarm_forever(timer_id: str) -> None:
+def _update_active(sql: str, args: tuple) -> bool:
+    con = store._con()
+    count = con.execute(sql, args).rowcount
+    con.commit()
+    return count == 1
+
+
+def cancel_alarm_forever(timer_id: str) -> bool:
     _schema()
-    store.x("UPDATE timers SET status='cancelled' WHERE id=?", (timer_id,))
+    if not _update_active("UPDATE timers SET status='cancelled' WHERE id=? AND status IN ('running','ringing')", (timer_id,)):
+        return False
     _push(timers_snapshot())
     _push({"type": "timer", "event": "stopped", "timer": {"id": timer_id}})
+    return True
 
 
 def add_time(timer_id: str, seconds: float) -> bool:
     _schema()
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 24 * 3600:
+        return False
     rows = store.q("SELECT * FROM timers WHERE id=?", (timer_id,))
     if not rows:
         return False
     t = dict(rows[0])
+    if t["status"] not in ("running", "ringing"):
+        return False
     base = max(time.time(), t["ends_at"]) if t["status"] == "running" else time.time()
-    store.x("UPDATE timers SET ends_at=?, status='running', rings=0, rang_at=0 WHERE id=?", (base + seconds, timer_id))
+    if not _update_active("UPDATE timers SET ends_at=?, status='running', rings=0, rang_at=0 WHERE id=? AND status=? AND ends_at=?", (base + seconds, timer_id, t["status"], t["ends_at"])):
+        return False
     _push(timers_snapshot())
     _push({"type": "timer", "event": "stopped", "timer": {"id": timer_id}})
     return True

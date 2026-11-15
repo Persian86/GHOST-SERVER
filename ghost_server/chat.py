@@ -25,11 +25,19 @@ def room_device(device: dict, room: str = "", satellite: str = "") -> dict:
 
 
 def reply(device: dict, text: str, voice: bool = False) -> dict:
-    from .claude import route
-    from .tools.brain import claude
     store.add_turn(device["id"], "user", text)
     from . import access
     source = device.get("hub_id") or device["id"]
+    from .quick_commands import timer_request
+    direct = timer_request(text)
+    if direct is not None:
+        # The dispatcher resolves the parent's access profile while the full
+        # room identity is retained for ringing the correct existing speaker.
+        answer = tools.run('timer',direct,tools.Ctx(device['id'],device['name'],'chat',{'room':device.get('room','')}))
+        store.add_turn(device['id'],'assistant',answer)
+        return {'text':answer,'tools':['timer']}
+    from .claude import route
+    from .tools.brain import claude
     decls = [d for d in tools.declarations("chat") if access.tool_allowed(source,d["name"])]
     own = hub.conns[device["id"]].capabilities if hub.is_online(device["id"]) and not access.limited(source) else []
     decls += [{"name": SELF + c["name"], "description": "[on THIS device] " + c.get("description", ""),
