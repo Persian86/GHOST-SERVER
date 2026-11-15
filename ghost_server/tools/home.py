@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from . import Ctx, tool
-from .. import store
+from .. import store, action_feedback
 
 
 def _done(what, **facts):
@@ -112,26 +112,61 @@ def _call(domain: str, service: str, data: dict) -> int:
     return _req("POST", f"/api/services/{domain}/{service}", json=data).status_code
 
 
+class HomeCallRejected(RuntimeError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f"Home Assistant returned HTTP {code}")
+
+
+def _send(domain, service, data):
+    code = _call(domain, service, data)
+    if not 200 <= code < 300:
+        raise HomeCallRejected(code)
+    return code
+
+
+def _states():
+    response = _req("GET", "/api/states")
+    if not 200 <= getattr(response, "status_code", 200) < 300:
+        raise RuntimeError("Home Assistant state could not be read")
+    rows = response.json()
+    if not isinstance(rows, list) or any(not isinstance(s, dict) or not isinstance(s.get("entity_id"), str) for s in rows):
+        raise RuntimeError("Invalid Home Assistant state response")
+    return rows
+
+
 def _ask(text: str) -> str:
     r = _req("POST", "/api/conversation/process", json={"text": text, "language": "en"})
     if r.status_code != 200:
-        return f"Home Assistant couldn't handle that (HTTP {r.status_code})."
+        raise HomeCallRejected(r.status_code)
     speech = (((r.json().get("response") or {}).get("speech") or {}).get("plain") or {}).get("speech")
-    return speech or "Done."
+    return speech or "Home Assistant accepted the request without reporting a device state. Don't claim physical completion."
 
 
 def _run(parameters: dict, ctx: Ctx) -> str:
     act = str(parameters.get("action") or "").lower().strip()
     target = str(parameters.get("target") or "").strip()
+    sent = False
+    accepted = 0
+    mutating = act not in ("status", "list")
+    def feedback(phase, detail):
+        if mutating: action_feedback.record(ctx, phase, "Home action", detail)
+    feedback("unconfirmed", "The outcome has not been confirmed.")
+    def denial_result(denial):
+        feedback("blocked", "Household approval or permission is required. Open the approval centre; retry does not grant approval.")
+        return denial
     try:
         from .. import access
         if act == "ask":
             # Bind approval to the exact request, including confirmed; a model boolean is not approval.
             denial = access.authorize_action(ctx.device_id,"home_assistant",parameters)
-            if denial: return denial
+            if denial: return denial_result(denial)
         if act == "ask":
-            return _ask(str(parameters.get("text") or target))
-        states = _req("GET", "/api/states").json()
+            sent = True
+            answer = _ask(str(parameters.get("text") or target))
+            feedback("accepted", "Home Assistant replied. Individual device changes have not been verified.")
+            return f"Home Assistant replied: {answer} Device changes have not been verified; don't claim physical completion."
+        states = _states()
 
         if act == "status":
             if not target or target.lower() in ("summary", "home", "house", "everything"):
@@ -151,25 +186,35 @@ def _run(parameters: dict, ctx: Ctx) -> str:
         if act in ("scene", "script"):
             hits = match_entities(states, target, (act,))
             if not hits:
+                feedback("failed", "No matching scene or script was found. No action was sent.")
                 return _failed(f"run {act}", f"no {act} called '{target}'")
             denial = access.authorize_action(ctx.device_id,"home_service",{"domain":act,"service":"turn_on","data":{"entity_id":hits[0]["entity_id"]}})
-            if denial: return denial
-            code = _call(act, "turn_on", {"entity_id": hits[0]["entity_id"]})
-            return _done(f"run {act}", name=hits[0]["attributes"].get("friendly_name"), http=code)
+            if denial: return denial_result(denial)
+            sent = True
+            _send(act, "turn_on", {"entity_id": hits[0]["entity_id"]})
+            feedback("accepted", "Home Assistant accepted the request. The scene or script's effects have not been verified.")
+            return f"Home Assistant accepted {act} {target}. Its effects have not been verified; don't claim all devices changed."
 
         if act in ("on", "off", "toggle", "set", "open", "close", "lock", "unlock"):
             hits = match_entities(states, target)
             if not hits:
                 if access.enabled():
+                    feedback("failed", "No matching device was found. No action was sent.")
                     return _failed("home_assistant", "no matching entity; use an explicit Home Assistant request with owner approval")
-                return _ask(f"{'turn ' + act if act in ('on', 'off') else act} {target}")
-            done = []
+                sent = True
+                answer = _ask(f"{'turn ' + act if act in ('on', 'off') else act} {target}")
+                feedback("accepted", "Home Assistant replied. Individual device changes have not been verified.")
+                return f"Home Assistant replied: {answer} Device changes have not been verified; don't claim physical completion."
             plan = []
             for s in hits:
                 eid = s["entity_id"]
                 dom = eid.split(".")[0]
                 data = {"entity_id": eid}
                 if act == "set":
+                    if ((parameters.get("temperature") is not None and dom != "climate") or
+                            ((parameters.get("brightness") is not None or parameters.get("color")) and dom != "light")):
+                        feedback("failed", "That property is not supported for the selected device. No action was sent.")
+                        return _failed("set device", "use temperature for climate devices, or brightness/colour for lights")
                     if dom == "climate" and parameters.get("temperature") is not None:
                         service = "set_temperature"; data["temperature"] = float(parameters["temperature"])
                     else:
@@ -189,6 +234,7 @@ def _run(parameters: dict, ctx: Ctx) -> str:
                     service = {"on": "turn_on", "off": "turn_off", "toggle": "toggle",
                                "open": "turn_on", "close": "turn_off"}.get(act, "turn_on")
                     if dom in ("sensor", "binary_sensor"):
+                        feedback("failed", "This entity is read-only. No action was sent.")
                         return _done("check device", status=_describe(s))
                     if dom not in ("light", "switch", "fan", "climate", "media_player", "input_boolean",
                                    "humidifier", "vacuum", "automation"):
@@ -198,32 +244,48 @@ def _run(parameters: dict, ctx: Ctx) -> str:
                         eid.startswith("cover.") and service == "open_cover"
                         and s["attributes"].get("device_class") in ("garage", "door", "gate")):
                     if not parameters.get("confirmed"):
+                        feedback("blocked", "This security action still needs confirmation and any required household approval.")
                         return (f"CONFIRMATION NEEDED: {service.replace('_', ' ')} {name} is a security action. "
                                 "Ask the user to confirm out loud, then call again with confirmed=true.")
                 plan.append({"domain":dom,"service":service,"data":data})
-                done.append(name)
             # Review the entire resolved batch before any write. Per-entity approvals
             # could otherwise toggle an early entity again on a later retry.
             denial = access.authorize_action(ctx.device_id,"home_service",{"services":plan})
-            if denial: return denial
+            if denial: return denial_result(denial)
             for item in plan:
-                _call(item["domain"],item["service"],item["data"])
-            # Read back what actually happened
-            after = {s["entity_id"]: s for s in _req("GET", "/api/states").json()}
+                sent = True
+                _send(item["domain"],item["service"],item["data"])
+                accepted += 1
+            # A 2xx service response is acceptance, not proof of the device's new state.
+            after = {s["entity_id"]: s for s in _states()}
+            before = {s["entity_id"]: s for s in hits}
+            verified = all(action_feedback.home_matches(item, before[item["data"]["entity_id"]], after.get(item["data"]["entity_id"])) for item in plan)
             seen = "; ".join(_describe(after[s["entity_id"]]) for s in hits if s["entity_id"] in after)
-            return _done(f"{act} {target}", now=seen or ", ".join(done))
+            if verified and plan:
+                feedback("confirmed", "Home Assistant's reported state matches the requested change.")
+                return f"Confirmed by Home Assistant state: {seen}."
+            feedback("unconfirmed", "Request accepted; the requested change is not yet confirmed. Check device status before trying again.")
+            return f"Request accepted, but the requested change is not confirmed. Observed: {seen or 'no current state'}. Don't retry automatically; check status first."
+        feedback("failed", "Unknown action. No request was sent.")
         return _failed("home_assistant", f"unknown action '{act}'")
-    except RuntimeError as e:
-        return _failed("home_assistant", str(e))
+    except HomeCallRejected as e:
+        uncertain = accepted > 0 or e.code >= 500 or e.code == 408
+        feedback("unconfirmed" if uncertain else "failed", "Some changes may have run. Check device status before trying again." if uncertain else "Home Assistant rejected this request. No automatic retry was made.")
+        return f"Home Assistant returned HTTP {e.code}. " + ("Some changes may have run. Don't retry automatically; check status first." if uncertain else "The request was rejected; no automatic retry was made.")
     except Exception as e:
-        return _failed("home_assistant", f"couldn't reach Home Assistant ({type(e).__name__}: {e})")
+        if sent:
+            feedback("unconfirmed", "The connection failed after sending. The action may have run; check device status before trying again.")
+            return "The Home Assistant outcome is uncertain after sending the request. It may have run. Don't retry automatically; check device status first."
+        feedback("failed", "Home Assistant couldn't be reached before the action was sent.")
+        return _failed("home_assistant", str(e) if isinstance(e, RuntimeError) else "couldn't reach Home Assistant before sending the action")
 
 
 @tool("home_assistant", """Control and check the smart home via Home Assistant: 'on', 'off', 'toggle'
 (target = device or room, e.g. 'lounge lights'), 'set' (brightness 0-100, temperature, colour), 'status'
 (a device, or 'summary' for what's on/open), 'scene' / 'script' by name, 'list' a domain, or 'ask' to
 pass any sentence to Home Assistant's own assistant. Unlocking/opening security devices needs the
-user's spoken confirmation first.""", {
+user's spoken confirmation first. Say a change is confirmed only when state read-back confirms it.
+Accepted or uncertain results are not completion; never repeat a write automatically after uncertainty.""", {
         "type": "OBJECT",
         "properties": {
             "action": {"type": "STRING", "description": "on | off | toggle | set | status | scene | script | list | ask"},

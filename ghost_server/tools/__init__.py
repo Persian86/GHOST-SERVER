@@ -85,6 +85,7 @@ def to_claude(decls: list[dict]) -> list[dict]:
 
 
 def run(name: str, args: dict | None, ctx: Ctx) -> str:
+    ctx.extra.pop("action_feedback", None)
     load()
     t = TOOLS.get(name)
     if t is None:
@@ -92,6 +93,8 @@ def run(name: str, args: dict | None, ctx: Ctx) -> str:
     try:
         from .. import access
         if not access.tool_allowed(ctx.device_id, name):
+            from .. import action_feedback
+            action_feedback.record(ctx, "blocked", "Action", "This device's household access profile does not allow that action. No action was sent.")
             return "Permission denied by this device's household access profile."
         out = t.handler(dict(args or {}), ctx)
         return out if isinstance(out, str) else str(out)

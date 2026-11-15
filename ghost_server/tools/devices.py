@@ -5,7 +5,7 @@ import json
 import time
 
 from . import Ctx, tool
-from .. import store
+from .. import store, action_feedback
 from ..hub import find_device, hub
 
 
@@ -95,6 +95,8 @@ phone, show something on the kitchen tablet, open an app on the desktop. `device
           "args": {"type": "OBJECT", "description": "Arguments for the action", "properties": {}}},
        "required": ["device", "action"]})
 def device_action(args: dict, ctx: Ctx) -> str:
+    def feedback(phase, detail): action_feedback.record(ctx, phase, "Device action", detail)
+    feedback("failed", "No action was sent.")
     d = find_device(args.get("device", ""))
     if d is None:
         return f"No online device matches '{args.get('device')}'. Online: " + \
@@ -113,11 +115,19 @@ def device_action(args: dict, ctx: Ctx) -> str:
             raw = {"value": raw}
     from .. import access
     denial = access.authorize_action(ctx.device_id,"device_action",{"device_id":d["id"],"action":action,"args":raw})
-    if denial: return denial
+    if denial:
+        feedback("blocked", "Household approval or permission is required. No action was sent.")
+        return denial
+    feedback("unconfirmed", "The device response has not been confirmed. Check before trying again.")
     res = hub.call_sync(d["id"], action, raw)
     if res.get("ok"):
-        return f"{d['name']}: {res.get('result') or 'done'}"
-    return f"{d['name']} couldn't do it: {res.get('error', 'unknown error')}"
+        feedback("accepted", "The target device acknowledged the request. Physical completion has not been independently verified.")
+        return f"{d['name']} acknowledged the action: {res.get('result') or 'no completion detail returned'}. This is a device acknowledgement, not independent proof of physical completion."
+    if res.get("delivery") == "not_sent":
+        feedback("failed", "The target was unavailable; the action was not sent.")
+        return f"{d['name']} is unavailable. No action was sent."
+    feedback("unconfirmed", "No successful acknowledgement arrived. The action may have run; check before trying again.")
+    return f"{d['name']} did not confirm the outcome. The action may have run. Don't retry automatically; check the device first."
 
 
 @tool("announce", """Say something out loud on another device, on ONE named speaker ('kitchen echo dot'),

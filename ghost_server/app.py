@@ -341,7 +341,8 @@ async def tool_call(body: dict, dev: dict = Depends(device_auth)):
     name = str(body.get("name", ""))
     ctx = tools.Ctx(dev["id"], dev["name"], "live", extra={"request_id": body.get("request_id", "")})
     result = await asyncio.to_thread(tools.run, name, body.get("args") or {}, ctx)
-    return {"name": name, "result": result}
+    from . import action_feedback
+    return {"name": name, "result": result, "feedback": action_feedback.public(ctx)}
 
 
 @app.post("/api/v1/chat")
