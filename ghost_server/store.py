@@ -135,6 +135,7 @@ DEFAULTS: dict[str, Any] = {
     "ha_url": "http://192.168.80.244:8123",
     "ha_token": "",
     "marquee_url": "http://192.168.80.45:8420",
+    "marquee_app_url": "",                                    # optional address reachable by tablets
     "marquee_key": "",
     "calendars": "",
     "faces_enabled": False,                                 # Visual ID: recognise people set up on the admin page
