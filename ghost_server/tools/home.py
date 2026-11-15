@@ -29,14 +29,13 @@ def _cfg(cfg: dict | None = None) -> dict:
 
 
 def _req(method: str, path: str, cfg: dict | None = None, **kw):
-    import httpx
+    from ..home_transport import transport
     c = _cfg(cfg)
     url = str(c.get("url") or "").rstrip("/")
     token = str(c.get("token") or "").strip()
     if not url or not token:
         raise RuntimeError("Home Assistant isn't set up — add the address and token on the Ghost Server admin page")
-    return httpx.request(method, url + path, timeout=10, trust_env=False,
-                         headers={"Authorization": f"Bearer {token}"}, **kw)
+    return transport.request(method, url, token, path, **kw)
 
 
 def _norm(s: str) -> str:
