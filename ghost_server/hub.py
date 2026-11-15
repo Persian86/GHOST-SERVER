@@ -89,6 +89,8 @@ class Hub:
             return False
 
     async def call(self, device_id: str, tool: str, args: dict, timeout: float = 20.0) -> dict:
+        if device_id not in self.conns:
+            return {"ok": False, "error": "that device is offline", "delivery": "not_sent"}
         cid = "c_" + secrets.token_hex(6)
         fut = asyncio.get_running_loop().create_future()
         self.pending[cid] = fut
@@ -96,13 +98,13 @@ class Hub:
         if not await self.send(device_id, {"type": "call", "id": cid, "tool": tool, "args": args or {}}):
             self.pending.pop(cid, None)
             self.pending_owner.pop(cid, None)
-            return {"ok": False, "error": "that device is offline"}
+            return {"ok": False, "error": "could not confirm delivery to that device", "delivery": "unknown"}
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
             self.pending.pop(cid, None)
             self.pending_owner.pop(cid, None)
-            return {"ok": False, "error": "the device did not answer in time"}
+            return {"ok": False, "error": "the device did not answer in time", "delivery": "unknown"}
 
     async def broadcast(self, msg: dict, except_id: str = "") -> int:
         n = 0
