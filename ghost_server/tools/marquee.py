@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import Ctx, tool
-from .. import store
+from .. import store, marquee_here
 
 
 def _req(method: str, path: str, **kw):
@@ -19,10 +19,11 @@ def _req(method: str, path: str, **kw):
 @tool("marquee", """Control the user's Marquee media server (their own movies, TV and music on their TVs).
 'command' passes a natural request straight to Marquee: 'play Bluey on the lounge TV', 'pause on the
 lounge TV', 'what should we watch tonight', 'start movie night', 'screen time for Zoey'. 'continue' lists
-what's in progress; 'new' lists recent arrivals. Use this, not YouTube, for their movies and shows.""",
+what's in progress; 'new' lists recent arrivals. Use this, not YouTube, for their movies and shows. Set target='here' for this tablet / this screen / here, including pause and resume. Never substitute a TV when here is unavailable.""",
       {"type": "OBJECT", "properties": {
           "action": {"type": "STRING", "description": "command | continue | new"},
-          "text": {"type": "STRING", "description": "The request for 'command'"}},
+          "text": {"type": "STRING", "description": "The request for 'command'"},
+          "target": {"type": "STRING", "description": "here for the requesting tablet; omit for a named TV"}},
        "required": ["action"]})
 def marquee(args: dict, ctx: Ctx) -> str:
     act = str(args.get("action") or "command").lower()
@@ -31,6 +32,8 @@ def marquee(args: dict, ctx: Ctx) -> str:
             text = str(args.get("text") or "").strip()
             if not text:
                 return "Say what to do, e.g. 'play Bluey on the lounge TV'."
+            if str(args.get("target") or "").lower() == "here" or marquee_here.HERE.search(text):
+                return marquee_here.command(text, ctx, _req)
             d = _req("POST", "/ext/v1/assistant", json={"text": text, "device": ctx.device_name or "Ghost"}).json()
             return d.get("speech") or "Done."
         rows = _req("GET", "/ext/v1/widget").json().get("continueWatching" if act == "continue" else "newArrivals") or []
