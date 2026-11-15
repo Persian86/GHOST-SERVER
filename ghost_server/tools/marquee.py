@@ -35,7 +35,8 @@ def marquee(args: dict, ctx: Ctx) -> str:
             if not text:
                 return "Say what to do, e.g. 'play Bluey on the lounge TV'."
             if (str(args.get("target") or "").lower() == "here" or marquee_here.HERE.search(text) or
-                    (str(args.get("target") or "").lower() != "named" and marquee_here.is_tablet(ctx))):
+                    (str(args.get("target") or "").lower() != "named" and ctx.via == "live"
+                     and bool(ctx.extra.get("request_id")) and marquee_here.is_tablet(ctx))):
                 return marquee_here.command(text, ctx, _req)
             d = _req("POST", "/ext/v1/assistant", json={"text": text, "device": ctx.device_name or "Ghost"}).json()
             return d.get("speech") or "Done."

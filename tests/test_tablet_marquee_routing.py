@@ -46,3 +46,11 @@ def test_a_phone_keeps_existing_named_device_behaviour(monkeypatch):
     monkeypatch.setattr(here,'command',lambda *a:pytest.fail('Do not choose a tablet for a phone'))
     monkeypatch.setattr(media,'_req',lambda *a,**kw:SimpleNamespace(json=lambda:{'speech':'Existing route'}))
     assert media.marquee({'action':'command','text':'pause'},Ctx('phone','Phone'))=='Existing route'
+
+def test_background_and_typed_requests_keep_their_existing_route(tablet,monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(here,'command',lambda *a:pytest.fail('Only live tablet voice defaults to the embedded player'))
+    monkeypatch.setattr(media,'_req',lambda *a,**kw:SimpleNamespace(json=lambda:{'speech':'Existing route'}))
+    for via in ('chat','task'):
+        tablet.via=via
+        assert media.marquee({'action':'command','text':'pause'},tablet)=='Existing route'
