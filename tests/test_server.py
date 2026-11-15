@@ -137,7 +137,8 @@ def test_device_to_device_routing_and_announce(server, admin, tmp_path):
 
     devs, r1, r2, r3 = asyncio.run(scenario())
     assert "Adam's Phone" in devs and "online" in devs and "ring" in devs
-    assert r1 == "Adam's Phone: ringing" and rang == [{"loud": True}]
+    assert r1 == "Adam's Phone acknowledged the action: ringing. This is a device acknowledgement, not independent proof of physical completion."
+    assert rang == [{"loud": True}]
     assert "can't 'fly'" in r2
     assert "Announced on" in r3 and said == ["Dinner's ready"]
     over = admin.get("/admin/api/overview").json()
