@@ -145,6 +145,31 @@ def test_device_to_device_routing_and_announce(server, admin, tmp_path):
     assert any(d["name"] == "Adam's Phone" for d in over["devices"])
 
 
+
+def test_action_feedback_is_authenticated_and_scoped_to_one_call(server, admin, tmp_path, monkeypatch):
+    from ghost_server.tools import home
+    a = _agent(server, admin, "Receipt Tablet", "tablet", tmp_path)
+    states = iter([
+        [{"entity_id": "light.receipt", "state": "off", "attributes": {"friendly_name": "Receipt light"}}],
+        [{"entity_id": "light.receipt", "state": "on", "attributes": {"friendly_name": "Receipt light"}}],
+        [{"entity_id": "light.receipt", "state": "on", "attributes": {"friendly_name": "Receipt light"}}],
+    ])
+    monkeypatch.setattr(home, "_states", lambda: next(states))
+    writes = []
+    monkeypatch.setattr(home, "_call", lambda *args: writes.append(args) or 200)
+    headers = {"Authorization": "Bearer " + a.key}
+    body = {"name": "home_assistant", "args": {"action": "on", "target": "light.receipt"}, "request_id": "session:receipt"}
+    assert httpx.post(server + "/api/v1/tools/call", json=body).status_code == 401
+    response = httpx.post(server + "/api/v1/tools/call", headers=headers, json=body)
+    assert response.status_code == 200
+    receipt = response.json()["feedback"]
+    assert receipt["phase"] == "confirmed" and set(receipt) == {"phase", "label", "detail"}
+    assert "session:receipt" not in str(receipt) and len(writes) == 1
+    following = httpx.post(server + "/api/v1/tools/call", headers=headers,
+                           json={"name": "home_assistant", "args": {"action": "status", "target": "light.receipt"}})
+    assert following.json()["feedback"] is None and len(writes) == 1
+
+
 def test_chat_uses_tools_with_claude(server, admin, tmp_path, monkeypatch):
     from ghost_server.claude import FunctionCall
     from ghost_server.tools import brain
