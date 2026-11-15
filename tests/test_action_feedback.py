@@ -107,6 +107,13 @@ def test_scene_acceptance_is_not_claimed_as_physical_completion(setup, monkeypat
     assert 'accepted' in home.home_assistant({'action': 'scene', 'target': 'scene.evening'}, ctx)
     assert feedback.public(ctx)['phase'] == 'accepted' and len(calls) == 1
 
+def test_conversation_reply_does_not_replace_state_verification(setup, monkeypatch):
+    ctx, calls = setup
+    monkeypatch.setattr(home,'_ask',lambda text:'Done.')
+    result=home.home_assistant({'action':'ask','text':'turn on the office light'},ctx)
+    assert 'have not been verified' in result and feedback.public(ctx)['phase']=='accepted'
+    assert not calls
+
 def test_read_only_requests_have_no_action_receipt(setup, monkeypatch):
     ctx, calls = setup
     monkeypatch.setattr(home, '_states', lambda: [state('on')])
@@ -119,6 +126,8 @@ def test_read_only_requests_have_no_action_receipt(setup, monkeypatch):
     ('toggle',state('off'),state('off'),{},False),
     ('turn_on',state(),state('on',brightness=128),{'brightness_pct':50},True),
     ('turn_on',state(),state('on',brightness=255),{'brightness_pct':50},False),
+    ('turn_on',state('on'),state('off'),{'brightness_pct':0},True),
+    ('turn_on',state('on'),state('on',brightness=255),{'brightness_pct':0},False),
     ('turn_on',state(),state('on'),{'color_name':'red'},False),
     ('set_temperature',state(entity='climate.office'),state('heat',entity='climate.office',temperature=22),{'temperature':22},True),
     ('set_temperature',state(entity='climate.office'),state('heat',entity='climate.office',temperature=19),{'temperature':22},False),

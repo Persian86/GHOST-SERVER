@@ -165,7 +165,7 @@ def _run(parameters: dict, ctx: Ctx) -> str:
             sent = True
             answer = _ask(str(parameters.get("text") or target))
             feedback("accepted", "Home Assistant replied. Individual device changes have not been verified.")
-            return answer
+            return f"Home Assistant replied: {answer} Device changes have not been verified; don't claim physical completion."
         states = _states()
 
         if act == "status":
@@ -204,7 +204,7 @@ def _run(parameters: dict, ctx: Ctx) -> str:
                 sent = True
                 answer = _ask(f"{'turn ' + act if act in ('on', 'off') else act} {target}")
                 feedback("accepted", "Home Assistant replied. Individual device changes have not been verified.")
-                return answer
+                return f"Home Assistant replied: {answer} Device changes have not been verified; don't claim physical completion."
             plan = []
             for s in hits:
                 eid = s["entity_id"]

@@ -38,6 +38,8 @@ def home_matches(item: dict, before: dict, after: dict | None) -> bool:
             return abs(float(after.get("attributes", {}).get("temperature")) - float(data["temperature"])) <= .1
         except (ValueError, TypeError, KeyError):
             return False
+    if service == "turn_on" and data.get("brightness_pct") == 0:
+        return state == "off"
     if expected is None or state != expected:
         return False
     if service in ("open_cover", "close_cover") and "current_position" in after.get("attributes", {}):
