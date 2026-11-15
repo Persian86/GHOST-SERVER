@@ -46,6 +46,11 @@ def test_older_marquee_cannot_ignore_target_and_play_elsewhere(setup):
     assert 'Update Marquee' in here.command('play here', ctx, lambda *a, **kw: Response({}))
     assert not calls
 
+def test_pronouns_are_resolved_before_playing_a_literal_movie_named_it(setup):
+    ctx, calls, commands, request = setup
+    assert 'Which film or show' in here.command('play it here', ctx, request)
+    assert not calls and not commands
+
 def test_missing_player_does_not_post_to_marquee(setup, monkeypatch):
     ctx, _, commands, request = setup
     def offline(*a, **kw): raise RuntimeError('Offline')

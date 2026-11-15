@@ -29,6 +29,9 @@ def command(text: str, ctx, request) -> str:
         return "Play here is available from Ghost voice on the tablet. No other screen was selected."
     if not isinstance(token, str) or not TOKEN.fullmatch(token):
         return "Update the tablet app and use voice there to play on this tablet. No other screen was selected."
+    cleaned = HERE.sub("", text).strip()
+    if re.fullmatch(r"(?:play|watch|start|open|put on)\s+(?:it|this|that)[.!?]?", cleaned, re.I):
+        return "Which film or show should I play here? Resolve the title from the conversation or ask the user; don't guess a title from a pronoun."
     sent = False
     try:
         capabilities = request("GET", "/ext/v1/assistant/capabilities")
@@ -44,7 +47,7 @@ def command(text: str, ctx, request) -> str:
         # Mark uncertain before the HTTP call: a timeout may occur after Marquee accepted it.
         sent = True
         response = request("POST", "/ext/v1/assistant", json={
-            "text": HERE.sub("", text).strip(), "targetClientId": client, "targetConnectionId": connection, "voiceCallId": token})
+            "text": cleaned, "targetClientId": client, "targetConnectionId": connection, "voiceCallId": token})
         response.raise_for_status()
         result = response.json()
         if not result.get("ok"):
