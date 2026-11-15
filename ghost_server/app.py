@@ -827,6 +827,17 @@ async def cam_page(tok: str):
     return HTMLResponse(cameras.page(tok, cams), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
+@app.get("/cam/{tok}/live")
+async def cam_live(tok: str):
+    from fastapi.responses import StreamingResponse
+    from .camera_live import wall
+    cams = cameras.view(tok)
+    if cams is None:
+        raise HTTPException(410, "expired")
+    return StreamingResponse(wall(cams, cameras.remaining(tok)), media_type="application/octet-stream",
+                             headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"})
+
+
 @app.get("/cam/{tok}/stream/{i}")
 async def cam_stream(tok: str, i: int):
     from fastapi.responses import StreamingResponse

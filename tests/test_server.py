@@ -373,7 +373,7 @@ def test_cameras_rtsp_view_stream_and_show(server, admin, tmp_path, monkeypatch)
     v = httpx.post(server + "/api/v1/cameras/view", headers=H, json={"camera": "backyard"}).json()
     assert v["title"] == "Backyard" and v["path"].startswith("/cam/")
     page = httpx.get(server + v["path"]).text
-    assert "/stream/" in page and "Backyard" in page and cam_url not in page             # no camera URL leaks
+    assert "/live" in page and "Backyard" in page and cam_url not in page             # no camera URL leaks
     with httpx.stream("GET", server + v["path"] + "/stream/0", timeout=30) as r:
         assert r.status_code == 200 and "multipart/x-mixed-replace" in r.headers["content-type"]
         got = b""
@@ -382,6 +382,21 @@ def test_cameras_rtsp_view_stream_and_show(server, admin, tmp_path, monkeypatch)
             if got.count(b"\xff\xd8") >= 2:
                 break
     assert got.count(b"\xff\xd8") >= 2                                                    # real JPEG frames
+    with httpx.stream("GET", server + v["path"] + "/live", timeout=30) as wall:
+        assert wall.status_code == 200
+        assert wall.headers["x-accel-buffering"] == "no"
+        import struct
+        packet = b""
+        for chunk in wall.iter_bytes():
+            packet += chunk
+            if len(packet) >= 8:
+                index, length = struct.unpack("!II", packet[:8])
+                if len(packet) >= length + 8:
+                    assert index == 0 and packet[8:10] == b"\xff\xd8"
+                    assert packet[8 + length - 2:8 + length] == b"\xff\xd9"
+                    break
+        assert len(packet) >= length + 8
+    assert httpx.get(server + "/cam/nope/live").status_code == 410
     snap = httpx.get(server + v["path"] + "/snap/0", timeout=30)
     assert snap.status_code == 200 and snap.content[:2] == b"\xff\xd8"
     assert httpx.get(server + "/cam/nope").status_code == 410
