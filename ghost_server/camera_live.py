@@ -38,7 +38,7 @@ class Jpegs:
         return frames
 
 
-async def wall(cams, lifetime, opener=None):
+async def wall(cams, lifetime, opener=None, indices=None):
     """Drain inputs independently; a slow client gets latest frames, never a queue."""
     if opener is None:
         from .cameras import mjpeg
@@ -66,7 +66,7 @@ async def wall(cams, lifetime, opener=None):
                     await body.aclose()
             await asyncio.sleep(1)
 
-    tasks = [asyncio.create_task(read_camera(i, cam)) for i, cam in enumerate(cams)]
+    tasks = [asyncio.create_task(read_camera(i, cam)) for i, cam in enumerate(cams) if indices is None or i in indices]
     try:
         async with asyncio.timeout(max(0, lifetime)):
             while True:

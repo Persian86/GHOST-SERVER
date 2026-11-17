@@ -117,6 +117,10 @@ DEFAULTS: dict[str, Any] = {
     "share_gemini_key": False,          # fallback when ephemeral tokens fail
     "away_mode": False,
     # phone presence automations: plain-English instructions Ghost carries out (Claude + server tools)
+    "camera_webrtc_enabled": False,
+    "camera_go2rtc_url": "http://127.0.0.1:1984",
+    "camera_direct_streams": "",
+    "camera_main_streams": "",
     "rtsp_cameras": "",                 # extra cameras / NVR channels: one "Name = rtsp://user:pass@ip:554/…" per line
     "tablet_entities": "",              # Ghost Hub tiles: Home Assistant entity ids (empty = pick automatically)
     "on_left_home": "",
@@ -173,7 +177,7 @@ DEFAULTS: dict[str, Any] = {
 }
 # never changed through the settings form — each has its own flow
 PROTECTED_KEYS = {"admin_password_hash", "admin_totp_secret", "admin_totp_since", "admin_backup_codes"}
-SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars", "rtsp_cameras",
+SECRET_KEYS = {"anthropic_api_key", "gemini_api_key", "ha_token", "marquee_key", "calendars", "rtsp_cameras", "camera_direct_streams", "camera_main_streams",
                "admin_password_hash", "admin_totp_secret"}
 
 

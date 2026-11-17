@@ -827,14 +827,40 @@ async def cam_page(tok: str):
     return HTMLResponse(cameras.page(tok, cams), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
+@app.post("/cam/{tok}/webrtc/{i}")
+async def cam_webrtc(tok: str, i: int, request: Request, quality: str = "preview"):
+    from . import camera_rtc
+    from urllib.parse import urlsplit
+    cams = cameras.view(tok)
+    if cams is None or not 0 <= i < len(cams):
+        raise HTTPException(410, "Camera link expired. Open Cameras again.")
+    origin = request.headers.get("origin")
+    if request.headers.get("x-ghost-camera") != "1" or (origin and urlsplit(origin).netloc != request.headers.get("host")):
+        raise HTTPException(403, "Open this camera inside Ghost.")
+    try:
+        offer = await camera_rtc.read_offer(request)
+        answer = await camera_rtc.answer(cams[i], offer, quality)
+    except camera_rtc.CameraRTCError as exc:
+        raise HTTPException(502, str(exc)) from None
+    return Response(answer, media_type="application/sdp", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/cam/{tok}/live")
-async def cam_live(tok: str):
+async def cam_live(tok: str, only: str | None = None):
     from fastapi.responses import StreamingResponse
     from .camera_live import wall
     cams = cameras.view(tok)
     if cams is None:
         raise HTTPException(410, "expired")
-    return StreamingResponse(wall(cams, cameras.remaining(tok)), media_type="application/octet-stream",
+    indices = None
+    if only is not None:
+        try:
+            indices = sorted(set(int(n) for n in only.split(",") if n != ""))
+        except ValueError:
+            raise HTTPException(400, "Invalid camera selection")
+        if len(indices) > len(cams) or any(i < 0 or i >= len(cams) for i in indices):
+            raise HTTPException(400, "Invalid camera selection")
+    return StreamingResponse(wall(cams, cameras.remaining(tok), indices=indices), media_type="application/octet-stream",
                              headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"})
 
 
@@ -1152,6 +1178,8 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         raise HTTPException(400,"Household access must be on or off")
     if "handoff_enabled" in body and type(body["handoff_enabled"]) is not bool:
         raise HTTPException(400,"Conversation handoff must be on or off")
+    if "camera_webrtc_enabled" in body and type(body["camera_webrtc_enabled"]) is not bool:
+        raise HTTPException(400, "Direct camera playback must be on or off")
     changed = []
     for k, v in body.items():
         if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
@@ -1265,6 +1293,9 @@ async def test(what: str, _: bool = Depends(admin_auth)):
                 from .tools import home
                 n = len(home._req("GET", "/api/states").json())
                 return True, f"Home Assistant: {n} entities"
+            if what == "camera_relay":
+                from . import camera_rtc
+                return camera_rtc.check_relay()
             if what == "marquee":
                 from .tools.marquee import _req
                 d = _req("GET", "/ext/v1/me").json()

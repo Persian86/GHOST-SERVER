@@ -1,0 +1,11 @@
+# Optional overlay for docker-compose.yml. Copy go2rtc.yaml beside this file.
+services:
+  ghost-go2rtc:
+    image: alexxit/go2rtc:1.9.15
+    container_name: ghost-go2rtc
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${GHOST_GO2RTC_CONFIG:-./go2rtc.yaml}:/config/go2rtc.yaml:ro
+    security_opt:
+      - no-new-privileges:true

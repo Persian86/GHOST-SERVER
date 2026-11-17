@@ -1,0 +1,12 @@
+# Private signalling API: Ghost Server and this relay use host networking.
+api:
+  listen: "127.0.0.1:1984"
+# Only the camera client is needed; do not expose an RTSP restream server.
+rtsp:
+  listen: ""
+webrtc:
+  listen: ":8555"
+  # Local-network use only. No public STUN server is contacted.
+  ice_servers: []
+streams: {}
+# Ghost registers sources in memory via PATCH. No camera passwords in this file.

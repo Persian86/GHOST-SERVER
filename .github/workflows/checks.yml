@@ -17,9 +17,23 @@ jobs:
           node-version: '22'
       - run: node tests/check_camera_viewer.cjs
       - run: node tests/check_camera_wall.cjs
+      - run: node tests/check_camera_rtc.cjs
       - run: node tests/check_breakin_ui.cjs
       - run: node tests/check_checkins_ui.cjs
       - run: node tests/check_testcalls_ui.cjs
       - run: python -m pytest tests -q
         env:
           GHOST_DATA: .ghost-test-data
+      - name: Prepare real camera relay browser check
+        run: |
+          npm install --no-save playwright-core@1.65.1
+          npx playwright-core install --with-deps chromium
+          curl --fail --location https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_linux_amd64 --output "$RUNNER_TEMP/go2rtc"
+          chmod +x "$RUNNER_TEMP/go2rtc"
+      - name: Check real WebRTC grid, quality switching and fallback
+        run: |
+          export GO2RTC="$RUNNER_TEMP/go2rtc"
+          export FFMPEG="$(command -v ffmpeg)"
+          export NODE="$(command -v node)"
+          export CHROME="$(node -p "require('playwright-core').chromium.executablePath()")"
+          python tests/rtc_smoke.py
