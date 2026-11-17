@@ -187,6 +187,17 @@
           <div class="status">Cameras already in Home Assistant appear automatically. Add any others (NVR channels, Reolink, Hikvision, Tapo…) below, one per line:</div>
           <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = paste the camera stream URL here&#10;Backyard = paste another camera stream URL"></textarea>
           <div class="status">Use each camera's <b>sub-stream</b> if it has one — it's lighter and plenty for a tablet. Passwords stay on the server; devices only ever get a short-lived viewing link.</div>
+          <hr>
+          <label><input type="checkbox" data-k="camera_webrtc_enabled" style="width:auto"> Direct Reolink / WebRTC playback</label>
+          <div class="status">Install the private go2rtc camera relay first. Direct video uses the camera feed; the existing preview remains available if it cannot connect.</div>
+          <label>Private camera relay address</label><input data-k="camera_go2rtc_url" placeholder="http://127.0.0.1:1984">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('camera_relay', this)">Test camera relay</button></div>
+          <label>Direct preview streams — camera name or Home Assistant camera entity = RTSP address</label>
+          <textarea data-k="camera_direct_streams" rows="4" placeholder="Front gate = rtsp://USER:PASSWORD@CAMERA_IP:554/Preview_01_sub"></textarea>
+          <label>Optional enlarged streams — use the same camera names</label>
+          <textarea data-k="camera_main_streams" rows="3" placeholder="Front gate = rtsp://USER:PASSWORD@CAMERA_IP:554/Preview_01_main"></textarea>
+          <div class="status">Use H.264 video for tablet compatibility. Grid view uses the preview stream. Enlarging switches to the optional main stream. Passwords stay on the server; saved addresses are masked. Save here, then reopen Cameras on the tablet.</div>
+
         </div>
         <div class="card"><h3>Front door</h3>
           <div class="status">Doorbell presses, visitors and deliveries. Ghost looks, says who it is if Visual ID knows them (“Hayley's at the front door”), otherwise describes them, and tells you in the room you're in.</div>

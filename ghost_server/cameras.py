@@ -40,9 +40,9 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "camera"
 
 
-def rtsp_cameras() -> list[Cam]:
+def rtsp_cameras(setting: str = "rtsp_cameras") -> list[Cam]:
     out = []
-    for line in str(store.get("rtsp_cameras") or "").splitlines():
+    for line in str(store.get(setting) or "").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -65,7 +65,13 @@ def ha_cameras() -> list[Cam]:
 
 
 def all_cameras() -> list[Cam]:
-    return ha_cameras() + rtsp_cameras()
+    cams = ha_cameras() + rtsp_cameras()
+    known = {_slug(value) for cam in cams for value in (cam.id, cam.name)}
+    for cam in rtsp_cameras("camera_direct_streams"):
+        if _slug(cam.name) not in known:
+            cams.append(cam)
+            known.add(_slug(cam.name))
+    return cams
 
 
 def find(name: str, cams: list[Cam] | None = None) -> list[Cam]:
@@ -196,6 +202,10 @@ def page(tok: str, cams: list[Cam]) -> str:
     import json
     from pathlib import Path
     template = Path(__file__).with_name("camera_viewer.html").read_text(encoding="utf-8")
+    from . import camera_rtc
     data = json.dumps([c.name for c in cams]).replace("<", "\\u003c")
+    options = json.dumps(camera_rtc.options(cams))
+    template = template.replace("__CAMERA_OPTIONS__", options).replace("__CAMERA_LIFETIME__", str(int(remaining(tok) * 1000)))
+    template = template.replace("__CAMERA_RTC__", Path(__file__).with_name("camera_rtc.js").read_text(encoding="utf-8"))
     template = template.replace("__CAMERA_WALL__", Path(__file__).with_name("camera_wall.js").read_text(encoding="utf-8"))
     return template.replace("__CAMERA_BASE__", json.dumps("/cam/" + tok)).replace("__CAMERA_DATA__", data)
