@@ -207,9 +207,9 @@ static void show_networks(void)
 void ghost_wifi_ui_open(void)
 {
     if(panel) return;
+    visible=true;
     panel=lv_obj_create(lv_screen_active());lv_obj_set_pos(panel,0,0);lv_obj_set_size(panel,480,480);
     lv_obj_remove_style_all(panel);lv_obj_set_size(panel,480,480);
     lv_obj_set_style_bg_color(panel,lv_color_hex(0x171526),0);lv_obj_set_style_bg_opa(panel,LV_OPA_COVER,0);
     lv_obj_remove_flag(panel,LV_OBJ_FLAG_SCROLLABLE);show_networks();
-    visible=true;
 }

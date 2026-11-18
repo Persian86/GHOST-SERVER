@@ -27,6 +27,7 @@ enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
 static atomic_int mic_level;
 static atomic_int speech_level;
+static atomic_bool auto_finish;
 static atomic_int output_volume=70;
 static atomic_bool audio_ready;
 static atomic_bool abort_turn, finish_turn, remote_done, disconnected;
@@ -142,7 +143,8 @@ static void animate(lv_timer_t *timer)
     if (current==last && wake==last_wake) return;
     last_wake=wake;
     last=current;
-    const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...", "Listening - tap when finished",
+    const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
+        auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
     if (current!=SETUP) lv_label_set_text(status_label,labels[current]);
     lv_label_set_text(talk_label,current==IDLE || current==ERROR_STATE ? "Tap to talk" :
@@ -352,6 +354,7 @@ static void voice_task(void *arg)
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
         mic_level=0;
+        auto_finish=wake_turn;
         state=CONNECTING;
         snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice",config.server+7);
         snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
@@ -442,7 +445,7 @@ static void voice_task(void *arg)
         esp_websocket_client_stop(socket_client);
         esp_websocket_client_destroy(socket_client);socket_client=NULL;
         bsp_audio_poweramp_enable(false);
-        speech_level=0;wake_after=esp_timer_get_time()+2500000;
+        speech_level=0;auto_finish=false;wake_after=esp_timer_get_time()+2500000;
         memset(samples,0,sizeof(samples));
         memset(capture,0,sizeof(capture));
         if(state!=ERROR_STATE) state=IDLE;
