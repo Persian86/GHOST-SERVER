@@ -100,10 +100,17 @@ After the connection is confirmed stable, the next requested stage is smoother
 character animation and hands-free voice activation. These are not enabled by
 the network/microphone update.
 
+Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
+screen; the previous position offset could place it below the visible area.
+Microphone input gain is 30 dB (up from 24 dB). The level bar uses a smoothed
+logarithmic scale from -50 to -18 dBFS, so ordinary speech is more visible.
+The bar is feedback, not a calibrated loudness or recognition score. Check
+speech recognition and clipping on the physical board at the intended distance.
+
 Server tests cover the PCM protocol, resampling across arbitrary packet cuts,
 input bounds, credential redaction, disconnected sessions and concurrency.
 GitHub Actions compiles the actual target using ESP-IDF 5.5.2, BSP 2.0.0, LVGL
-9.5.0, LVGL port 2.8.0~1 and WebSocket client 1.6.1. The resolved dependency lock
+9.5.0, LVGL port 2.8.0~1 and WebSocket client 1.8.0. The resolved dependency lock
 and source commit travel with the application artifact.
 
 A successful build is not proof of working microphones, correct channel mapping,

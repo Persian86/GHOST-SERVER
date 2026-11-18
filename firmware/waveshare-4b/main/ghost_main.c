@@ -291,7 +291,11 @@ static void voice_task(void *arg)
                             energy+=(int64_t)value*value;
                         }
                         unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
-                        int meter=rms/50;if(meter>100) meter=100;
+                        // Perceptual speech meter: -50 dBFS is quiet, -18 dBFS is full.
+                        float dbfs=20.0f*log10f(fmaxf((float)rms,1.0f)/32768.0f);
+                        int meter=(int)((dbfs+50.0f)*100.0f/32.0f);
+                        if(meter<0) meter=0;
+                        if(meter>100) meter=100;
                         mic_level=(mic_level*2+meter)/3;
                         if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))!=(int)sizeof(samples))
                             fail("Audio upload failed. Check Wi-Fi and retry.");
@@ -352,7 +356,7 @@ void app_main(void)
     if(esp_codec_dev_open(speaker,&audio)!=ESP_OK || esp_codec_dev_open(microphone,&audio)!=ESP_OK) {
         fail("Audio format error. Restart Ghost.");return;
     }
-    esp_codec_dev_set_in_gain(microphone,24.0f);
+    esp_codec_dev_set_in_gain(microphone,30.0f);
     esp_codec_dev_set_out_vol(speaker,45);
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||

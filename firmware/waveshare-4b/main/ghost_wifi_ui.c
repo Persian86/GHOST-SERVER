@@ -98,7 +98,9 @@ static void select_network(lv_event_t *event)
     lv_obj_t *text=lv_label_create(connect);lv_label_set_text(text,"Connect");lv_obj_center(text);
     lv_obj_add_event_cb(connect,connect_tap,LV_EVENT_CLICKED,NULL);
     message=label(panel,"Pairing is kept when changing Wi-Fi.",20,204,440);
-    lv_obj_t *keyboard=lv_keyboard_create(panel);lv_obj_set_size(keyboard,480,226);lv_obj_set_pos(keyboard,0,254);
+    lv_obj_t *keyboard=lv_keyboard_create(panel);lv_obj_set_size(keyboard,480,226);
+    // Keyboard defaults to bottom alignment: a positive y offset hides it below the screen.
+    lv_obj_align(keyboard,LV_ALIGN_BOTTOM_MID,0,0);
     lv_keyboard_set_textarea(keyboard,password);
 }
 
