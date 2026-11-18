@@ -21,14 +21,17 @@ jobs:
           idf.py -C firmware/waveshare-4b set-target esp32s3 build
       - name: Package application and build evidence
         shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p firmware-artifact
           cp firmware/waveshare-4b/build/ghost_room_4b.bin firmware-artifact/
           cp firmware/waveshare-4b/build/project_description.json firmware-artifact/
           cp firmware/waveshare-4b/dependencies.lock firmware-artifact/
           cp firmware/waveshare-4b/partitions.csv firmware-artifact/
-          git rev-parse HEAD > firmware-artifact/source-commit.txt
-          sha256sum firmware-artifact/ghost_room_4b.bin > firmware-artifact/SHA256SUMS
+          printf '%s\n' "$SOURCE_COMMIT" > firmware-artifact/source-commit.txt
+          cd firmware-artifact
+          sha256sum ghost_room_4b.bin > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ghost-waveshare-4b-application
