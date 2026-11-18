@@ -66,9 +66,26 @@ partition and the full private backup must remain available for recovery.
    and web server do not remain running after a successful paired reboot.
 6. Tap to talk, say a short phrase, tap Finish speaking, and check the voice.
 
-Hold Setup for five seconds to clear only this app's configuration and re-enter
-setup. The old Ghost device entry should then be removed in server Security
-before pairing again. If home Wi-Fi fails on startup, setup opens again.
+On firmware 0.1.2 and later, tap **Setup** for the native Wi-Fi page. It shows
+the current network and signal strength and scans nearby 2.4 GHz networks.
+Tap a network, enter its password with the touchscreen keyboard and tap Connect.
+Changing networks keeps the server address and device pairing. A blank password
+keeps the saved password only when selecting the same secured network. Failed
+changes restore the previous saved network; passwords are never displayed unless
+the user explicitly selects Show password. No restart is needed on success.
+Close/cancel an active voice turn before opening Wi-Fi settings.
+
+First pairing still uses the password-protected setup hotspot and its web page.
+If home Wi-Fi fails on startup, setup opens again. The old destructive long-hold
+Setup shortcut was removed; opening Wi-Fi settings does not erase pairing.
+
+Firmware 0.1.5 adds **Speaker volume** above the Wi-Fi list in Setup. Drag
+the slider from 0 (muted) to 100 and release to apply and save it. The initial
+level is 70; a saved level is restored after restart. Volume lives in a separate
+`ghost_audio` NVS namespace, leaving the Wi-Fi/pairing blob unchanged. Writes
+occur on release, not on every movement. If applying or saving fails, the
+previous level is restored and the screen reports the error. Adjust volume
+between voice turns; speaker loudness and distortion still need physical tests.
 
 ## Verification and remaining hardware checks
 
@@ -79,10 +96,67 @@ including when DMA has buffered old samples. USB warnings report only frame
 counts, timing and error codes, never audio samples, transcripts, Wi-Fi details
 or device credentials. Specific errors survive connection cleanup.
 
+Firmware 0.1.2 adds a live microphone level bar while Listening, signal/level
+metrics in USB diagnostics, and WebSocket close/transport error codes. It updates
+the client to 1.8.0, enables separate transmit locking and increases TCP windows
+to 16 KB. These transport changes are mitigations pending physical retesting,
+not proof that the upload failure is resolved. The server has separately completed
+generated-speech tests with both short and eight-second paced recordings. Actual
+speaker testing is deferred until the owner's correct speakers arrive.
+
+## Experimental hands-free and animation (0.2.0)
+
+Say **Hey Ghost**, pause until Listening appears, then ask a question. A
+wake-started turn finishes after about 1.3 seconds of quiet following speech,
+or after six seconds if no speech is detected. The existing 19-second limit and
+Finish/Cancel buttons remain. Manually started turns still use Finish speaking.
+The simple energy-based endpoint detector may need tuning for quiet speech,
+background noise and different distances; it is not neural VAD.
+
+Setup has a saved **Hey Ghost (experimental)** switch, enabled initially.
+Idle audio is processed locally, not sent to Ghost Server or a cloud provider.
+Only a detected phrase starts the normal authenticated voice connection.
+Detection pauses in Setup, during a turn and for 2.5 seconds after a turn.
+The microphone has one owning task, avoiding simultaneous codec reads.
+
+This uses Espressif ESP-SR 2.1.3's English MultiNet7 phrase recognition with a
+0.90 threshold and a single `hey ghost` command. It is **not a custom-trained
+WakeNet model** and is not claimed to match a dedicated wake-word detector's
+false-trigger performance. Test nearby speech/TV, different voices, distances,
+quiet requests and repeated replies. Tap-to-talk remains available if the model
+cannot initialize. No always-on streaming is used as a fallback.
+
+The 2.75 MB English model is packed into the application; the original model
+partition, factory application, storage and partition table remain untouched.
+Never use generic ESP-IDF flash targets: ESP-SR adds a separate model flash
+target that is not part of Ghost's reviewed application-only installation.
+
+Animation adds slow sideways drift, separately moving hem/drapes, irregular
+blinks and small eye glances. Mouth opening follows decoded playback RMS with
+attack/release smoothing rather than an unrelated sine wave. This is amplitude
+animation, not phoneme lip-sync. The hidden character stops redrawing in Setup.
+Actual frame rate, recognition latency/accuracy, echo rejection and peak memory
+usage require tests on the physical board alongside Wi-Fi audio uploads.
+
+Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
+screen; the previous position offset could place it below the visible area.
+Microphone input gain is 30 dB (up from 24 dB). The level bar uses a smoothed
+logarithmic scale from -50 to -18 dBFS, so ordinary speech is more visible.
+The bar is feedback, not a calibrated loudness or recognition score. Check
+speech recognition and clipping on the physical board at the intended distance.
+
+Firmware 0.1.4 retains 20 ms microphone reads but sends five frames together
+as one 3,200-byte message every 100 ms. This reduces small WebSocket writes
+fivefold. Finish flushes the final partial batch before the stop command;
+cancel discards it. Failed writes end the turn rather than replaying potentially
+partially transmitted audio. Slow/failed uploads log frame count, byte count,
+duration, RSSI and free internal heap, never audio or credentials. This is a
+transport mitigation requiring repeated physical testing, not proof of a fix.
+
 Server tests cover the PCM protocol, resampling across arbitrary packet cuts,
 input bounds, credential redaction, disconnected sessions and concurrency.
 GitHub Actions compiles the actual target using ESP-IDF 5.5.2, BSP 2.0.0, LVGL
-9.5.0, LVGL port 2.8.0~1 and WebSocket client 1.6.1. The resolved dependency lock
+9.5.0, LVGL port 2.8.0~1 and WebSocket client 1.8.0. The resolved dependency lock
 and source commit travel with the application artifact.
 
 A successful build is not proof of working microphones, correct channel mapping,

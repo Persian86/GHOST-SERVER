@@ -23,6 +23,8 @@ static ghost_config_t pending;
 static char csrf[33], pair_code[7];
 static atomic_bool submitting, reconnect_enabled;
 static const int GOT_IP = 1;
+static ghost_config_t *current_config;
+static atomic_bool wifi_operation;
 
 bool ghost_wifi_ready(void) { return events && (xEventGroupGetBits(events) & GOT_IP); }
 
@@ -49,6 +51,75 @@ static bool join(const ghost_config_t *cfg)
     reconnect_enabled=true;
     esp_wifi_connect();
     return xEventGroupWaitBits(events, GOT_IP, false, true, pdMS_TO_TICKS(20000)) & GOT_IP;
+}
+
+bool ghost_wifi_status(char *ssid, size_t capacity, int *rssi)
+{
+    wifi_ap_record_t ap;
+    if(esp_wifi_sta_get_ap_info(&ap)==ESP_OK && ghost_wifi_ready()) {
+        strlcpy(ssid,(const char *)ap.ssid,capacity);*rssi=ap.rssi;return true;
+    }
+    strlcpy(ssid,current_config?current_config->ssid:"",capacity);*rssi=-127;return false;
+}
+
+esp_err_t ghost_wifi_scan(ghost_network_t *networks,size_t capacity,size_t *count)
+{
+    *count=0;
+    if(submitting || atomic_exchange(&wifi_operation,true)) return ESP_ERR_INVALID_STATE;
+    bool was_retrying=reconnect_enabled;
+    bool paused_join=!ghost_wifi_ready();
+    if(paused_join) {
+        // A failed saved-network join must not prevent scanning for its replacement.
+        reconnect_enabled=false;esp_wifi_disconnect();vTaskDelay(pdMS_TO_TICKS(150));
+    }
+    wifi_scan_config_t scan={.show_hidden=false};
+    esp_err_t result=esp_wifi_scan_start(&scan,true);
+    if(result==ESP_OK) {
+        wifi_ap_record_t *records=calloc(24,sizeof(*records));
+        if(!records) result=ESP_ERR_NO_MEM;
+        else {
+            uint16_t found=24;
+            result=esp_wifi_scan_get_ap_records(&found,records);
+            for(unsigned i=0;result==ESP_OK && i<found && *count<capacity;i++) {
+                if(!records[i].ssid[0]) continue;
+                bool duplicate=false;
+                for(size_t j=0;j<*count;j++) if(!strcmp(networks[j].ssid,(const char *)records[i].ssid)) duplicate=true;
+                if(duplicate) continue;
+                ghost_network_t *item=&networks[(*count)++];
+                strlcpy(item->ssid,(const char *)records[i].ssid,sizeof(item->ssid));
+                item->rssi=records[i].rssi;item->secured=records[i].authmode!=WIFI_AUTH_OPEN;
+            }
+            free(records);
+        }
+        esp_wifi_clear_ap_list();
+    }
+    if(paused_join) {reconnect_enabled=was_retrying;if(was_retrying) esp_wifi_connect();}
+    wifi_operation=false;
+    return result;
+}
+
+esp_err_t ghost_wifi_update(const char *ssid,const char *password,bool keep_password)
+{
+    if(!current_config || !current_config->key[0]) return ESP_ERR_INVALID_STATE;
+    if(!ssid[0] || strlen(ssid)>32 || strlen(password)>64) return ESP_ERR_INVALID_ARG;
+    if(submitting || atomic_exchange(&wifi_operation,true)) return ESP_ERR_INVALID_STATE;
+    ghost_config_t next=*current_config;
+    if(!keep_password || strcmp(ssid,current_config->ssid)) strlcpy(next.password,password,sizeof(next.password));
+    strlcpy(next.ssid,ssid,sizeof(next.ssid));
+    esp_err_t result=ESP_FAIL;
+    if(join(&next)) {
+        nvs_handle_t nvs;
+        result=nvs_open("ghost_room",NVS_READWRITE,&nvs);
+        if(result==ESP_OK) {
+            result=nvs_set_blob(nvs,"config",&next,sizeof(next));
+            if(result==ESP_OK) result=nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        if(result==ESP_OK) {*current_config=next;esp_wifi_set_ps(WIFI_PS_NONE);}
+    }
+    if(result!=ESP_OK) join(current_config); // Restore the saved network on a failed change.
+    memset(&next,0,sizeof(next));
+    wifi_operation=false;return result;
 }
 
 // First release intentionally supports only HTTP on an explicit private LAN IPv4 address.
@@ -196,6 +267,7 @@ static esp_err_t save_page(httpd_req_t *req)
 
 bool ghost_config_connect(ghost_config_t *cfg, ghost_status_fn status)
 {
+    current_config=cfg;
     status_fn = status;
     events = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());

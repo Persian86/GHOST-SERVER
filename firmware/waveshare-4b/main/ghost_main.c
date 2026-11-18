@@ -7,6 +7,7 @@
 #include "freertos/ringbuf.h"
 #include "freertos/queue.h"
 #include "esp_system.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_codec_dev.h"
@@ -17,10 +18,18 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "ghost_config.h"
+#include "ghost_wifi_ui.h"
+#include "ghost_audio.h"
+#include "ghost_wake.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
+static atomic_int mic_level;
+static atomic_int speech_level;
+static atomic_bool auto_finish;
+static atomic_int output_volume=70;
+static atomic_bool audio_ready;
 static atomic_bool abort_turn, finish_turn, remote_done, disconnected;
 static ghost_config_t config;
 static esp_codec_dev_handle_t microphone, speaker;
@@ -28,10 +37,41 @@ static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
+static lv_obj_t *mic_meter,*mic_caption;
+static lv_obj_t *eyes[2],*irises[2],*drapes[2],*hem[4];
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
-static uint32_t setup_hold;
+
+bool ghost_audio_ready(void) {return audio_ready;}
+int ghost_audio_volume(void) {return output_volume;}
+
+static esp_err_t apply_volume(int volume)
+{
+    if(esp_codec_dev_set_out_vol(speaker,volume)!=ESP_OK) return ESP_FAIL;
+    return esp_codec_dev_set_out_mute(speaker,volume==0)==ESP_OK?ESP_OK:ESP_FAIL;
+}
+
+esp_err_t ghost_audio_set_volume(int volume)
+{
+    if(volume<0 || volume>100) return ESP_ERR_INVALID_ARG;
+    if(!audio_ready) return ESP_ERR_INVALID_STATE;
+    int previous=output_volume;
+    if(volume==previous) return ESP_OK;
+    esp_err_t result=apply_volume(volume);
+    if(result==ESP_OK) {
+        nvs_handle_t handle;
+        result=nvs_open("ghost_audio",NVS_READWRITE,&handle);
+        if(result==ESP_OK) {
+            result=nvs_set_u8(handle,"volume",(uint8_t)volume);
+            if(result==ESP_OK) result=nvs_commit(handle);
+            nvs_close(handle);
+        }
+    }
+    if(result==ESP_OK) output_volume=volume;
+    else apply_volume(previous);
+    return result;
+}
 
 static void status_message(const char *message)
 {
@@ -55,35 +95,56 @@ static lv_obj_t *shape(lv_obj_t *parent, int x, int y, int w, int h, uint32_t co
 
 static void user_tap(lv_event_t *event)
 {
-    if (state == SETUP) return;
+    if (state == SETUP || ghost_wifi_ui_visible()) return;
     int command = state == IDLE || state == ERROR_STATE ? 1 : state == LISTENING ? 2 : 3;
     xQueueSend(commands,&command,0);
 }
 
 static void setup_touch(lv_event_t *event)
 {
-    lv_event_code_t code=lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED) setup_hold=lv_tick_get();
-    if (code == LV_EVENT_LONG_PRESSED_REPEAT && lv_tick_elaps(setup_hold)>5000) {
-        abort_turn=true;
-        nvs_handle_t nvs;
-        if (nvs_open("ghost_room",NVS_READWRITE,&nvs) == ESP_OK) {
-            nvs_erase_key(nvs,"config"); nvs_commit(nvs); nvs_close(nvs);
-            esp_restart();
-        }
+    if(lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+    if(state==CONNECTING || state==LISTENING || state==THINKING || state==SPEAKING) {
+        lv_label_set_text(status_label,"Finish or cancel the conversation before opening Wi-Fi settings.");return;
     }
+    ghost_wifi_ui_open();
 }
 
 static void animate(lv_timer_t *timer)
 {
     static int last=-1;
+    static int last_wake=-1;
+    static float mouth_open;
+    static int64_t next_blink,blink_start;
+    if(ghost_wifi_ui_visible()) return; // Hidden avatar need not redraw behind Setup.
     float t=esp_timer_get_time()/1000000.0f;
-    lv_obj_set_y(avatar,95+(int)(sinf(t*1.5f)*7));
+    int64_t now=esp_timer_get_time();
+    if(!next_blink) next_blink=now+3000000;
+    if(now>=next_blink) {blink_start=now;next_blink=now+3000000+esp_random()%4000000;}
+    float blink=blink_start && now-blink_start<200000?sinf((now-blink_start)*3.141593f/200000.0f):0;
+    lv_obj_set_y(avatar,95+(int)(sinf(t*1.15f)*7+sinf(t*0.47f)*2));
+    lv_obj_set_x(avatar,100+(int)(sinf(t*0.55f)*4));
     int current=state;
-    lv_obj_set_height(mouth,current==SPEAKING ? 10+(int)(fabsf(sinf(t*7))*10) : 9);
-    if (current==last) return;
+    for(int side=0;side<2;side++) {
+        lv_obj_set_y(drapes[side],83+(int)(sinf(t*1.3f+side*1.6f)*4));
+        lv_obj_set_style_transform_pivot_y(eyes[side],24,0);
+        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)(blink*235),0);
+        lv_obj_set_x(irises[side],5+(current==THINKING?-3:(int)(sinf(t*0.35f)*2)));
+        lv_obj_set_y(irises[side],3+(current==THINKING?-2:0));
+    }
+    for(int i=0;i<4;i++) lv_obj_set_y(hem[i],179+(int)(sinf(t*1.4f+i*0.9f)*3));
+    lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
+    if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
+    else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
+    float target=current==SPEAKING?speech_level/100.0f:0;
+    mouth_open+=(target-mouth_open)*(target>mouth_open?0.45f:0.22f);
+    lv_obj_set_height(mouth,9+(int)(mouth_open*19));
+    lv_obj_set_width(mouth,30-(int)(mouth_open*6));
+    int wake=ghost_wake_enabled();
+    if (current==last && wake==last_wake) return;
+    last_wake=wake;
     last=current;
-    const char *labels[]={"Tap Ghost to talk", "Connecting to Ghost...", "Listening - tap when finished",
+    const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
+        auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
     if (current!=SETUP) lv_label_set_text(status_label,labels[current]);
     lv_label_set_text(talk_label,current==IDLE || current==ERROR_STATE ? "Tap to talk" :
@@ -105,22 +166,26 @@ static void build_ui(void)
     lv_obj_set_style_bg_color(setup,lv_color_hex(0x302943),0);
     lv_obj_add_event_cb(setup,setup_touch,LV_EVENT_ALL,NULL);
     lv_obj_t *setup_text=lv_label_create(setup);lv_label_set_text(setup_text,"Setup");lv_obj_center(setup_text);
+    mic_caption=lv_label_create(screen);lv_label_set_text(mic_caption,"Mic");lv_obj_set_pos(mic_caption,24,59);
+    mic_meter=lv_bar_create(screen);lv_obj_set_pos(mic_meter,64,65);lv_obj_set_size(mic_meter,180,8);
+    lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
+    lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
     avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
     lv_obj_set_size(avatar,280,245);lv_obj_set_pos(avatar,100,95);
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE);
     // Native LVGL silhouette: dome, soft drapes, scalloped hem and glossy eyes.
     shape(avatar,55,0,170,220,0xf2f0ff,84);
-    shape(avatar,25,83,75,97,0xddd9ee,38);
-    shape(avatar,180,83,75,97,0xddd9ee,38);
+    drapes[0]=shape(avatar,25,83,75,97,0xddd9ee,38);
+    drapes[1]=shape(avatar,180,83,75,97,0xddd9ee,38);
     shape(avatar,51,110,178,106,0xf2f0ff,30);
-    for(int i=0;i<4;i++) shape(avatar,55+i*43,179,42,56+(i%2)*7,0xf2f0ff,22);
+    for(int i=0;i<4;i++) hem[i]=shape(avatar,55+i*43,179,42,56+(i%2)*7,0xf2f0ff,22);
     for(int side=0;side<2;side++) {
         int x=91+side*68;
-        shape(avatar,x-5,56,40,48,0xffffff,24);
-        shape(avatar,x,59,30,40,0x4c9edc,20);
-        shape(avatar,x+5,62,20,30,0x13223c,15);
-        shape(avatar,x+8,65,8,10,0xffffff,5);
-        shape(avatar,x+20,83,4,5,0xc3f3ff,3);
+        eyes[side]=shape(avatar,x-5,56,40,48,0xffffff,24);
+        irises[side]=shape(eyes[side],5,3,30,40,0x4c9edc,20);
+        shape(irises[side],5,3,20,30,0x13223c,15);
+        shape(irises[side],8,6,8,10,0xffffff,5);
+        shape(irises[side],20,24,4,5,0xc3f3ff,3);
     }
     shape(avatar,73,108,24,10,0xf5adc7,8);
     shape(avatar,185,108,24,10,0xf5adc7,8);
@@ -151,6 +216,8 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
 {
     esp_websocket_event_data_t *data=event_data;
     if (event_id==WEBSOCKET_EVENT_DISCONNECTED || event_id==WEBSOCKET_EVENT_ERROR) {
+        ESP_LOGW("ghost_voice","Transport event=%ld close=%d handshake=%d errno=%d",(long)event_id,
+            data->close_status_code,data->error_handle.esp_ws_handshake_status_code,data->error_handle.esp_transport_sock_errno);
         disconnected=true; return;
     }
     if (event_id!=WEBSOCKET_EVENT_DATA) return;
@@ -209,6 +276,23 @@ static void drain_playback(void)
     while((item=xRingbufferReceive(playback,&len,0))) vRingbufferReturnItem(playback,item);
 }
 
+static bool upload_audio(const int16_t *samples,size_t bytes,unsigned frames)
+{
+    int64_t began=esp_timer_get_time();
+    int sent=esp_websocket_client_send_bin(socket_client,(const char *)samples,bytes,pdMS_TO_TICKS(3000));
+    int64_t duration_ms=(esp_timer_get_time()-began)/1000;
+    if(sent!=(int)bytes || duration_ms>250) {
+        char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
+        ESP_LOGW("ghost_voice","Upload frames=%u bytes=%u sent=%d duration_ms=%lld wifi_rssi=%d internal_free=%u",
+            frames,(unsigned)bytes,sent,(long long)duration_ms,rssi,
+            (unsigned)esp_get_free_internal_heap_size());
+    }
+    // A failed WebSocket write may have sent part of the frame. Never retry it
+    // on the same stream, which could duplicate audio or corrupt framing.
+    if(sent!=(int)bytes) {fail("Audio upload stalled. Tap to retry.");return false;}
+    return true;
+}
+
 static void play_task(void *arg)
 {
     int16_t stereo[2048];
@@ -218,10 +302,14 @@ static void play_task(void *arg)
         if(!abort_turn) {
             bsp_audio_poweramp_enable(true);
             const int16_t *mono=item;
-            for(size_t i=0;i<len/2;i++) stereo[2*i]=stereo[2*i+1]=mono[i];
+            int64_t energy=0;
+            for(size_t i=0;i<len/2;i++) {stereo[2*i]=stereo[2*i+1]=mono[i];energy+=(int64_t)mono[i]*mono[i];}
+            int level=len?(int)(sqrtf((float)energy/(len/2))/45.0f):0;
+            speech_level=level>100?100:level;
             if(esp_codec_dev_write(speaker,stereo,len*2)!=ESP_OK) fail("Speaker error. Restart Ghost.");
         }
         vRingbufferReturnItem(playback,item);
+        speech_level=0;
     }
 }
 
@@ -229,13 +317,44 @@ static void voice_task(void *arg)
 {
     char uri[160],headers[200];
     int command;
-    int16_t samples[320];
+    // Five 20 ms microphone frames per bounded 100 ms network message.
+    // Static storage keeps the larger batch off the voice task's stack.
+    static int16_t samples[1600];
     int16_t capture[640];
+    int64_t wake_after=0;
+    bool idle_monitoring=false;
+    float noise_floor=60;
     while(true) {
-        if(xQueueReceive(commands,&command,pdMS_TO_TICKS(20))!=pdTRUE || command!=1) continue;
+        bool wake_turn=false;
+        if(xQueueReceive(commands,&command,0)!=pdTRUE) {
+            bool monitor=(state==IDLE || state==ERROR_STATE) && ghost_wake_enabled() &&
+                !ghost_wifi_ui_visible() && ghost_wifi_ready() && esp_timer_get_time()>=wake_after;
+            if(!monitor) {
+                if(idle_monitoring) {ghost_wake_reset();idle_monitoring=false;}
+                vTaskDelay(pdMS_TO_TICKS(20));continue;
+            }
+            if(!idle_monitoring) {ghost_wake_reset();idle_monitoring=true;}
+            memset(capture,0,sizeof(capture));
+            if(esp_codec_dev_read(microphone,capture,sizeof(capture))!=ESP_OK) {
+                wake_after=esp_timer_get_time()+1000000;continue;
+            }
+            int64_t energy=0;
+            for(int i=0;i<320;i++) {samples[i]=capture[i*2];energy+=(int64_t)samples[i]*samples[i];}
+            float rms=sqrtf((float)energy/320);
+            if(rms<noise_floor*2) noise_floor=noise_floor*0.995f+rms*0.005f;
+            if(!ghost_wake_feed(samples,320)) {vTaskDelay(1);continue;}
+            // Setup or a saved toggle may have changed during inference.
+            if(!ghost_wake_enabled() || ghost_wifi_ui_visible()) continue;
+            command=1;wake_turn=true;
+        }
+        if(command!=1) continue;
+        ghost_wake_reset();idle_monitoring=false;
         if(state!=IDLE && state!=ERROR_STATE) continue;
+        if(ghost_wifi_ui_visible()) continue;
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
+        mic_level=0;
+        auto_finish=wake_turn;
         state=CONNECTING;
         snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice",config.server+7);
         snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
@@ -248,6 +367,8 @@ static void voice_task(void *arg)
         int64_t started=esp_timer_get_time(),record_started=0;
         int64_t next_frame_at=0;
         unsigned frames=0;
+        size_t buffered=0;
+        int64_t last_speech=0;
         bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
@@ -259,8 +380,12 @@ static void voice_task(void *arg)
                 if(!record_started) record_started=esp_timer_get_time();
                 if(finish_turn || esp_timer_get_time()-record_started>19000000) {
                     state=THINKING;
-                    sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
-                    if(!sent_stop) fail("Connection lost. Tap to try again.");
+                    bool flushed=!buffered || upload_audio(samples,buffered*sizeof(samples[0]),frames);
+                    buffered=0;
+                    if(flushed) {
+                        sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
+                        if(!sent_stop) fail("Connection lost. Tap to try again.");
+                    }
                 } else {
                     // DMA can already contain several frames when recording starts.
                     // Never flush that backlog to the server faster than real time.
@@ -268,6 +393,7 @@ static void voice_task(void *arg)
                     if(wait_us>0) vTaskDelay(pdMS_TO_TICKS((wait_us+999)/1000));
                     int64_t read_started=esp_timer_get_time();
                     next_frame_at=read_started+20000;
+                    memset(capture,0,sizeof(capture));
                     esp_err_t read_result=esp_codec_dev_read(microphone,capture,sizeof(capture));
                     int64_t read_us=esp_timer_get_time()-read_started;
                     if(read_result!=ESP_OK) {
@@ -275,13 +401,34 @@ static void voice_task(void *arg)
                         fail("Microphone read failed. Restart Ghost.");
                     } else {
                         // ES7210's first physical microphone; avoid summing opposite-phase inputs.
-                        for(int i=0;i<320;i++) samples[i]=capture[i*2];
-                        if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))!=(int)sizeof(samples))
-                            fail("Audio upload failed. Check Wi-Fi and retry.");
+                        int peak=0;int64_t energy=0;
+                        for(int i=0;i<320;i++) {
+                            int value=capture[i*2];samples[buffered+i]=value;
+                            int magnitude=value<0?-value:value;
+                            if(magnitude>peak) peak=magnitude;
+                            energy+=(int64_t)value*value;
+                        }
+                        unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
+                        if(wake_turn) {
+                            int64_t now=esp_timer_get_time();
+                            if(rms>fmaxf(120,noise_floor*2.5f)) last_speech=now;
+                            if((last_speech && now-last_speech>1300000) ||
+                               (!last_speech && now-record_started>6000000)) finish_turn=true;
+                        }
+                        // Perceptual speech meter: -50 dBFS is quiet, -18 dBFS is full.
+                        float dbfs=20.0f*log10f(fmaxf((float)rms,1.0f)/32768.0f);
+                        int meter=(int)((dbfs+50.0f)*100.0f/32.0f);
+                        if(meter<0) meter=0;
+                        if(meter>100) meter=100;
+                        mic_level=(mic_level*2+meter)/3;
                         frames++;
-                        if(frames==1 || frames%50==0) ESP_LOGW("ghost_voice",
-                            "Capture frames=%u elapsed_ms=%lld last_read_us=%lld",frames,
-                            (long long)((esp_timer_get_time()-record_started)/1000),(long long)read_us);
+                        buffered+=320;
+                        if(buffered==1600) {upload_audio(samples,sizeof(samples),frames);buffered=0;}
+                        if(frames==1 || frames%50==0) {
+                            char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
+                            ESP_LOGW("ghost_voice","Capture frames=%u elapsed_ms=%lld last_read_us=%lld peak=%d rms=%u wifi_rssi=%d",frames,
+                                (long long)((esp_timer_get_time()-record_started)/1000),(long long)read_us,peak,rms,rssi);
+                        }
                     }
                 }
             } else vTaskDelay(pdMS_TO_TICKS(10));
@@ -298,6 +445,7 @@ static void voice_task(void *arg)
         esp_websocket_client_stop(socket_client);
         esp_websocket_client_destroy(socket_client);socket_client=NULL;
         bsp_audio_poweramp_enable(false);
+        speech_level=0;auto_finish=false;wake_after=esp_timer_get_time()+2500000;
         memset(samples,0,sizeof(samples));
         memset(capture,0,sizeof(capture));
         if(state!=ERROR_STATE) state=IDLE;
@@ -333,10 +481,19 @@ void app_main(void)
     if(esp_codec_dev_open(speaker,&audio)!=ESP_OK || esp_codec_dev_open(microphone,&audio)!=ESP_OK) {
         fail("Audio format error. Restart Ghost.");return;
     }
-    esp_codec_dev_set_in_gain(microphone,24.0f);
-    esp_codec_dev_set_out_vol(speaker,45);
+    esp_codec_dev_set_in_gain(microphone,30.0f);
+    nvs_handle_t audio_settings;uint8_t saved_volume;
+    if(nvs_open("ghost_audio",NVS_READONLY,&audio_settings)==ESP_OK) {
+        if(nvs_get_u8(audio_settings,"volume",&saved_volume)==ESP_OK && saved_volume<=100)
+            output_volume=saved_volume;
+        nvs_close(audio_settings);
+    }
+    if(apply_volume(output_volume)!=ESP_OK) {fail("Speaker volume did not initialize.");return;}
+    audio_ready=true;
+    status_message("Preparing local Hey Ghost detection...");
+    ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
-        xTaskCreate(voice_task,"ghost_voice",8192,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
+        xTaskCreate(voice_task,"ghost_voice",16384,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }
