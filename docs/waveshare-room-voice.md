@@ -104,9 +104,39 @@ not proof that the upload failure is resolved. The server has separately complet
 generated-speech tests with both short and eight-second paced recordings. Actual
 speaker testing is deferred until the owner's correct speakers arrive.
 
-After the connection is confirmed stable, the next requested stage is smoother
-character animation and hands-free voice activation. These are not enabled by
-the network/microphone update.
+## Experimental hands-free and animation (0.2.0)
+
+Say **Hey Ghost**, pause until Listening appears, then ask a question. A
+wake-started turn finishes after about 1.3 seconds of quiet following speech,
+or after six seconds if no speech is detected. The existing 19-second limit and
+Finish/Cancel buttons remain. Manually started turns still use Finish speaking.
+The simple energy-based endpoint detector may need tuning for quiet speech,
+background noise and different distances; it is not neural VAD.
+
+Setup has a saved **Hey Ghost (experimental)** switch, enabled initially.
+Idle audio is processed locally, not sent to Ghost Server or a cloud provider.
+Only a detected phrase starts the normal authenticated voice connection.
+Detection pauses in Setup, during a turn and for 2.5 seconds after a turn.
+The microphone has one owning task, avoiding simultaneous codec reads.
+
+This uses Espressif ESP-SR 2.1.3's English MultiNet7 phrase recognition with a
+0.90 threshold and a single `hey ghost` command. It is **not a custom-trained
+WakeNet model** and is not claimed to match a dedicated wake-word detector's
+false-trigger performance. Test nearby speech/TV, different voices, distances,
+quiet requests and repeated replies. Tap-to-talk remains available if the model
+cannot initialize. No always-on streaming is used as a fallback.
+
+The 2.75 MB English model is packed into the application; the original model
+partition, factory application, storage and partition table remain untouched.
+Never use generic ESP-IDF flash targets: ESP-SR adds a separate model flash
+target that is not part of Ghost's reviewed application-only installation.
+
+Animation adds slow sideways drift, separately moving hem/drapes, irregular
+blinks and small eye glances. Mouth opening follows decoded playback RMS with
+attack/release smoothing rather than an unrelated sine wave. This is amplitude
+animation, not phoneme lip-sync. The hidden character stops redrawing in Setup.
+Actual frame rate, recognition latency/accuracy, echo rejection and peak memory
+usage require tests on the physical board alongside Wi-Fi audio uploads.
 
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.

@@ -1,6 +1,7 @@
 #include "ghost_wifi_ui.h"
 #include "ghost_config.h"
 #include "ghost_audio.h"
+#include "ghost_wake.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -12,6 +13,7 @@
 
 static lv_obj_t *panel,*list,*message,*password,*refresh;
 static atomic_bool busy;
+static atomic_bool visible;
 static ghost_network_t networks[20],selected;
 static char entered_password[65];
 static bool keep_password;
@@ -31,7 +33,7 @@ static void volume_changed(lv_event_t *event)
     lv_label_set_text_fmt(volume_label,value?"Speaker volume: %d / 100":"Speaker volume: Muted",value);
 }
 
-bool ghost_wifi_ui_visible(void) {return panel!=NULL;}
+bool ghost_wifi_ui_visible(void) {return visible;}
 static void show_networks(void);
 
 static lv_obj_t *label(lv_obj_t *parent,const char *text,int x,int y,int width)
@@ -47,10 +49,22 @@ static void close_page(lv_event_t *event)
     if(busy) return;
     if(password) lv_textarea_set_text(password,"");
     lv_obj_delete(panel);panel=NULL;list=NULL;password=NULL;
+    visible=false;
     memset(entered_password,0,sizeof(entered_password));
 }
 
 static void back_page(lv_event_t *event) {if(!busy) show_networks();}
+
+static void wake_changed(lv_event_t *event)
+{
+    lv_obj_t *toggle=lv_event_get_target(event);
+    bool enabled=lv_obj_has_state(toggle,LV_STATE_CHECKED);
+    if(ghost_wake_set_enabled(enabled)!=ESP_OK) {
+        if(ghost_wake_enabled()) lv_obj_add_state(toggle,LV_STATE_CHECKED);
+        else lv_obj_remove_state(toggle,LV_STATE_CHECKED);
+        lv_label_set_text(message,"Could not save hands-free setting. Try again.");
+    }
+}
 
 static void header(const char *title,lv_event_cb_t back)
 {
@@ -174,8 +188,14 @@ static void show_networks(void)
     lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_VALUE_CHANGED,NULL);
     lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_RELEASED,NULL);
     if(!ghost_audio_ready()) lv_obj_add_state(volume,LV_STATE_DISABLED);
-    message=label(panel,"",20,190,440);
-    list=lv_list_create(panel);lv_obj_set_pos(list,14,232);lv_obj_set_size(list,452,172);
+    lv_obj_t *wake=lv_checkbox_create(panel);lv_obj_set_pos(wake,20,190);
+    lv_checkbox_set_text(wake,"Hey Ghost (experimental)");
+    lv_obj_set_style_text_font(wake,&lv_font_montserrat_16,0);
+    if(ghost_wake_enabled()) lv_obj_add_state(wake,LV_STATE_CHECKED);
+    if(!ghost_wake_ready()) lv_obj_add_state(wake,LV_STATE_DISABLED);
+    lv_obj_add_event_cb(wake,wake_changed,LV_EVENT_VALUE_CHANGED,NULL);
+    message=label(panel,"",20,240,440);
+    list=lv_list_create(panel);lv_obj_set_pos(list,14,284);lv_obj_set_size(list,452,120);
     lv_obj_set_style_bg_color(list,lv_color_hex(0x242036),0);
     refresh=lv_button_create(panel);lv_obj_set_pos(refresh,20,420);lv_obj_set_size(refresh,440,46);
     lv_obj_set_style_bg_color(refresh,lv_color_hex(0x65508c),0);
@@ -191,4 +211,5 @@ void ghost_wifi_ui_open(void)
     lv_obj_remove_style_all(panel);lv_obj_set_size(panel,480,480);
     lv_obj_set_style_bg_color(panel,lv_color_hex(0x171526),0);lv_obj_set_style_bg_opa(panel,LV_OPA_COVER,0);
     lv_obj_remove_flag(panel,LV_OBJ_FLAG_SCROLLABLE);show_networks();
+    visible=true;
 }
