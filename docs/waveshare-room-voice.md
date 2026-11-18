@@ -120,7 +120,7 @@ Detection pauses in Setup, during a turn and for 2.5 seconds after a turn.
 The microphone has one owning task, avoiding simultaneous codec reads.
 
 This uses Espressif ESP-SR 2.1.3's English MultiNet7 phrase recognition with a
-0.90 threshold and a single `hey ghost` command. It is **not a custom-trained
+single `hey ghost` command. It is **not a custom-trained
 WakeNet model** and is not claimed to match a dedicated wake-word detector's
 false-trigger performance. Test nearby speech/TV, different voices, distances,
 quiet requests and repeated replies. Tap-to-talk remains available if the model
@@ -155,6 +155,20 @@ model setup and clears it after successful setup. If setup panics, the next
 boot skips that initializer and leaves tap-to-talk available; a changed
 initializer version can retry. This guards initialization failures, not every
 possible runtime crash. Hardware testing remains necessary after compilation.
+
+Version 0.2.1 started successfully on hardware but did not react to the owner's
+wake phrase at the original 0.90 threshold. Version 0.2.2 adds Setup → Wake
+sensitivity, saved on release. Initial sensitivity is 70/100, mapping to a
+0.31 threshold; the full slider maps 0..100 to 0.80..0.10. Higher sensitivity
+can cause false wakes and needs testing around TV/background speech. The voice
+task applies threshold changes before its next inference, avoiding concurrent
+model changes from the UI. Detection stays paused inside Setup.
+
+Idle diagnostics report aggregate frame count, maximum microphone RMS,
+maximum inference duration and free internal heap every five seconds. Candidate
+diagnostics report confidence/threshold only. No idle recordings, transcripts,
+or raw audio are logged or uploaded. These metrics distinguish insufficient
+microphone level, slow inference and overly strict thresholds during tuning.
 
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.

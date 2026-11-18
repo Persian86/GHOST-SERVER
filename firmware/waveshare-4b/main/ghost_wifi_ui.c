@@ -18,6 +18,7 @@ static ghost_network_t networks[20],selected;
 static char entered_password[65];
 static bool keep_password;
 static lv_obj_t *volume_label;
+static lv_obj_t *sensitivity_label;
 
 static void volume_changed(lv_event_t *event)
 {
@@ -64,6 +65,36 @@ static void wake_changed(lv_event_t *event)
         else lv_obj_remove_state(toggle,LV_STATE_CHECKED);
         lv_label_set_text(message,"Could not save hands-free setting. Try again.");
     }
+}
+
+static void sensitivity_changed(lv_event_t *event)
+{
+    lv_obj_t *slider=lv_event_get_target(event);
+    int value=lv_slider_get_value(slider);
+    if(lv_event_get_code(event)==LV_EVENT_RELEASED && ghost_wake_set_sensitivity(value)!=ESP_OK) {
+        lv_slider_set_value(slider,ghost_wake_sensitivity(),LV_ANIM_OFF);
+        lv_label_set_text(message,"Could not save sensitivity. Try again.");return;
+    }
+    lv_label_set_text_fmt(sensitivity_label,"Sensitivity: %d / 100",value);
+}
+
+static void wake_settings_tap(lv_event_t *event)
+{
+    if(busy || !ghost_wake_ready()) return;
+    header("Wake sensitivity",back_page);
+    label(panel,"Hey Ghost - experimental local detection",20,75,440);
+    sensitivity_label=label(panel,"",20,110,440);
+    lv_label_set_text_fmt(sensitivity_label,"Sensitivity: %d / 100",ghost_wake_sensitivity());
+    lv_obj_t *slider=lv_slider_create(panel);lv_obj_set_pos(slider,38,169);lv_obj_set_size(slider,404,18);
+    lv_slider_set_range(slider,0,100);lv_slider_set_value(slider,ghost_wake_sensitivity(),LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(slider,lv_color_hex(0xb9a4ff),LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider,lv_color_hex(0xeeeafb),LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider,18);
+    lv_obj_add_event_cb(slider,sensitivity_changed,LV_EVENT_VALUE_CHANGED,NULL);
+    lv_obj_add_event_cb(slider,sensitivity_changed,LV_EVENT_RELEASED,NULL);
+    label(panel,"Higher wakes more easily, but can trigger by mistake. Lower it if TV or background speech wakes Ghost.",20,218,440);
+    label(panel,"Release to save. Close Setup before testing: detection pauses here. Say Hey Ghost, wait for Listening, then ask.",20,307,440);
+    message=label(panel,"",20,422,440);
 }
 
 static void header(const char *title,lv_event_cb_t back)
@@ -189,11 +220,16 @@ static void show_networks(void)
     lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_RELEASED,NULL);
     if(!ghost_audio_ready()) lv_obj_add_state(volume,LV_STATE_DISABLED);
     lv_obj_t *wake=lv_checkbox_create(panel);lv_obj_set_pos(wake,20,190);
-    lv_checkbox_set_text(wake,ghost_wake_ready()?"Hey Ghost (experimental)":"Hey Ghost unavailable - tap to talk");
+    lv_checkbox_set_text(wake,ghost_wake_ready()?"Hey Ghost (test)":"Hey Ghost unavailable");
     lv_obj_set_style_text_font(wake,&lv_font_montserrat_16,0);
     if(ghost_wake_enabled()) lv_obj_add_state(wake,LV_STATE_CHECKED);
     if(!ghost_wake_ready()) lv_obj_add_state(wake,LV_STATE_DISABLED);
     lv_obj_add_event_cb(wake,wake_changed,LV_EVENT_VALUE_CHANGED,NULL);
+    lv_obj_t *tune=lv_button_create(panel);lv_obj_set_pos(tune,285,183);lv_obj_set_size(tune,175,42);
+    lv_obj_set_style_bg_color(tune,lv_color_hex(0x493d68),0);
+    lv_obj_t *tune_label=lv_label_create(tune);lv_label_set_text(tune_label,"Wake sensitivity");lv_obj_center(tune_label);
+    lv_obj_add_event_cb(tune,wake_settings_tap,LV_EVENT_CLICKED,NULL);
+    if(!ghost_wake_ready()) lv_obj_add_state(tune,LV_STATE_DISABLED);
     message=label(panel,"",20,240,440);
     list=lv_list_create(panel);lv_obj_set_pos(list,14,284);lv_obj_set_size(list,452,120);
     lv_obj_set_style_bg_color(list,lv_color_hex(0x242036),0);
