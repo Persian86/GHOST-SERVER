@@ -36,6 +36,7 @@ static void volume_changed(lv_event_t *event)
 
 bool ghost_wifi_ui_visible(void) {return visible;}
 static void show_networks(void);
+static void header(const char *title,lv_event_cb_t back);
 
 static lv_obj_t *label(lv_obj_t *parent,const char *text,int x,int y,int width)
 {
