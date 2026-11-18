@@ -275,6 +275,7 @@ static void voice_task(void *arg)
                     if(wait_us>0) vTaskDelay(pdMS_TO_TICKS((wait_us+999)/1000));
                     int64_t read_started=esp_timer_get_time();
                     next_frame_at=read_started+20000;
+                    memset(capture,0,sizeof(capture));
                     esp_err_t read_result=esp_codec_dev_read(microphone,capture,sizeof(capture));
                     int64_t read_us=esp_timer_get_time()-read_started;
                     if(read_result!=ESP_OK) {
