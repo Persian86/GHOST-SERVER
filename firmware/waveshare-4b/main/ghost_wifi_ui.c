@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 
 static lv_obj_t *panel,*list,*message,*password,*refresh;
