@@ -66,6 +66,12 @@ esp_err_t ghost_wifi_scan(ghost_network_t *networks,size_t capacity,size_t *coun
 {
     *count=0;
     if(submitting || atomic_exchange(&wifi_operation,true)) return ESP_ERR_INVALID_STATE;
+    bool was_retrying=reconnect_enabled;
+    bool paused_join=!ghost_wifi_ready();
+    if(paused_join) {
+        // A failed saved-network join must not prevent scanning for its replacement.
+        reconnect_enabled=false;esp_wifi_disconnect();vTaskDelay(pdMS_TO_TICKS(150));
+    }
     wifi_scan_config_t scan={.show_hidden=false};
     esp_err_t result=esp_wifi_scan_start(&scan,true);
     if(result==ESP_OK) {
@@ -87,6 +93,7 @@ esp_err_t ghost_wifi_scan(ghost_network_t *networks,size_t capacity,size_t *coun
         }
         esp_wifi_clear_ap_list();
     }
+    if(paused_join) {reconnect_enabled=was_retrying;if(was_retrying) esp_wifi_connect();}
     wifi_operation=false;
     return result;
 }
