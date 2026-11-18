@@ -138,6 +138,20 @@ animation, not phoneme lip-sync. The hidden character stops redrawing in Setup.
 Actual frame rate, recognition latency/accuracy, echo rejection and peak memory
 usage require tests on the physical board alongside Wi-Fi audio uploads.
 
+Version 0.2.0 must not be installed: its physical test produced a startup
+LoadProhibited panic inside MultiNet7 model construction. The matching decoded
+trace passes through `sprintf` and `model_create` into `ghost_wake_init`.
+Version 0.2.1 identifies the running application as the embedded model's flash
+container, matching the metadata set by ESP-SR's normal mmap loader. Raw
+`srmodel_load` leaves that field NULL and selects a filesystem-loading path
+even though the base path is NULL. No model partition is rewritten.
+
+The initializer now records a versioned NVS marker before entering third-party
+model setup and clears it after successful setup. If setup panics, the next
+boot skips that initializer and leaves tap-to-talk available; a changed
+initializer version can retry. This guards initialization failures, not every
+possible runtime crash. Hardware testing remains necessary after compilation.
+
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.
 Microphone input gain is 30 dB (up from 24 dB). The level bar uses a smoothed

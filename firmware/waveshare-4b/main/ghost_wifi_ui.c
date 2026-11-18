@@ -189,7 +189,7 @@ static void show_networks(void)
     lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_RELEASED,NULL);
     if(!ghost_audio_ready()) lv_obj_add_state(volume,LV_STATE_DISABLED);
     lv_obj_t *wake=lv_checkbox_create(panel);lv_obj_set_pos(wake,20,190);
-    lv_checkbox_set_text(wake,"Hey Ghost (experimental)");
+    lv_checkbox_set_text(wake,ghost_wake_ready()?"Hey Ghost (experimental)":"Hey Ghost unavailable - tap to talk");
     lv_obj_set_style_text_font(wake,&lv_font_montserrat_16,0);
     if(ghost_wake_enabled()) lv_obj_add_state(wake,LV_STATE_CHECKED);
     if(!ghost_wake_ready()) lv_obj_add_state(wake,LV_STATE_DISABLED);
