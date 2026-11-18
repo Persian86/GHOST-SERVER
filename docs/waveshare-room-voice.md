@@ -72,6 +72,13 @@ before pairing again. If home Wi-Fi fails on startup, setup opens again.
 
 ## Verification and remaining hardware checks
 
+Firmware 0.1.1 initializes the shared I2S bus explicitly at 16 kHz stereo before
+constructing the codecs, rather than starting with the BSP's default 22.05 kHz
+mono layout. Mono network packets are limited to one 20 ms frame per interval,
+including when DMA has buffered old samples. USB warnings report only frame
+counts, timing and error codes, never audio samples, transcripts, Wi-Fi details
+or device credentials. Specific errors survive connection cleanup.
+
 Server tests cover the PCM protocol, resampling across arbitrary packet cuts,
 input bounds, credential redaction, disconnected sessions and concurrency.
 GitHub Actions compiles the actual target using ESP-IDF 5.5.2, BSP 2.0.0, LVGL
