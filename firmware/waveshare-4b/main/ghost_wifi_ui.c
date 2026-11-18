@@ -1,5 +1,6 @@
 #include "ghost_wifi_ui.h"
 #include "ghost_config.h"
+#include "ghost_audio.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -14,6 +15,21 @@ static atomic_bool busy;
 static ghost_network_t networks[20],selected;
 static char entered_password[65];
 static bool keep_password;
+static lv_obj_t *volume_label;
+
+static void volume_changed(lv_event_t *event)
+{
+    lv_obj_t *slider=lv_event_get_target(event);
+    int value=lv_slider_get_value(slider);
+    if(lv_event_get_code(event)==LV_EVENT_RELEASED) {
+        esp_err_t result=ghost_audio_set_volume(value);
+        if(result!=ESP_OK) {
+            lv_slider_set_value(slider,ghost_audio_volume(),LV_ANIM_OFF);
+            lv_label_set_text(volume_label,"Could not save volume. Try again.");return;
+        }
+    }
+    lv_label_set_text_fmt(volume_label,value?"Speaker volume: %d / 100":"Speaker volume: Muted",value);
+}
 
 bool ghost_wifi_ui_visible(void) {return panel!=NULL;}
 static void show_networks(void);
@@ -143,13 +159,23 @@ static void scan_tap(lv_event_t *event)
 static void show_networks(void)
 {
     if(password) lv_textarea_set_text(password,"");
-    header("Wi-Fi settings",close_page);
+    header("Setup",close_page);
     char ssid[33],summary[120];int rssi;
     if(ghost_wifi_status(ssid,sizeof(ssid),&rssi)) snprintf(summary,sizeof(summary),"Connected: %.32s  (%d dBm)",ssid,rssi);
     else snprintf(summary,sizeof(summary),"Disconnected. Saved network: %.32s",ssid);
     label(panel,summary,20,64,440);
-    message=label(panel,"",20,101,440);
-    list=lv_list_create(panel);lv_obj_set_pos(list,14,144);lv_obj_set_size(list,452,260);
+    volume_label=label(panel,"",20,102,440);
+    lv_label_set_text_fmt(volume_label,"Speaker volume: %d / 100",ghost_audio_volume());
+    lv_obj_t *volume=lv_slider_create(panel);lv_obj_set_pos(volume,38,152);lv_obj_set_size(volume,404,16);
+    lv_slider_set_range(volume,0,100);lv_slider_set_value(volume,ghost_audio_volume(),LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(volume,lv_color_hex(0xb9a4ff),LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(volume,lv_color_hex(0xeeeafb),LV_PART_KNOB);
+    lv_obj_set_ext_click_area(volume,16);
+    lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_VALUE_CHANGED,NULL);
+    lv_obj_add_event_cb(volume,volume_changed,LV_EVENT_RELEASED,NULL);
+    if(!ghost_audio_ready()) lv_obj_add_state(volume,LV_STATE_DISABLED);
+    message=label(panel,"",20,190,440);
+    list=lv_list_create(panel);lv_obj_set_pos(list,14,232);lv_obj_set_size(list,452,172);
     lv_obj_set_style_bg_color(list,lv_color_hex(0x242036),0);
     refresh=lv_button_create(panel);lv_obj_set_pos(refresh,20,420);lv_obj_set_size(refresh,440,46);
     lv_obj_set_style_bg_color(refresh,lv_color_hex(0x65508c),0);

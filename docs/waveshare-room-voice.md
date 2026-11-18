@@ -79,6 +79,14 @@ First pairing still uses the password-protected setup hotspot and its web page.
 If home Wi-Fi fails on startup, setup opens again. The old destructive long-hold
 Setup shortcut was removed; opening Wi-Fi settings does not erase pairing.
 
+Firmware 0.1.5 adds **Speaker volume** above the Wi-Fi list in Setup. Drag
+the slider from 0 (muted) to 100 and release to apply and save it. The initial
+level is 70; a saved level is restored after restart. Volume lives in a separate
+`ghost_audio` NVS namespace, leaving the Wi-Fi/pairing blob unchanged. Writes
+occur on release, not on every movement. If applying or saving fails, the
+previous level is restored and the screen reports the error. Adjust volume
+between voice turns; speaker loudness and distortion still need physical tests.
+
 ## Verification and remaining hardware checks
 
 Firmware 0.1.1 initializes the shared I2S bus explicitly at 16 kHz stereo before

@@ -18,11 +18,14 @@
 #include "bsp/display.h"
 #include "ghost_config.h"
 #include "ghost_wifi_ui.h"
+#include "ghost_audio.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
 static atomic_int mic_level;
+static atomic_int output_volume=70;
+static atomic_bool audio_ready;
 static atomic_bool abort_turn, finish_turn, remote_done, disconnected;
 static ghost_config_t config;
 static esp_codec_dev_handle_t microphone, speaker;
@@ -34,6 +37,36 @@ static lv_obj_t *mic_meter,*mic_caption;
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
+
+bool ghost_audio_ready(void) {return audio_ready;}
+int ghost_audio_volume(void) {return output_volume;}
+
+static esp_err_t apply_volume(int volume)
+{
+    if(esp_codec_dev_set_out_vol(speaker,volume)!=ESP_OK) return ESP_FAIL;
+    return esp_codec_dev_set_out_mute(speaker,volume==0)==ESP_OK?ESP_OK:ESP_FAIL;
+}
+
+esp_err_t ghost_audio_set_volume(int volume)
+{
+    if(volume<0 || volume>100) return ESP_ERR_INVALID_ARG;
+    if(!audio_ready) return ESP_ERR_INVALID_STATE;
+    int previous=output_volume;
+    if(volume==previous) return ESP_OK;
+    esp_err_t result=apply_volume(volume);
+    if(result==ESP_OK) {
+        nvs_handle_t handle;
+        result=nvs_open("ghost_audio",NVS_READWRITE,&handle);
+        if(result==ESP_OK) {
+            result=nvs_set_u8(handle,"volume",(uint8_t)volume);
+            if(result==ESP_OK) result=nvs_commit(handle);
+            nvs_close(handle);
+        }
+    }
+    if(result==ESP_OK) output_volume=volume;
+    else apply_volume(previous);
+    return result;
+}
 
 static void status_message(const char *message)
 {
@@ -381,7 +414,14 @@ void app_main(void)
         fail("Audio format error. Restart Ghost.");return;
     }
     esp_codec_dev_set_in_gain(microphone,30.0f);
-    esp_codec_dev_set_out_vol(speaker,45);
+    nvs_handle_t audio_settings;uint8_t saved_volume;
+    if(nvs_open("ghost_audio",NVS_READONLY,&audio_settings)==ESP_OK) {
+        if(nvs_get_u8(audio_settings,"volume",&saved_volume)==ESP_OK && saved_volume<=100)
+            output_volume=saved_volume;
+        nvs_close(audio_settings);
+    }
+    if(apply_volume(output_volume)!=ESP_OK) {fail("Speaker volume did not initialize.");return;}
+    audio_ready=true;
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
         xTaskCreate(voice_task,"ghost_voice",8192,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
