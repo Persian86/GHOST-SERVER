@@ -1,0 +1,35 @@
+name: Build Ghost Waveshare firmware
+on:
+  pull_request:
+    paths: ['firmware/waveshare-4b/**', '.github/workflows/waveshare.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.2
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build the exact Waveshare ESP32-S3 4B target
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -C firmware/waveshare-4b set-target esp32s3 build
+      - name: Package application and build evidence
+        shell: bash
+        run: |
+          mkdir -p firmware-artifact
+          cp firmware/waveshare-4b/build/ghost_room_4b.bin firmware-artifact/
+          cp firmware/waveshare-4b/build/project_description.json firmware-artifact/
+          cp firmware/waveshare-4b/dependencies.lock firmware-artifact/
+          cp firmware/waveshare-4b/partitions.csv firmware-artifact/
+          git rev-parse HEAD > firmware-artifact/source-commit.txt
+          sha256sum firmware-artifact/ghost_room_4b.bin > firmware-artifact/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-waveshare-4b-application
+          path: firmware-artifact/
