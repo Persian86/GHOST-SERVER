@@ -107,6 +107,14 @@ logarithmic scale from -50 to -18 dBFS, so ordinary speech is more visible.
 The bar is feedback, not a calibrated loudness or recognition score. Check
 speech recognition and clipping on the physical board at the intended distance.
 
+Firmware 0.1.4 retains 20 ms microphone reads but sends five frames together
+as one 3,200-byte message every 100 ms. This reduces small WebSocket writes
+fivefold. Finish flushes the final partial batch before the stop command;
+cancel discards it. Failed writes end the turn rather than replaying potentially
+partially transmitted audio. Slow/failed uploads log frame count, byte count,
+duration, RSSI and free internal heap, never audio or credentials. This is a
+transport mitigation requiring repeated physical testing, not proof of a fix.
+
 Server tests cover the PCM protocol, resampling across arbitrary packet cuts,
 input bounds, credential redaction, disconnected sessions and concurrency.
 GitHub Actions compiles the actual target using ESP-IDF 5.5.2, BSP 2.0.0, LVGL

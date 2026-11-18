@@ -215,6 +215,23 @@ static void drain_playback(void)
     while((item=xRingbufferReceive(playback,&len,0))) vRingbufferReturnItem(playback,item);
 }
 
+static bool upload_audio(const int16_t *samples,size_t bytes,unsigned frames)
+{
+    int64_t began=esp_timer_get_time();
+    int sent=esp_websocket_client_send_bin(socket_client,(const char *)samples,bytes,pdMS_TO_TICKS(3000));
+    int64_t duration_ms=(esp_timer_get_time()-began)/1000;
+    if(sent!=(int)bytes || duration_ms>250) {
+        char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
+        ESP_LOGW("ghost_voice","Upload frames=%u bytes=%u sent=%d duration_ms=%lld wifi_rssi=%d internal_free=%u",
+            frames,(unsigned)bytes,sent,(long long)duration_ms,rssi,
+            (unsigned)esp_get_free_internal_heap_size());
+    }
+    // A failed WebSocket write may have sent part of the frame. Never retry it
+    // on the same stream, which could duplicate audio or corrupt framing.
+    if(sent!=(int)bytes) {fail("Audio upload stalled. Tap to retry.");return false;}
+    return true;
+}
+
 static void play_task(void *arg)
 {
     int16_t stereo[2048];
@@ -235,7 +252,9 @@ static void voice_task(void *arg)
 {
     char uri[160],headers[200];
     int command;
-    int16_t samples[320];
+    // Five 20 ms microphone frames per bounded 100 ms network message.
+    // Static storage keeps the larger batch off the voice task's stack.
+    static int16_t samples[1600];
     int16_t capture[640];
     while(true) {
         if(xQueueReceive(commands,&command,pdMS_TO_TICKS(20))!=pdTRUE || command!=1) continue;
@@ -255,6 +274,7 @@ static void voice_task(void *arg)
         int64_t started=esp_timer_get_time(),record_started=0;
         int64_t next_frame_at=0;
         unsigned frames=0;
+        size_t buffered=0;
         bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
@@ -266,8 +286,12 @@ static void voice_task(void *arg)
                 if(!record_started) record_started=esp_timer_get_time();
                 if(finish_turn || esp_timer_get_time()-record_started>19000000) {
                     state=THINKING;
-                    sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
-                    if(!sent_stop) fail("Connection lost. Tap to try again.");
+                    bool flushed=!buffered || upload_audio(samples,buffered*sizeof(samples[0]),frames);
+                    buffered=0;
+                    if(flushed) {
+                        sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
+                        if(!sent_stop) fail("Connection lost. Tap to try again.");
+                    }
                 } else {
                     // DMA can already contain several frames when recording starts.
                     // Never flush that backlog to the server faster than real time.
@@ -285,8 +309,8 @@ static void voice_task(void *arg)
                         // ES7210's first physical microphone; avoid summing opposite-phase inputs.
                         int peak=0;int64_t energy=0;
                         for(int i=0;i<320;i++) {
-                            samples[i]=capture[i*2];
-                            int value=samples[i];int magnitude=value<0?-value:value;
+                            int value=capture[i*2];samples[buffered+i]=value;
+                            int magnitude=value<0?-value:value;
                             if(magnitude>peak) peak=magnitude;
                             energy+=(int64_t)value*value;
                         }
@@ -297,9 +321,9 @@ static void voice_task(void *arg)
                         if(meter<0) meter=0;
                         if(meter>100) meter=100;
                         mic_level=(mic_level*2+meter)/3;
-                        if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))!=(int)sizeof(samples))
-                            fail("Audio upload failed. Check Wi-Fi and retry.");
                         frames++;
+                        buffered+=320;
+                        if(buffered==1600) {upload_audio(samples,sizeof(samples),frames);buffered=0;}
                         if(frames==1 || frames%50==0) {
                             char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
                             ESP_LOGW("ghost_voice","Capture frames=%u elapsed_ms=%lld last_read_us=%lld peak=%d rms=%u wifi_rssi=%d",frames,
