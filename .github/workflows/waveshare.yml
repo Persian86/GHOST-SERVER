@@ -32,12 +32,6 @@ jobs:
           printf '%s\n' "$SOURCE_COMMIT" > firmware-artifact/source-commit.txt
           cd firmware-artifact
           sha256sum ghost_room_4b.bin > SHA256SUMS
-      - name: Decode captured prototype startup trace
-        shell: bash
-        run: |
-          . "$IDF_PATH/export.sh"
-          xtensa-esp32s3-elf-addr2line -pfiaC -e firmware/waveshare-4b/build/ghost_room_4b.elf \
-            0x42121b0a 0x4211d1fd 0x4201bf6e 0x4201c20b 0x4200efec 0x4200d6a4 0x4213b9cf
       - uses: actions/upload-artifact@v4
         with:
           name: ghost-waveshare-4b-application

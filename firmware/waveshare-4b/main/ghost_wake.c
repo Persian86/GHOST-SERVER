@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
-#include "esp_ota_ops.h"
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
 #include "esp_mn_speech_commands.h"
@@ -17,7 +16,7 @@ static int16_t *frame;
 static int chunk,used;
 static atomic_bool ready,enabled=true;
 // Bump for a materially changed initializer so a repaired version can retry.
-#define WAKE_INITIALIZER_VERSION 0x00020101u
+#define WAKE_INITIALIZER_VERSION 0x00020102u
 
 static esp_err_t boot_guard(uint32_t value)
 {
@@ -63,14 +62,12 @@ bool ghost_wake_init(void)
     if(boot_guard(WAKE_INITIALIZER_VERSION)!=ESP_OK) return false;
     // Model is embedded in this application, preserving the original model partition.
     srmodel_list_t *models=srmodel_load(ghost_wake_bin);
-    const esp_partition_t *container=esp_ota_get_running_partition();
-    if(!models || !container) {boot_guard(0);return false;}
-    // ESP-SR distinguishes flash models from filesystem models through this
-    // field. srmodel_load alone leaves it NULL (unlike srmodel_mmap_init),
-    // causing MultiNet7 to format a filesystem path from a NULL base path.
-    // The already-mapped file pointers remain relative to the embedded bundle;
-    // this identifies their real container, without remapping or writing it.
-    models->partition=(esp_partition_t *)container;
+    // MultiNet7 requires a separate fst bundle, even when mn7_en includes vocab.
+    // Missing fst selects a filesystem fallback with a NULL path. Fail safely
+    // before entering the third-party constructor if the bundle is incomplete.
+    if(!models || !esp_srmodel_filter(models,"fst",NULL)) {
+        ESP_LOGW("ghost_wake","Command dictionary missing; using tap-to-talk");boot_guard(0);return false;
+    }
     char *name=models?esp_srmodel_filter(models,ESP_MN_PREFIX,ESP_MN_ENGLISH):NULL;
     if(!name || !(recognizer=esp_mn_handle_from_name(name))) {boot_guard(0);return false;}
     model=recognizer->create(name,5000);

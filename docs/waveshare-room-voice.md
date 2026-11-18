@@ -141,10 +141,14 @@ usage require tests on the physical board alongside Wi-Fi audio uploads.
 Version 0.2.0 must not be installed: its physical test produced a startup
 LoadProhibited panic inside MultiNet7 model construction. The matching decoded
 trace passes through `sprintf` and `model_create` into `ghost_wake_init`.
-Version 0.2.1 identifies the running application as the embedded model's flash
-container, matching the metadata set by ESP-SR's normal mmap loader. Raw
-`srmodel_load` leaves that field NULL and selects a filesystem-loading path
-even though the base path is NULL. No model partition is rewritten.
+Version 0.2.1 includes the separate `fst` command-dictionary bundle that
+MultiNet7 requires in addition to `mn7_en`. Without `fst`, the constructor
+formats `%s/%s/vocab` using a NULL filesystem base path. The matching
+disassembly confirms this fallback; the omitted dictionary is also explicitly
+included by Espressif's standard `movemodel.py` packager. A build-time parser
+now requires the English model, vocabulary, command dictionary and license,
+and rejects invalid bounds/duplicate entries. Runtime also checks for `fst`
+before calling the constructor. No model partition is rewritten.
 
 The initializer now records a versioned NVS marker before entering third-party
 model setup and clears it after successful setup. If setup panics, the next
