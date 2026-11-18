@@ -29,7 +29,7 @@ static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static char error_text[160] = "Tap Ghost to try again";
-static char packet[512];
+static char packet[4097];
 static int packet_opcode;
 static uint32_t setup_hold;
 
@@ -162,20 +162,23 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
     }
     if (data->op_code==0x9 || data->op_code==0xa) return;
     if(data->payload_offset==0) packet_opcode=data->op_code;
-    if(packet_opcode==0x2) {
-        if (state!=THINKING && state!=SPEAKING) {fail("Unexpected audio. Tap to retry.");return;}
-        if(data->data_len%2 || data->payload_len>4096 ||
-            xRingbufferSend(playback,data->data_ptr,data->data_len,pdMS_TO_TICKS(3000))!=pdTRUE) {
-            fail("Playback stalled. Tap to try again."); return;
-        }
-        state=SPEAKING; return;
-    }
-    if(packet_opcode!=0x1 || data->payload_len >= sizeof(packet) || data->payload_offset<0 ||
-        data->payload_offset+data->data_len >= sizeof(packet)) {
+    if(data->payload_len <= 0 || data->payload_len > 4096 || data->payload_offset<0 ||
+        data->data_len<0 || data->payload_offset+data->data_len > data->payload_len) {
         fail("Invalid server reply.");return;
     }
     memcpy(packet+data->payload_offset,data->data_ptr,data->data_len);
     if(data->payload_offset+data->data_len!=data->payload_len) return;
+    if(packet_opcode==0x2) {
+        if (state!=THINKING && state!=SPEAKING) {fail("Unexpected audio. Tap to retry.");return;}
+        if(data->payload_len%2 ||
+            xRingbufferSend(playback,packet,data->payload_len,pdMS_TO_TICKS(3000))!=pdTRUE) {
+            fail("Playback stalled. Tap to try again."); return;
+        }
+        state=SPEAKING; return;
+    }
+    if(packet_opcode!=0x1 || data->payload_len > 512) {
+        fail("Invalid server reply.");return;
+    }
     packet[data->payload_len]=0;
     cJSON *json=cJSON_Parse(packet);
     cJSON *type=cJSON_GetObjectItemCaseSensitive(json,"type");
@@ -197,12 +200,15 @@ static void drain_playback(void)
 
 static void play_task(void *arg)
 {
+    int16_t stereo[2048];
     while(true) {
         size_t len; void *item=xRingbufferReceiveUpTo(playback,&len,pdMS_TO_TICKS(50),2048);
         if(!item) continue;
         if(!abort_turn) {
             bsp_audio_poweramp_enable(true);
-            if(esp_codec_dev_write(speaker,item,len)!=ESP_OK) fail("Speaker error. Restart Ghost.");
+            const int16_t *mono=item;
+            for(size_t i=0;i<len/2;i++) stereo[2*i]=stereo[2*i+1]=mono[i];
+            if(esp_codec_dev_write(speaker,stereo,len*2)!=ESP_OK) fail("Speaker error. Restart Ghost.");
         }
         vRingbufferReturnItem(playback,item);
     }
@@ -213,6 +219,7 @@ static void voice_task(void *arg)
     char uri[160],headers[200];
     int command;
     int16_t samples[320];
+    int16_t capture[640];
     while(true) {
         if(xQueueReceive(commands,&command,pdMS_TO_TICKS(20))!=pdTRUE || command!=1) continue;
         if(state!=IDLE && state!=ERROR_STATE) continue;
@@ -242,9 +249,13 @@ static void voice_task(void *arg)
                     sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
                     if(!sent_stop) fail("Connection lost. Tap to try again.");
                 } else {
-                    if(esp_codec_dev_read(microphone,samples,sizeof(samples))!=ESP_OK ||
-                        esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))<0) {
+                    if(esp_codec_dev_read(microphone,capture,sizeof(capture))!=ESP_OK) {
                         fail("Microphone or connection error.");
+                    } else {
+                        // ES7210's first physical microphone; avoid summing opposite-phase inputs.
+                        for(int i=0;i<320;i++) samples[i]=capture[i*2];
+                        if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))<0)
+                            fail("Microphone or connection error.");
                     }
                 }
             } else vTaskDelay(pdMS_TO_TICKS(10));
@@ -262,6 +273,7 @@ static void voice_task(void *arg)
         esp_websocket_client_destroy(socket_client);socket_client=NULL;
         bsp_audio_poweramp_enable(false);
         memset(samples,0,sizeof(samples));
+        memset(capture,0,sizeof(capture));
         if(state!=ERROR_STATE) state=IDLE;
     }
 }
@@ -280,14 +292,15 @@ void app_main(void)
     if(!ghost_config_connect(&config,status_message)) return;
     microphone=bsp_audio_codec_microphone_init();speaker=bsp_audio_codec_speaker_init();
     if(!microphone || !speaker) {fail("Audio hardware did not initialize.");return;}
-    esp_codec_dev_sample_info_t audio={.sample_rate=16000,.channel=1,.bits_per_sample=16};
+    // Match the official Waveshare codec example's 16 kHz, 16-bit stereo I2S bus.
+    esp_codec_dev_sample_info_t audio={.sample_rate=16000,.channel=2,.bits_per_sample=16};
     if(esp_codec_dev_open(speaker,&audio)!=ESP_OK || esp_codec_dev_open(microphone,&audio)!=ESP_OK) {
         fail("Audio format error. Restart Ghost.");return;
     }
     esp_codec_dev_set_in_gain(microphone,24.0f);
     esp_codec_dev_set_out_vol(speaker,45);
     bsp_audio_poweramp_enable(false);
-    if(xTaskCreate(play_task,"ghost_speaker",4096,NULL,5,NULL)!=pdPASS ||
+    if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
         xTaskCreate(voice_task,"ghost_voice",8192,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }

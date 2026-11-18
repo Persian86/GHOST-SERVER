@@ -125,3 +125,61 @@ def test_duplicate_session_does_not_contact_cloud(monkeypatch):
             assert ws.closed[0]["code"]==4429
         finally: voice._active.discard("room")
     asyncio.run(run())
+
+
+def test_revocation_during_reply_closes_before_audio_or_transcript(monkeypatch):
+    row,_=setup(monkeypatch)
+    monkeypatch.setattr(voice.store,"add_turn",lambda *args:pytest.fail("revoked transcript saved"))
+    async def run():
+        ws=Socket();cloud=Cloud(ws)
+        async def receive():
+            await cloud.end.wait()
+            row["revoked"]=1
+            yield NS(data=bytes(960),tool_call=None,server_content=None)
+        cloud.receive=receive
+        await voice.serve(ws,row,lambda row:None,client_factory=lambda **kwargs:cloud)
+        assert not any(isinstance(m,bytes) for m in ws.messages)
+        assert any(c.get("code")==4403 for c in ws.closed)
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_model_cannot_invoke_a_tool_not_offered_to_this_device(monkeypatch):
+    row,_=setup(monkeypatch)
+    monkeypatch.setattr(voice.tools,"run",lambda *args:pytest.fail("unoffered tool executed"))
+    async def run():
+        ws=Socket();cloud=Cloud(ws)
+        async def receive():
+            await cloud.end.wait()
+            yield NS(data=None,tool_call=NS(function_calls=[NS(id="1",name="delete_private_files",args={})]),server_content=None)
+        cloud.receive=receive
+        await voice.serve(ws,row,lambda row:None,client_factory=lambda **kwargs:cloud)
+        assert any(c.get("code")==4403 for c in ws.closed)
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_timeout_closes_cloud_and_releases_capacity(monkeypatch):
+    row,_=setup(monkeypatch)
+    monkeypatch.setattr(voice,"MAX_SESSION_SECONDS",0.02)
+    async def run():
+        ws=Socket();cloud=Cloud(ws)
+        async def send(**kwargs): pass
+        cloud.send_realtime_input=send
+        await voice.serve(ws,row,lambda row:None,client_factory=lambda **kwargs:cloud)
+        assert ws.messages[-1]["type"]=="error"
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_websocket_does_not_accept_a_device_key_in_the_url(monkeypatch):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from ghost_server.app import app
+    _,_=setup(monkeypatch)
+    seen=[]
+    monkeypatch.setattr(voice.store,"device_by_key",lambda key:seen.append(key))
+    with pytest.raises(WebSocketDisconnect) as err:
+        with TestClient(app).websocket_connect("/api/v1/room-voice?key=private-device-key") as ws:
+            ws.receive_json()
+    assert seen==[""] and err.value.code==4401
