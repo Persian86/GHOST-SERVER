@@ -226,8 +226,8 @@ static void voice_task(void *arg)
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
         state=CONNECTING;
-        snprintf(uri,sizeof(uri),"ws://%s/api/v1/room-voice",config.server+7);
-        snprintf(headers,sizeof(headers),"Authorization: Bearer %s\r\n",config.key);
+        snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice",config.server+7);
+        snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
         esp_websocket_client_config_t ws={.uri=uri,.headers=headers,.disable_auto_reconnect=true,
             .network_timeout_ms=12000,.buffer_size=4096,.task_stack=6144};
         socket_client=esp_websocket_client_init(&ws);

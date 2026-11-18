@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdatomic.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_event.h"
@@ -20,7 +21,7 @@ static EventGroupHandle_t events;
 static ghost_status_fn status_fn;
 static ghost_config_t pending;
 static char csrf[33], pair_code[7];
-static bool submitting;
+static atomic_bool submitting, reconnect_enabled;
 static const int GOT_IP = 1;
 
 bool ghost_wifi_ready(void) { return events && (xEventGroupGetBits(events) & GOT_IP); }
@@ -30,7 +31,7 @@ static void network_event(void *arg, esp_event_base_t base, int32_t id, void *da
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) xEventGroupSetBits(events, GOT_IP);
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(events, GOT_IP);
-        esp_wifi_connect();
+        if(reconnect_enabled) esp_wifi_connect();
     }
 }
 
@@ -40,8 +41,12 @@ static bool join(const ghost_config_t *cfg)
     memcpy(wifi.sta.ssid, cfg->ssid, strlen(cfg->ssid));
     memcpy(wifi.sta.password, cfg->password, strlen(cfg->password));
     wifi.sta.pmf_cfg.capable = true;
+    reconnect_enabled=false;
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(150));
     xEventGroupClearBits(events, GOT_IP);
     if (esp_wifi_set_config(WIFI_IF_STA, &wifi) != ESP_OK) return false;
+    reconnect_enabled=true;
     esp_wifi_connect();
     return xEventGroupWaitBits(events, GOT_IP, false, true, pdMS_TO_TICKS(20000)) & GOT_IP;
 }
@@ -113,7 +118,7 @@ static esp_err_t setup_page(httpd_req_t *req)
 static bool pair_device(void)
 {
     char url[128], response[1024] = {0};
-    snprintf(url, sizeof(url), "%s/api/v1/pair", pending.server);
+    snprintf(url, sizeof(url), "%.95s/api/v1/pair", pending.server);
     esp_http_client_config_t http = {.url=url, .timeout_ms=12000, .disable_auto_redirect=true};
     esp_http_client_handle_t client = esp_http_client_init(&http);
     if (!client) return false;
