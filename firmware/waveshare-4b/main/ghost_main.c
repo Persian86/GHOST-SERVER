@@ -141,7 +141,9 @@ static void build_ui(void)
 
 static void fail(const char *message)
 {
+    if(state==ERROR_STATE) return;
     strlcpy(error_text,message,sizeof(error_text));
+    ESP_LOGW("ghost_voice","%s",error_text);
     state=ERROR_STATE; abort_turn=true;
 }
 
@@ -155,7 +157,10 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
     if (data->op_code==0x8) {
         if (data->data_len>=2) {
             unsigned code=((unsigned char)data->data_ptr[0]<<8)|(unsigned char)data->data_ptr[1];
+            ESP_LOGW("ghost_voice","WebSocket closed with code %u",code);
             if(code==4401 || code==4403) fail("Pair and approve this device on Ghost Server.");
+            else if(code==4400) fail("Server rejected the audio stream (4400).");
+            else if(code==4429) fail("Another voice session is active. Wait and retry.");
             else if(code==4426) fail("Server requires HTTPS. This LAN prototype needs a TLS upgrade.");
         }
         disconnected=true; return;
@@ -183,11 +188,17 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
     cJSON *json=cJSON_Parse(packet);
     cJSON *type=cJSON_GetObjectItemCaseSensitive(json,"type");
     if(cJSON_IsString(type)) {
-        if(!strcmp(type->valuestring,"ready") && state==CONNECTING) state=LISTENING;
+        if(!strcmp(type->valuestring,"ready") && state==CONNECTING) {
+            ESP_LOGW("ghost_voice","Voice ready; sending 16 kHz mono PCM at 20 ms intervals");
+            state=LISTENING;
+        }
         else if(!strcmp(type->valuestring,"thinking")) state=THINKING;
         else if(!strcmp(type->valuestring,"speaking")) state=SPEAKING;
         else if(!strcmp(type->valuestring,"done")) remote_done=true;
-        else if(!strcmp(type->valuestring,"error")) fail("Ghost voice could not connect. Check the server, then retry.");
+        else if(!strcmp(type->valuestring,"error")) {
+            const cJSON *message=cJSON_GetObjectItemCaseSensitive(json,"message");
+            fail(cJSON_IsString(message)?message->valuestring:"Ghost voice could not connect. Check the server, then retry.");
+        }
     }
     cJSON_Delete(json);
 }
@@ -235,6 +246,8 @@ static void voice_task(void *arg)
         esp_websocket_register_events(socket_client,WEBSOCKET_EVENT_ANY,websocket_event,NULL);
         if(esp_websocket_client_start(socket_client)!=ESP_OK) fail("Could not open Ghost connection.");
         int64_t started=esp_timer_get_time(),record_started=0;
+        int64_t next_frame_at=0;
+        unsigned frames=0;
         bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
@@ -249,13 +262,26 @@ static void voice_task(void *arg)
                     sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
                     if(!sent_stop) fail("Connection lost. Tap to try again.");
                 } else {
-                    if(esp_codec_dev_read(microphone,capture,sizeof(capture))!=ESP_OK) {
-                        fail("Microphone or connection error.");
+                    // DMA can already contain several frames when recording starts.
+                    // Never flush that backlog to the server faster than real time.
+                    int64_t wait_us=next_frame_at-esp_timer_get_time();
+                    if(wait_us>0) vTaskDelay(pdMS_TO_TICKS((wait_us+999)/1000));
+                    int64_t read_started=esp_timer_get_time();
+                    next_frame_at=read_started+20000;
+                    esp_err_t read_result=esp_codec_dev_read(microphone,capture,sizeof(capture));
+                    int64_t read_us=esp_timer_get_time()-read_started;
+                    if(read_result!=ESP_OK) {
+                        ESP_LOGW("ghost_voice","Microphone read failed: %d",(int)read_result);
+                        fail("Microphone read failed. Restart Ghost.");
                     } else {
                         // ES7210's first physical microphone; avoid summing opposite-phase inputs.
                         for(int i=0;i<320;i++) samples[i]=capture[i*2];
-                        if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))<0)
-                            fail("Microphone or connection error.");
+                        if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))!=(int)sizeof(samples))
+                            fail("Audio upload failed. Check Wi-Fi and retry.");
+                        frames++;
+                        if(frames==1 || frames%50==0) ESP_LOGW("ghost_voice",
+                            "Capture frames=%u elapsed_ms=%lld last_read_us=%lld",frames,
+                            (long long)((esp_timer_get_time()-record_started)/1000),(long long)read_us);
                     }
                 }
             } else vTaskDelay(pdMS_TO_TICKS(10));
@@ -264,7 +290,7 @@ static void voice_task(void *arg)
                 size_t free_space=xRingbufferGetCurFreeSize(playback);
                 if(free_space>=64000-64) {vTaskDelay(pdMS_TO_TICKS(150));break;}
             }
-            if(disconnected && !remote_done) {fail("Connection ended. Check Ghost Server and retry.");break;}
+            if(disconnected && !remote_done && !abort_turn) {fail("Connection ended. Check Ghost Server and retry.");break;}
             if(esp_timer_get_time()-started>100000000 ||
                 (state==CONNECTING && esp_timer_get_time()-started>20000000)) {fail("Ghost timed out. Tap to retry.");break;}
         }
@@ -290,6 +316,16 @@ void app_main(void)
     bsp_display_lock(0);build_ui();bsp_display_unlock();
     if(nvs_result!=ESP_OK) {status_message("Settings storage error. Original data was not erased.");return;}
     if(!ghost_config_connect(&config,status_message)) return;
+    // Configure the shared bus BEFORE constructing either codec. BSP's default
+    // is 22.05 kHz mono, which differs from this application's stereo DMA layout.
+    const i2s_std_config_t bus={
+        .clk_cfg=I2S_STD_CLK_DEFAULT_CONFIG(16000),
+        .slot_cfg=I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,I2S_SLOT_MODE_STEREO),
+        .gpio_cfg={.mclk=BSP_I2S_MCLK,.bclk=BSP_I2S_SCLK,.ws=BSP_I2S_LCLK,
+            .dout=BSP_I2S_DOUT,.din=BSP_I2S_DSIN,
+            .invert_flags={.mclk_inv=false,.bclk_inv=false,.ws_inv=false}}
+    };
+    if(bsp_audio_init(&bus)!=ESP_OK) {fail("Audio bus did not initialize.");return;}
     microphone=bsp_audio_codec_microphone_init();speaker=bsp_audio_codec_speaker_init();
     if(!microphone || !speaker) {fail("Audio hardware did not initialize.");return;}
     // Match the official Waveshare codec example's 16 kHz, 16-bit stereo I2S bus.
