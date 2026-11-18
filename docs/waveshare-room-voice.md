@@ -66,9 +66,18 @@ partition and the full private backup must remain available for recovery.
    and web server do not remain running after a successful paired reboot.
 6. Tap to talk, say a short phrase, tap Finish speaking, and check the voice.
 
-Hold Setup for five seconds to clear only this app's configuration and re-enter
-setup. The old Ghost device entry should then be removed in server Security
-before pairing again. If home Wi-Fi fails on startup, setup opens again.
+On firmware 0.1.2 and later, tap **Setup** for the native Wi-Fi page. It shows
+the current network and signal strength and scans nearby 2.4 GHz networks.
+Tap a network, enter its password with the touchscreen keyboard and tap Connect.
+Changing networks keeps the server address and device pairing. A blank password
+keeps the saved password only when selecting the same secured network. Failed
+changes restore the previous saved network; passwords are never displayed unless
+the user explicitly selects Show password. No restart is needed on success.
+Close/cancel an active voice turn before opening Wi-Fi settings.
+
+First pairing still uses the password-protected setup hotspot and its web page.
+If home Wi-Fi fails on startup, setup opens again. The old destructive long-hold
+Setup shortcut was removed; opening Wi-Fi settings does not erase pairing.
 
 ## Verification and remaining hardware checks
 
@@ -78,6 +87,18 @@ mono layout. Mono network packets are limited to one 20 ms frame per interval,
 including when DMA has buffered old samples. USB warnings report only frame
 counts, timing and error codes, never audio samples, transcripts, Wi-Fi details
 or device credentials. Specific errors survive connection cleanup.
+
+Firmware 0.1.2 adds a live microphone level bar while Listening, signal/level
+metrics in USB diagnostics, and WebSocket close/transport error codes. It updates
+the client to 1.8.0, enables separate transmit locking and increases TCP windows
+to 16 KB. These transport changes are mitigations pending physical retesting,
+not proof that the upload failure is resolved. The server has separately completed
+generated-speech tests with both short and eight-second paced recordings. Actual
+speaker testing is deferred until the owner's correct speakers arrive.
+
+After the connection is confirmed stable, the next requested stage is smoother
+character animation and hands-free voice activation. These are not enabled by
+the network/microphone update.
 
 Server tests cover the PCM protocol, resampling across arbitrary packet cuts,
 input bounds, credential redaction, disconnected sessions and concurrency.

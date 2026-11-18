@@ -17,10 +17,12 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "ghost_config.h"
+#include "ghost_wifi_ui.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
+static atomic_int mic_level;
 static atomic_bool abort_turn, finish_turn, remote_done, disconnected;
 static ghost_config_t config;
 static esp_codec_dev_handle_t microphone, speaker;
@@ -28,10 +30,10 @@ static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
+static lv_obj_t *mic_meter,*mic_caption;
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
-static uint32_t setup_hold;
 
 static void status_message(const char *message)
 {
@@ -55,23 +57,18 @@ static lv_obj_t *shape(lv_obj_t *parent, int x, int y, int w, int h, uint32_t co
 
 static void user_tap(lv_event_t *event)
 {
-    if (state == SETUP) return;
+    if (state == SETUP || ghost_wifi_ui_visible()) return;
     int command = state == IDLE || state == ERROR_STATE ? 1 : state == LISTENING ? 2 : 3;
     xQueueSend(commands,&command,0);
 }
 
 static void setup_touch(lv_event_t *event)
 {
-    lv_event_code_t code=lv_event_get_code(event);
-    if (code == LV_EVENT_PRESSED) setup_hold=lv_tick_get();
-    if (code == LV_EVENT_LONG_PRESSED_REPEAT && lv_tick_elaps(setup_hold)>5000) {
-        abort_turn=true;
-        nvs_handle_t nvs;
-        if (nvs_open("ghost_room",NVS_READWRITE,&nvs) == ESP_OK) {
-            nvs_erase_key(nvs,"config"); nvs_commit(nvs); nvs_close(nvs);
-            esp_restart();
-        }
+    if(lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
+    if(state==CONNECTING || state==LISTENING || state==THINKING || state==SPEAKING) {
+        lv_label_set_text(status_label,"Finish or cancel the conversation before opening Wi-Fi settings.");return;
     }
+    ghost_wifi_ui_open();
 }
 
 static void animate(lv_timer_t *timer)
@@ -80,6 +77,9 @@ static void animate(lv_timer_t *timer)
     float t=esp_timer_get_time()/1000000.0f;
     lv_obj_set_y(avatar,95+(int)(sinf(t*1.5f)*7));
     int current=state;
+    lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
+    if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
+    else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
     lv_obj_set_height(mouth,current==SPEAKING ? 10+(int)(fabsf(sinf(t*7))*10) : 9);
     if (current==last) return;
     last=current;
@@ -105,6 +105,10 @@ static void build_ui(void)
     lv_obj_set_style_bg_color(setup,lv_color_hex(0x302943),0);
     lv_obj_add_event_cb(setup,setup_touch,LV_EVENT_ALL,NULL);
     lv_obj_t *setup_text=lv_label_create(setup);lv_label_set_text(setup_text,"Setup");lv_obj_center(setup_text);
+    mic_caption=lv_label_create(screen);lv_label_set_text(mic_caption,"Mic");lv_obj_set_pos(mic_caption,24,59);
+    mic_meter=lv_bar_create(screen);lv_obj_set_pos(mic_meter,64,65);lv_obj_set_size(mic_meter,180,8);
+    lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
+    lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
     avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
     lv_obj_set_size(avatar,280,245);lv_obj_set_pos(avatar,100,95);
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE);
@@ -151,6 +155,8 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
 {
     esp_websocket_event_data_t *data=event_data;
     if (event_id==WEBSOCKET_EVENT_DISCONNECTED || event_id==WEBSOCKET_EVENT_ERROR) {
+        ESP_LOGW("ghost_voice","Transport event=%ld close=%d handshake=%d errno=%d",(long)event_id,
+            data->close_status_code,data->error_handle.esp_ws_handshake_status_code,data->error_handle.esp_transport_sock_errno);
         disconnected=true; return;
     }
     if (event_id!=WEBSOCKET_EVENT_DATA) return;
@@ -236,6 +242,7 @@ static void voice_task(void *arg)
         if(state!=IDLE && state!=ERROR_STATE) continue;
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
+        mic_level=0;
         state=CONNECTING;
         snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice",config.server+7);
         snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
@@ -275,13 +282,24 @@ static void voice_task(void *arg)
                         fail("Microphone read failed. Restart Ghost.");
                     } else {
                         // ES7210's first physical microphone; avoid summing opposite-phase inputs.
-                        for(int i=0;i<320;i++) samples[i]=capture[i*2];
+                        int peak=0;int64_t energy=0;
+                        for(int i=0;i<320;i++) {
+                            samples[i]=capture[i*2];
+                            int value=samples[i];int magnitude=value<0?-value:value;
+                            if(magnitude>peak) peak=magnitude;
+                            energy+=(int64_t)value*value;
+                        }
+                        unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
+                        int meter=rms/50;if(meter>100) meter=100;
+                        mic_level=(mic_level*2+meter)/3;
                         if(esp_websocket_client_send_bin(socket_client,(char *)samples,sizeof(samples),pdMS_TO_TICKS(3000))!=(int)sizeof(samples))
                             fail("Audio upload failed. Check Wi-Fi and retry.");
                         frames++;
-                        if(frames==1 || frames%50==0) ESP_LOGW("ghost_voice",
-                            "Capture frames=%u elapsed_ms=%lld last_read_us=%lld",frames,
-                            (long long)((esp_timer_get_time()-record_started)/1000),(long long)read_us);
+                        if(frames==1 || frames%50==0) {
+                            char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
+                            ESP_LOGW("ghost_voice","Capture frames=%u elapsed_ms=%lld last_read_us=%lld peak=%d rms=%u wifi_rssi=%d",frames,
+                                (long long)((esp_timer_get_time()-record_started)/1000),(long long)read_us,peak,rms,rssi);
+                        }
                     }
                 }
             } else vTaskDelay(pdMS_TO_TICKS(10));
