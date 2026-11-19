@@ -36,3 +36,9 @@ jobs:
         with:
           name: ghost-waveshare-4b-application
           path: firmware-artifact/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-waveshare-4b-debug
+          path: |
+            firmware/waveshare-4b/build/ghost_room_4b.elf
+            firmware/waveshare-4b/build/ghost_room_4b.map

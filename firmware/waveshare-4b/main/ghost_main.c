@@ -28,6 +28,7 @@ static atomic_int state = SETUP;
 static atomic_int mic_level;
 static atomic_int speech_level;
 static atomic_bool auto_finish;
+static atomic_bool continuous_supported,remote_follow_up,follow_up;
 static atomic_int output_volume=70;
 static atomic_bool audio_ready;
 static atomic_bool abort_turn, finish_turn, remote_done, disconnected;
@@ -37,6 +38,7 @@ static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
+static lv_obj_t *end_button;
 static lv_obj_t *mic_meter,*mic_caption;
 static lv_obj_t *eyes[2],*irises[2],*drapes[2],*hem[4];
 static char error_text[160] = "Tap Ghost to try again";
@@ -100,6 +102,13 @@ static void user_tap(lv_event_t *event)
     xQueueSend(commands,&command,0);
 }
 
+static void end_tap(lv_event_t *event)
+{
+    int command=3;
+    if(state==CONNECTING || state==LISTENING || state==THINKING || state==SPEAKING)
+        xQueueSend(commands,&command,0);
+}
+
 static void setup_touch(lv_event_t *event)
 {
     if(lv_event_get_code(event)!=LV_EVENT_CLICKED) return;
@@ -144,11 +153,21 @@ static void animate(lv_timer_t *timer)
     last_wake=wake;
     last=current;
     const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
-        auto_finish?"Listening - pause when finished":"Listening - tap when finished",
+        follow_up?"Anything else? Listening...":auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
     if (current!=SETUP) lv_label_set_text(status_label,labels[current]);
+    bool active=current==CONNECTING || current==LISTENING || current==THINKING || current==SPEAKING;
+    if(active) {
+        lv_obj_remove_flag(end_button,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_width(talk_button,300);lv_obj_align(talk_button,LV_ALIGN_BOTTOM_LEFT,20,-14);
+    } else {
+        lv_obj_add_flag(end_button,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_width(talk_button,320);lv_obj_align(talk_button,LV_ALIGN_BOTTOM_MID,0,-14);
+    }
+    if(active && current!=LISTENING) lv_obj_add_state(talk_button,LV_STATE_DISABLED);
+    else lv_obj_remove_state(talk_button,LV_STATE_DISABLED);
     lv_label_set_text(talk_label,current==IDLE || current==ERROR_STATE ? "Tap to talk" :
-        current==LISTENING ? "Finish speaking" : "Cancel");
+        current==LISTENING ? "Send now" : "Please wait...");
     lv_obj_set_style_bg_color(talk_button,lv_color_hex(current==LISTENING?0x3c766c:0x65508c),0);
 }
 
@@ -201,6 +220,12 @@ static void build_ui(void)
     lv_obj_add_event_cb(talk_button,user_tap,LV_EVENT_CLICKED,NULL);
     talk_label=lv_label_create(talk_button);lv_obj_center(talk_label);
     lv_obj_set_style_text_font(talk_label,&lv_font_montserrat_20,0);
+    end_button=lv_button_create(screen);lv_obj_set_size(end_button,120,56);
+    lv_obj_align(end_button,LV_ALIGN_BOTTOM_RIGHT,-20,-14);
+    lv_obj_set_style_bg_color(end_button,lv_color_hex(0x493d68),0);
+    lv_obj_add_event_cb(end_button,end_tap,LV_EVENT_CLICKED,NULL);
+    lv_obj_t *end_label=lv_label_create(end_button);lv_label_set_text(end_label,"End");lv_obj_center(end_label);
+    lv_obj_add_flag(end_button,LV_OBJ_FLAG_HIDDEN);
     lv_timer_create(animate,33,NULL);
 }
 
@@ -256,12 +281,16 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
     cJSON *type=cJSON_GetObjectItemCaseSensitive(json,"type");
     if(cJSON_IsString(type)) {
         if(!strcmp(type->valuestring,"ready") && state==CONNECTING) {
-            ESP_LOGW("ghost_voice","Voice ready; sending 16 kHz mono PCM at 20 ms intervals");
+            continuous_supported=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json,"continuous"));
+            ESP_LOGW("ghost_voice","Voice ready; continuous=%d follow_up=%d",(int)continuous_supported,(int)follow_up);
             state=LISTENING;
         }
         else if(!strcmp(type->valuestring,"thinking")) state=THINKING;
         else if(!strcmp(type->valuestring,"speaking")) state=SPEAKING;
-        else if(!strcmp(type->valuestring,"done")) remote_done=true;
+        else if(!strcmp(type->valuestring,"done")) {
+            remote_follow_up=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json,"follow_up"));
+            remote_done=true;
+        }
         else if(!strcmp(type->valuestring,"error")) {
             const cJSON *message=cJSON_GetObjectItemCaseSensitive(json,"message");
             fail(cJSON_IsString(message)?message->valuestring:"Ghost voice could not connect. Check the server, then retry.");
@@ -354,9 +383,10 @@ static void voice_task(void *arg)
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
         mic_level=0;
+        continuous_supported=false;remote_follow_up=false;follow_up=false;
         auto_finish=wake_turn;
         state=CONNECTING;
-        snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice",config.server+7);
+        snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice?continuous=1",config.server+7);
         snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
         esp_websocket_client_config_t ws={.uri=uri,.headers=headers,.disable_auto_reconnect=true,
             .network_timeout_ms=12000,.buffer_size=4096,.task_stack=6144};
@@ -365,6 +395,7 @@ static void voice_task(void *arg)
         esp_websocket_register_events(socket_client,WEBSOCKET_EVENT_ANY,websocket_event,NULL);
         if(esp_websocket_client_start(socket_client)!=ESP_OK) fail("Could not open Ghost connection.");
         int64_t started=esp_timer_get_time(),record_started=0;
+        int64_t connecting_started=started;
         int64_t next_frame_at=0;
         unsigned frames=0;
         size_t buffered=0;
@@ -409,11 +440,14 @@ static void voice_task(void *arg)
                             energy+=(int64_t)value*value;
                         }
                         unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
-                        if(wake_turn) {
+                        if(auto_finish) {
                             int64_t now=esp_timer_get_time();
                             if(rms>fmaxf(120,noise_floor*2.5f)) last_speech=now;
-                            if((last_speech && now-last_speech>1300000) ||
-                               (!last_speech && now-record_started>6000000)) finish_turn=true;
+                            if(last_speech && now-last_speech>1300000) finish_turn=true;
+                            if(!last_speech && now-record_started>(follow_up?10000000:6000000)) {
+                                if(follow_up) {ESP_LOGW("ghost_voice","Conversation ended after quiet");abort_turn=true;}
+                                else finish_turn=true;
+                            }
                         }
                         // Perceptual speech meter: -50 dBFS is quiet, -18 dBFS is full.
                         float dbfs=20.0f*log10f(fmaxf((float)rms,1.0f)/32768.0f);
@@ -423,7 +457,7 @@ static void voice_task(void *arg)
                         mic_level=(mic_level*2+meter)/3;
                         frames++;
                         buffered+=320;
-                        if(buffered==1600) {upload_audio(samples,sizeof(samples),frames);buffered=0;}
+                        if(buffered==1600) {if(!abort_turn) upload_audio(samples,sizeof(samples),frames);buffered=0;}
                         if(frames==1 || frames%50==0) {
                             char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
                             ESP_LOGW("ghost_voice","Capture frames=%u elapsed_ms=%lld last_read_us=%lld peak=%d rms=%u wifi_rssi=%d",frames,
@@ -435,17 +469,42 @@ static void voice_task(void *arg)
             if(remote_done) {
                 // A byte ring item may still be inside the codec write call.
                 size_t free_space=xRingbufferGetCurFreeSize(playback);
-                if(free_space>=64000-64) {vTaskDelay(pdMS_TO_TICKS(150));break;}
+                if(free_space>=64000-64) {
+                    vTaskDelay(pdMS_TO_TICKS(150));
+                    if(!continuous_supported || !remote_follow_up || abort_turn) break;
+                    bsp_audio_poweramp_enable(false);speech_level=0;
+                    // Discard microphone DMA backlog/room echo before opening
+                    // the next activity, while continuing to honor End.
+                    for(int i=0;i<16 && !abort_turn;i++) {
+                        while(xQueueReceive(commands,&command,0)==pdTRUE) if(command==3) abort_turn=true;
+                        if(!abort_turn && esp_codec_dev_read(microphone,capture,sizeof(capture))!=ESP_OK)
+                            fail("Microphone read failed. Restart Ghost.");
+                    }
+                    if(abort_turn) break;
+                    record_started=0;last_speech=0;next_frame_at=0;frames=0;buffered=0;
+                    finish_turn=false;remote_done=false;remote_follow_up=false;
+                    follow_up=true;auto_finish=true;state=CONNECTING;connecting_started=esp_timer_get_time();
+                    static const char start[]="{\"type\":\"start\"}";
+                    if(esp_websocket_client_send_text(socket_client,start,sizeof(start)-1,pdMS_TO_TICKS(3000))!=(int)sizeof(start)-1)
+                        fail("Could not continue conversation. Tap to retry.");
+                    else ESP_LOGW("ghost_voice","Opening follow-up on the same voice session");
+                }
             }
             if(disconnected && !remote_done && !abort_turn) {fail("Connection ended. Check Ghost Server and retry.");break;}
-            if(esp_timer_get_time()-started>100000000 ||
-                (state==CONNECTING && esp_timer_get_time()-started>20000000)) {fail("Ghost timed out. Tap to retry.");break;}
+            if(esp_timer_get_time()-started>(continuous_supported?300000000:100000000) ||
+                (state==CONNECTING && esp_timer_get_time()-connecting_started>20000000)) {fail("Ghost timed out. Tap to retry.");break;}
         }
-        if(abort_turn) drain_playback();
+        if(abort_turn) {
+            if(state!=ERROR_STATE && esp_websocket_client_is_connected(socket_client)) {
+                static const char cancel[]="{\"type\":\"cancel\"}";
+                esp_websocket_client_send_text(socket_client,cancel,sizeof(cancel)-1,pdMS_TO_TICKS(1000));
+            }
+            drain_playback();
+        }
         esp_websocket_client_stop(socket_client);
         esp_websocket_client_destroy(socket_client);socket_client=NULL;
         bsp_audio_poweramp_enable(false);
-        speech_level=0;auto_finish=false;wake_after=esp_timer_get_time()+2500000;
+        speech_level=0;auto_finish=false;follow_up=false;wake_after=esp_timer_get_time()+2500000;
         memset(samples,0,sizeof(samples));
         memset(capture,0,sizeof(capture));
         if(state!=ERROR_STATE) state=IDLE;

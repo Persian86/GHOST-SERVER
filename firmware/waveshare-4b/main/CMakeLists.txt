@@ -11,9 +11,16 @@ foreach(model_file _MODEL_INFO_ mn7_index mn7_data vocab)
     configure_file("${sr_dir}/model/multinet_model/mn7_en/${model_file}"
                    "${ghost_models}/mn7_en/${model_file}" COPYONLY)
 endforeach()
+file(MAKE_DIRECTORY "${ghost_models}/fst")
+foreach(command_file commands_en.txt commands_cn.txt)
+    configure_file("${sr_dir}/model/multinet_model/fst/${command_file}"
+                   "${ghost_models}/fst/${command_file}" COPYONLY)
+endforeach()
 # Keep Espressif's redistribution notice inside the embedded model bundle.
 configure_file("${sr_dir}/LICENSE" "${ghost_models}/mn7_en/LICENSE" COPYONLY)
 execute_process(COMMAND "${PYTHON}" "${sr_dir}/model/pack_model.py"
     -m "${ghost_models}" -o "${CMAKE_CURRENT_BINARY_DIR}/ghost_wake.bin"
     COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/verify_wake_bundle.py"
+    "${CMAKE_CURRENT_BINARY_DIR}/ghost_wake.bin" COMMAND_ERROR_IS_FATAL ANY)
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/ghost_wake.bin" BINARY)

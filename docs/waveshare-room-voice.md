@@ -120,7 +120,7 @@ Detection pauses in Setup, during a turn and for 2.5 seconds after a turn.
 The microphone has one owning task, avoiding simultaneous codec reads.
 
 This uses Espressif ESP-SR 2.1.3's English MultiNet7 phrase recognition with a
-0.90 threshold and a single `hey ghost` command. It is **not a custom-trained
+single `hey ghost` command. It is **not a custom-trained
 WakeNet model** and is not claimed to match a dedicated wake-word detector's
 false-trigger performance. Test nearby speech/TV, different voices, distances,
 quiet requests and repeated replies. Tap-to-talk remains available if the model
@@ -137,6 +137,76 @@ attack/release smoothing rather than an unrelated sine wave. This is amplitude
 animation, not phoneme lip-sync. The hidden character stops redrawing in Setup.
 Actual frame rate, recognition latency/accuracy, echo rejection and peak memory
 usage require tests on the physical board alongside Wi-Fi audio uploads.
+
+Version 0.2.0 must not be installed: its physical test produced a startup
+LoadProhibited panic inside MultiNet7 model construction. The matching decoded
+trace passes through `sprintf` and `model_create` into `ghost_wake_init`.
+Version 0.2.1 includes the separate `fst` command-dictionary bundle that
+MultiNet7 requires in addition to `mn7_en`. Without `fst`, the constructor
+formats `%s/%s/vocab` using a NULL filesystem base path. The matching
+disassembly confirms this fallback; the omitted dictionary is also explicitly
+included by Espressif's standard `movemodel.py` packager. A build-time parser
+now requires the English model, vocabulary, command dictionary and license,
+and rejects invalid bounds/duplicate entries. Runtime also checks for `fst`
+before calling the constructor. No model partition is rewritten.
+
+The initializer now records a versioned NVS marker before entering third-party
+model setup and clears it after successful setup. If setup panics, the next
+boot skips that initializer and leaves tap-to-talk available; a changed
+initializer version can retry. This guards initialization failures, not every
+possible runtime crash. Hardware testing remains necessary after compilation.
+
+Version 0.2.1 started successfully on hardware but did not react to the owner's
+wake phrase at the original 0.90 threshold. Version 0.2.2 adds Setup → Wake
+sensitivity, saved on release. Initial sensitivity is 70/100, mapping to a
+0.31 threshold; the full slider maps 0..100 to 0.80..0.10. Higher sensitivity
+can cause false wakes and needs testing around TV/background speech. The voice
+task applies threshold changes before its next inference, avoiding concurrent
+model changes from the UI. Detection stays paused inside Setup.
+
+Idle diagnostics report aggregate frame count, maximum microphone RMS,
+maximum inference duration and free internal heap every five seconds. Candidate
+diagnostics report confidence/threshold only. No idle recordings, transcripts,
+or raw audio are logged or uploaded. These metrics distinguish insufficient
+microphone level, slow inference and overly strict thresholds during tuning.
+
+## Follow-up conversations (0.3.0)
+
+Firmware 0.3.0 requests `/api/v1/room-voice?continuous=1`. Updated Ghost Server
+acknowledges `continuous: true` in ready events and keeps the same Gemini Live
+session for follow-up questions, preserving that conversation's context. Other
+clients keep the original one-turn protocol. An older server does not send the
+capability flag, so new firmware safely falls back to one-turn operation.
+
+After a reply finishes playing, the amplifier is disabled and microphone DMA
+backlog is discarded before sending `{"type":"start"}` on the same connection.
+The next ready event opens a visible **Anything else? Listening...** window.
+Speak normally without another wake phrase. About 1.3 seconds of quiet after
+detected speech submits the question; ten seconds without detected speech ends
+the conversation without generating an extra reply. **End** closes the session
+at any active stage; **Send now** can submit a question manually.
+
+The microphone is not uploaded while Ghost speaks or after the conversation
+ends. Audio during each displayed listening window is sent to the server and
+voice provider, including silence until End/timeout. There is no acoustic
+barge-in or full echo cancellation in this prototype. Quiet-speech detection
+and the short playback-to-listening gap need physical testing.
+
+Each recording remains bounded to 20 seconds on the server (19 on firmware).
+Continuous sessions allow at most 12 completed turns or five minutes, with
+the existing device/session concurrency limits and access rechecks. Input byte
+limits and transcripts reset per turn; transcripts stay associated with the
+same authenticated device. Tools/audio are accepted from the provider only
+during the reply phase. Cancel/disconnect releases the provider and active slot.
+
+Deployment order: merge the server change and update/restart the NAS container,
+verify the continuous capability, then test the new firmware. Merely flashing
+0.3.0 cannot enable follow-ups against an older running server. Tests cover
+provider reuse, two questions in one session, transcript separation, per-turn
+limits, silent cancellation, turn caps, revocation and out-of-phase tools.
+
+Once follow-up conversations work on hardware, the next requested work is
+smoother motion and faster response/connection timing, measured on this board.
 
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.
