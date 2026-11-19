@@ -42,3 +42,4 @@ jobs:
           path: |
             firmware/waveshare-4b/build/ghost_room_4b.elf
             firmware/waveshare-4b/build/ghost_room_4b.map
+            firmware/waveshare-4b/sdkconfig
