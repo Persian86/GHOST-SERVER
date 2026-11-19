@@ -17,7 +17,7 @@ static void bounded(const ghost_motion_frame_t *f)
 
 int main(void)
 {
-    ghost_motion_t m;ghost_motion_frame_t f,previous;
+    ghost_motion_t m;ghost_motion_frame_t f,previous={0};
     ghost_motion_init(&m,123);int blink_frames=0,open_frames=0;
     float max_delta=0;
     for(int i=0;i<18000;i++) {
