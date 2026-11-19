@@ -1,4 +1,4 @@
-"""Bounded, tap-to-talk PCM transport for small room devices.
+"""Bounded PCM voice conversations for small room devices.
 
 Cloud credentials remain on the server. Device approval and household tool
 ceilings are the same as the existing phone/desktop session API.
@@ -16,6 +16,8 @@ from . import access, prompt, store, tools
 
 MAX_INPUT_SECONDS = 20
 MAX_SESSION_SECONDS = 100
+MAX_CONVERSATION_SECONDS = 300
+MAX_CONVERSATION_TURNS = 12
 _active: set[str] = set()
 
 
@@ -54,8 +56,8 @@ def policy(row):
     access.check_route(row["id"], "GET", "/api/v1/session")
 
 
-async def serve(ws, row, reauthorize, *, client_factory=None):
-    """One explicit recording and one reply; no background microphone session."""
+async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
+    """An explicit voice session, optionally retaining context for bounded follow-ups."""
     did = row["id"]
     if did in _active or len(_active) >= 4:
         await ws.close(code=4429, reason="voice session busy")
@@ -100,19 +102,25 @@ async def serve(ws, row, reauthorize, *, client_factory=None):
             input_audio_transcription={}, output_audio_transcription={},
             realtime_input_config={"automatic_activity_detection": {"disabled": True}},
         )
-        async with asyncio.timeout(MAX_SESSION_SECONDS):
+        async with asyncio.timeout(MAX_CONVERSATION_SECONDS if continuous else MAX_SESSION_SECONDS):
             async with client.aio.live.connect(model=model, config=cfg) as session:
                 await session.send_realtime_input(activity_start=types.ActivityStart())
-                await event("ready", input_rate=16000, output_rate=16000, max_seconds=MAX_INPUT_SECONDS)
-                stopped = asyncio.Event()
+                async def ready():
+                    extra = {"continuous": True} if continuous else {}
+                    await event("ready", input_rate=16000, output_rate=16000,
+                                max_seconds=MAX_INPUT_SECONDS, **extra)
+
+                await ready()
                 phase = "recording"
                 began = time.monotonic()
+                waiting_since = began
+                turns = 0
                 resampler = PCM16k()
                 heard, said = [], []
 
                 async def input_audio():
                     total = 0
-                    nonlocal phase
+                    nonlocal phase, began, turns
                     while True:
                         message = await asyncio.wait_for(ws.receive(), MAX_INPUT_SECONDS + 5 if phase == "recording" else 70)
                         current()
@@ -133,16 +141,23 @@ async def serve(ws, row, reauthorize, *, client_factory=None):
                                 if not total:
                                     raise ValueError("empty recording")
                                 phase = "reply"
-                                stopped.set()
+                                turns += 1
                                 await event("thinking")
                                 await session.send_realtime_input(activity_end=types.ActivityEnd())
                                 # Keep detecting disconnect/cancel while the reply is generated.
                             elif command.get("type") == "cancel":
                                 return
+                            elif continuous and command.get("type") == "start" and phase == "await_start":
+                                phase = "recording"
+                                began = time.monotonic()
+                                total = 0
+                                await session.send_realtime_input(activity_start=types.ActivityStart())
+                                await ready()
                             else:
                                 raise ValueError("unexpected control frame")
 
                 async def output_audio():
+                    nonlocal phase, waiting_since, resampler
                     speaking = False
                     output_bytes = 0
                     while True:
@@ -156,7 +171,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None):
                             if sum(map(len, heard)) + sum(map(len, said)) > 16000:
                                 raise ValueError("transcript limit exceeded")
                             if msg.tool_call:
-                                if not stopped.is_set():
+                                if phase != "reply":
                                     raise ValueError("premature tool call")
                                 if len(msg.tool_call.function_calls) > 8:
                                     raise ValueError("tool batch too large")
@@ -175,7 +190,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None):
                                         response={"result": result}))
                                 await session.send_tool_response(function_responses=responses)
                             if msg.data:
-                                if not stopped.is_set():
+                                if phase != "reply":
                                     raise ValueError("premature audio reply")
                                 audio = resampler.feed(msg.data)
                                 if audio:
@@ -194,15 +209,28 @@ async def serve(ws, row, reauthorize, *, client_factory=None):
                                 for role, parts in (("user", heard), ("assistant", said)):
                                     if parts:
                                         store.add_turn(did, role, "".join(parts))
-                                await event("done")
-                                return
+                                if not continuous or turns >= MAX_CONVERSATION_TURNS:
+                                    await event("done", **({"follow_up": False} if continuous else {}))
+                                    return
+                                # Wait for the device to finish playback and explicitly
+                                # start its next recording; keep this provider's context.
+                                phase = "await_start"
+                                waiting_since = time.monotonic()
+                                heard.clear(); said.clear()
+                                speaking = False
+                                output_bytes = 0
+                                resampler = PCM16k()
+                                await event("done", follow_up=True)
+                                break
 
                 async def watch_access():
                     while True:
                         await asyncio.sleep(1)
                         current()
-                        if not stopped.is_set() and time.monotonic() - began > MAX_INPUT_SECONDS + 2:
+                        if phase == "recording" and time.monotonic() - began > MAX_INPUT_SECONDS + 2:
                             raise TimeoutError("recording timed out")
+                        if phase == "await_start" and time.monotonic() - waiting_since > 70:
+                            raise TimeoutError("follow-up timed out")
 
                 tasks = [asyncio.create_task(fn()) for fn in (input_audio, output_audio, watch_access)]
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

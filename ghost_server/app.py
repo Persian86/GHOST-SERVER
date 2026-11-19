@@ -938,7 +938,7 @@ async def get_file(fid: str, request: Request, k: str = "", authorization: str |
 
 
 @app.websocket("/api/v1/room-voice")
-async def room_voice_ws(ws: WebSocket):
+async def room_voice_ws(ws: WebSocket, continuous: bool = False):
     from . import room_voice
     await ws.accept()
     if store.get("https_only") and ws.url.scheme != "wss":
@@ -951,7 +951,7 @@ async def room_voice_ws(ws: WebSocket):
     except (PermissionError, HTTPException):
         await ws.close(code=4403 if row else 4401, reason="pair and approve this device")
         return
-    await room_voice.serve(ws, row, lambda fresh: _check_device(fresh, "", None))
+    await room_voice.serve(ws, row, lambda fresh: _check_device(fresh, "", None), continuous=continuous)
 
 
 @app.websocket("/api/v1/agent")

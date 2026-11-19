@@ -183,3 +183,160 @@ def test_websocket_does_not_accept_a_device_key_in_the_url(monkeypatch):
         with TestClient(app).websocket_connect("/api/v1/room-voice?key=private-device-key") as ws:
             ws.receive_json()
     assert seen==[""] and err.value.code==4401
+
+
+class ConversationCloud(Cloud):
+    def __init__(self, socket):
+        super().__init__(socket)
+        self.ends = asyncio.Queue()
+        self.number = 0
+
+    async def send_realtime_input(self, **kwargs):
+        self.input.append(kwargs)
+        if "activity_start" in kwargs:
+            await self.socket.queue.put({"type": "websocket.receive", "bytes": bytes(640)})
+            await self.socket.queue.put({"type": "websocket.receive", "text": '{"type":"stop"}'})
+        if "activity_end" in kwargs:
+            self.number += 1
+            await self.ends.put(self.number)
+
+    async def receive(self):
+        number = await self.ends.get()
+        yield NS(data=bytes(960), tool_call=None, server_content=None)
+        yield NS(data=None, tool_call=None, server_content=NS(
+            input_transcription=NS(text=f"Question {number}"),
+            output_transcription=NS(text=f"Answer {number}"), turn_complete=True))
+
+
+def test_follow_up_reuses_provider_session_and_separates_transcripts_and_limits(monkeypatch):
+    row, _ = setup(monkeypatch)
+    turns, totals = [], []
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: turns.append(args))
+    check = voice.check_pcm
+    def checked(data, total, elapsed):
+        totals.append(total)
+        return check(data, total, elapsed)
+    monkeypatch.setattr(voice, "check_pcm", checked)
+    async def run():
+        ws = Socket()
+        original_send = ws.send_json
+        completed = 0
+        async def send(message):
+            nonlocal completed
+            await original_send(message)
+            if message["type"] == "done":
+                completed += 1
+                await ws.queue.put({"type": "websocket.receive", "text": json.dumps(
+                    {"type": "start" if completed == 1 else "cancel"})})
+        ws.send_json = send
+        cloud = ConversationCloud(ws)
+        creations = []
+        def factory(**kwargs): creations.append(1); return cloud
+        await voice.serve(ws, row, lambda row: None, client_factory=factory, continuous=True)
+        events = [m for m in ws.messages if isinstance(m, dict)]
+        assert len(creations) == 1
+        assert [m["type"] for m in events] == ["ready", "thinking", "speaking", "done"] * 2
+        assert all(m["continuous"] for m in events if m["type"] == "ready")
+        assert sum("activity_start" in m for m in cloud.input) == 2
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+    assert totals == [0, 0]
+    assert turns == [("room", "user", "Question 1"), ("room", "assistant", "Answer 1"),
+                     ("room", "user", "Question 2"), ("room", "assistant", "Answer 2")]
+
+
+def test_follow_up_rechecks_revocation_before_starting_another_turn(monkeypatch):
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+    async def run():
+        ws = Socket()
+        original_send = ws.send_json
+        async def send(message):
+            await original_send(message)
+            if message["type"] == "done":
+                row["revoked"] = 1
+                await ws.queue.put({"type": "websocket.receive", "text": '{"type":"start"}'})
+        ws.send_json = send
+        cloud = ConversationCloud(ws)
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        assert sum("activity_start" in m for m in cloud.input) == 1
+        assert any(c.get("code") == 4403 for c in ws.closed)
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_conversation_turn_cap_ends_without_another_recording(monkeypatch):
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice, "MAX_CONVERSATION_TURNS", 1)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+    async def run():
+        ws = Socket(); cloud = ConversationCloud(ws)
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        done = [m for m in ws.messages if isinstance(m, dict) and m["type"] == "done"]
+        assert done == [{"type": "done", "follow_up": False}]
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_legacy_session_rejects_follow_up_start_control(monkeypatch):
+    row, _ = setup(monkeypatch)
+    async def run():
+        ws = Socket(); cloud = Cloud(ws)
+        async def send(**kwargs):
+            await ws.queue.put({"type": "websocket.receive", "text": '{"type":"start"}'})
+        cloud.send_realtime_input = send
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud)
+        assert any(c.get("code") == 4400 for c in ws.closed)
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+
+
+def test_cancel_of_silent_follow_up_does_not_generate_another_reply(monkeypatch):
+    row, _ = setup(monkeypatch)
+    saved = []
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: saved.append(args))
+    async def run():
+        ws = Socket(); cloud = ConversationCloud(ws)
+        original_send = ws.send_json
+        original_input = cloud.send_realtime_input
+        async def send(message):
+            await original_send(message)
+            if message["type"] == "done":
+                await ws.queue.put({"type": "websocket.receive", "text": '{"type":"start"}'})
+        async def provider_input(**kwargs):
+            if "activity_start" in kwargs and cloud.number == 1:
+                cloud.input.append(kwargs)
+                await ws.queue.put({"type": "websocket.receive", "text": '{"type":"cancel"}'})
+            else:
+                await original_input(**kwargs)
+        ws.send_json = send; cloud.send_realtime_input = provider_input
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        assert cloud.number == 1
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())
+    assert len(saved) == 2
+
+
+def test_provider_cannot_execute_tools_between_follow_up_questions(monkeypatch):
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+    monkeypatch.setattr(voice.tools, "declarations", lambda *args: [{"name": "weather", "parameters": {"type": "OBJECT"}}])
+    monkeypatch.setattr(voice.access, "tool_allowed", lambda *args: True)
+    monkeypatch.setattr(voice.tools, "run", lambda *args: pytest.fail("tool ran without another question"))
+    async def run():
+        ws = Socket(); cloud = ConversationCloud(ws)
+        original_receive = cloud.receive
+        received = 0
+        async def receive():
+            nonlocal received
+            received += 1
+            if received == 1:
+                async for message in original_receive(): yield message
+            else:
+                yield NS(data=None, server_content=None,
+                         tool_call=NS(function_calls=[NS(id="1", name="weather", args={})]))
+        cloud.receive = receive
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        assert any(c.get("code") == 4400 for c in ws.closed)
+        assert cloud.closed and "room" not in voice._active
+    asyncio.run(run())

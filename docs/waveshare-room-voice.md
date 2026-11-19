@@ -170,6 +170,44 @@ diagnostics report confidence/threshold only. No idle recordings, transcripts,
 or raw audio are logged or uploaded. These metrics distinguish insufficient
 microphone level, slow inference and overly strict thresholds during tuning.
 
+## Follow-up conversations (0.3.0)
+
+Firmware 0.3.0 requests `/api/v1/room-voice?continuous=1`. Updated Ghost Server
+acknowledges `continuous: true` in ready events and keeps the same Gemini Live
+session for follow-up questions, preserving that conversation's context. Other
+clients keep the original one-turn protocol. An older server does not send the
+capability flag, so new firmware safely falls back to one-turn operation.
+
+After a reply finishes playing, the amplifier is disabled and microphone DMA
+backlog is discarded before sending `{"type":"start"}` on the same connection.
+The next ready event opens a visible **Anything else? Listening...** window.
+Speak normally without another wake phrase. About 1.3 seconds of quiet after
+detected speech submits the question; ten seconds without detected speech ends
+the conversation without generating an extra reply. **End** closes the session
+at any active stage; **Send now** can submit a question manually.
+
+The microphone is not uploaded while Ghost speaks or after the conversation
+ends. Audio during each displayed listening window is sent to the server and
+voice provider, including silence until End/timeout. There is no acoustic
+barge-in or full echo cancellation in this prototype. Quiet-speech detection
+and the short playback-to-listening gap need physical testing.
+
+Each recording remains bounded to 20 seconds on the server (19 on firmware).
+Continuous sessions allow at most 12 completed turns or five minutes, with
+the existing device/session concurrency limits and access rechecks. Input byte
+limits and transcripts reset per turn; transcripts stay associated with the
+same authenticated device. Tools/audio are accepted from the provider only
+during the reply phase. Cancel/disconnect releases the provider and active slot.
+
+Deployment order: merge the server change and update/restart the NAS container,
+verify the continuous capability, then test the new firmware. Merely flashing
+0.3.0 cannot enable follow-ups against an older running server. Tests cover
+provider reuse, two questions in one session, transcript separation, per-turn
+limits, silent cancellation, turn caps, revocation and out-of-phase tools.
+
+Once follow-up conversations work on hardware, the next requested work is
+smoother motion and faster response/connection timing, measured on this board.
+
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.
 Microphone input gain is 30 dB (up from 24 dB). The level bar uses a smoothed
