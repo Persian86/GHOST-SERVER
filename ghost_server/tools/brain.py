@@ -10,12 +10,19 @@ _SYSTEM = ("You are the deep-reasoning core of Ghost, a household voice assistan
 
 
 def claude(model: str | None = None, fast: bool = False):
+    """Ghost's brain: Claude, with the local model on the AI PC as the offline
+    backup (see local_llm.py). Same complete() contract either way."""
     from ..claude import AnthropicLLM
+    from ..local_llm import ResilientLLM, local_from_settings
     key = store.get("anthropic_api_key")
-    if not key:
+    mode = store.get("local_llm_mode") or "fallback"
+    local = local_from_settings(store)
+    if not key and local is None:
         raise RuntimeError("Claude isn't set up — add the Anthropic key on the Ghost Server admin page")
-    return AnthropicLLM({"api_key": key, "routing": "",
-                         "model": model or (store.get("claude_fast_model") if fast else store.get("claude_model"))})
+    primary = AnthropicLLM({"api_key": key, "routing": "",
+                            "model": model or (store.get("claude_fast_model") if fast else store.get("claude_model"))}) \
+        if key else None
+    return ResilientLLM(primary, local, mode)
 
 
 @tool("think_deeply", """Send a hard question to Ghost's deep-reasoning brain (Claude) on the home server.
