@@ -21,6 +21,7 @@
 #include "ghost_wifi_ui.h"
 #include "ghost_audio.h"
 #include "ghost_wake.h"
+#include "ghost_motion.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
@@ -41,6 +42,8 @@ static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static lv_obj_t *end_button;
 static lv_obj_t *mic_meter,*mic_caption;
 static lv_obj_t *eyes[2],*irises[2],*drapes[2],*hem[4];
+static lv_obj_t *dome,*skirt,*brows[2],*tongue,*shadow;
+static ghost_motion_t motion;
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
@@ -122,36 +125,54 @@ static void animate(lv_timer_t *timer)
 {
     static int last=-1;
     static int last_wake=-1;
-    static float mouth_open;
-    static int64_t next_blink,blink_start;
-    if(ghost_wifi_ui_visible()) return; // Hidden avatar need not redraw behind Setup.
-    float t=esp_timer_get_time()/1000000.0f;
+    static int64_t previous_frame,report_at;
+    static unsigned frame_count,slow_frames,max_frame_ms;
+    if(ghost_wifi_ui_visible()) {previous_frame=report_at=0;frame_count=slow_frames=max_frame_ms=0;return;}
     int64_t now=esp_timer_get_time();
-    if(!next_blink) next_blink=now+3000000;
-    if(now>=next_blink) {blink_start=now;next_blink=now+3000000+esp_random()%4000000;}
-    float blink=blink_start && now-blink_start<200000?sinf((now-blink_start)*3.141593f/200000.0f):0;
-    lv_obj_set_y(avatar,95+(int)(sinf(t*1.15f)*7+sinf(t*0.47f)*2));
-    lv_obj_set_x(avatar,100+(int)(sinf(t*0.55f)*4));
-    int current=state;
-    for(int side=0;side<2;side++) {
-        lv_obj_set_y(drapes[side],83+(int)(sinf(t*1.3f+side*1.6f)*4));
-        lv_obj_set_style_transform_pivot_y(eyes[side],24,0);
-        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)(blink*235),0);
-        lv_obj_set_x(irises[side],5+(current==THINKING?-3:(int)(sinf(t*0.35f)*2)));
-        lv_obj_set_y(irises[side],3+(current==THINKING?-2:0));
+    unsigned elapsed=previous_frame?(unsigned)((now-previous_frame)/1000):33;
+    previous_frame=now;frame_count++;
+    if(elapsed>max_frame_ms) max_frame_ms=elapsed;
+    if(elapsed>80) slow_frames++;
+    if(!report_at) report_at=now;
+    if(now-report_at>=5000000) {
+        ESP_LOGW("ghost_motion","Frames=%u slow_over_80ms=%u max_interval_ms=%u",frame_count,slow_frames,max_frame_ms);
+        report_at=now;frame_count=slow_frames=max_frame_ms=0;
     }
-    for(int i=0;i<4;i++) lv_obj_set_y(hem[i],179+(int)(sinf(t*1.4f+i*0.9f)*3));
+    int current=state;
+    ghost_pose_t pose=current==LISTENING?GHOST_ATTENTIVE:current==THINKING?GHOST_PONDER:
+        current==SPEAKING?GHOST_TALK:current==CONNECTING?GHOST_WAIT:
+        current==ERROR_STATE?GHOST_CONCERNED:GHOST_REST;
+    ghost_motion_frame_t f;
+    ghost_motion_step(&motion,elapsed/1000.0f,pose,speech_level/100.0f,&f);
+    lv_obj_set_pos(avatar,100+(int)lroundf(f.x),82+(int)lroundf(f.y));
+    int breath=(int)lroundf(f.breath);
+    lv_obj_set_pos(dome,55-breath/2,0);lv_obj_set_width(dome,170+breath);
+    lv_obj_set_pos(skirt,51-breath/2,110);lv_obj_set_width(skirt,178+breath);
+    int shadow_width=142+(int)lroundf(f.y*1.3f);
+    lv_obj_set_size(shadow,shadow_width,9);lv_obj_set_x(shadow,240-shadow_width/2);
+    for(int side=0;side<2;side++) {
+        lv_obj_set_pos(drapes[side],(side?180:25)+(int)lroundf(f.trail),83+(int)lroundf(f.drape[side]));
+        lv_obj_set_height(drapes[side],97+(int)lroundf(f.drape[side]*0.4f));
+        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)lroundf(f.blink*235),0);
+        lv_obj_set_pos(irises[side],5+(int)lroundf(f.gaze_x),3+(int)lroundf(f.gaze_y));
+        lv_obj_set_y(brows[side],45+(int)lroundf(f.brow)+(side?(int)lroundf(-f.gaze_y*0.5f):0));
+    }
+    for(int i=0;i<4;i++) {
+        lv_obj_set_pos(hem[i],55+i*43+(int)lroundf(f.trail*0.65f),179+(int)lroundf(f.hem[i]));
+        lv_obj_set_height(hem[i],56+(i%2)*7+(int)lroundf(f.hem[i]*0.35f));
+    }
     lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
-    if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
-    else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
-    float target=current==SPEAKING?speech_level/100.0f:0;
-    mouth_open+=(target-mouth_open)*(target>mouth_open?0.45f:0.22f);
-    lv_obj_set_height(mouth,9+(int)(mouth_open*19));
-    lv_obj_set_width(mouth,30-(int)(mouth_open*6));
+    int mouth_width=30-(int)lroundf(f.mouth*6),mouth_height=7+(int)lroundf(f.mouth*23);
+    lv_obj_set_size(mouth,mouth_width,mouth_height);lv_obj_set_x(mouth,140-mouth_width/2);
+    lv_obj_set_size(tongue,mouth_width-10,5+(int)lroundf(f.mouth*3));
+    lv_obj_align(tongue,LV_ALIGN_BOTTOM_MID,0,0);
+    lv_obj_set_style_bg_opa(tongue,f.mouth>0.2f?LV_OPA_COVER:LV_OPA_TRANSP,0);
     int wake=ghost_wake_enabled();
     if (current==last && wake==last_wake) return;
     last_wake=wake;
     last=current;
+    if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
+    else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
     const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
         follow_up?"Anything else? Listening...":auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
@@ -189,28 +210,35 @@ static void build_ui(void)
     mic_meter=lv_bar_create(screen);lv_obj_set_pos(mic_meter,64,65);lv_obj_set_size(mic_meter,180,8);
     lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
     lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
+    ghost_motion_init(&motion,esp_random());
+    shadow=shape(screen,169,329,142,9,0x0d0b17,LV_RADIUS_CIRCLE);
+    lv_obj_set_style_bg_opa(shadow,LV_OPA_40,0);
     avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
-    lv_obj_set_size(avatar,280,245);lv_obj_set_pos(avatar,100,95);
+    lv_obj_set_size(avatar,280,255);lv_obj_set_pos(avatar,100,82);
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE);
     // Native LVGL silhouette: dome, soft drapes, scalloped hem and glossy eyes.
-    shape(avatar,55,0,170,220,0xf2f0ff,84);
+    dome=shape(avatar,55,0,170,220,0xf2f0ff,84);
     drapes[0]=shape(avatar,25,83,75,97,0xddd9ee,38);
     drapes[1]=shape(avatar,180,83,75,97,0xddd9ee,38);
-    shape(avatar,51,110,178,106,0xf2f0ff,30);
+    skirt=shape(avatar,51,110,178,106,0xf2f0ff,30);
     for(int i=0;i<4;i++) hem[i]=shape(avatar,55+i*43,179,42,56+(i%2)*7,0xf2f0ff,22);
     for(int side=0;side<2;side++) {
         int x=91+side*68;
         eyes[side]=shape(avatar,x-5,56,40,48,0xffffff,24);
+        lv_obj_set_style_transform_pivot_y(eyes[side],24,0);
         irises[side]=shape(eyes[side],5,3,30,40,0x4c9edc,20);
         shape(irises[side],5,3,20,30,0x13223c,15);
         shape(irises[side],8,6,8,10,0xffffff,5);
         shape(irises[side],20,24,4,5,0xc3f3ff,3);
+        brows[side]=shape(avatar,x+3,45,23,4,0xb4aecb,3);
     }
     shape(avatar,73,108,24,10,0xf5adc7,8);
     shape(avatar,185,108,24,10,0xf5adc7,8);
     mouth=shape(avatar,126,119,30,9,0x342338,14);
+    tongue=shape(mouth,5,5,20,5,0xf29ab8,8);
+    lv_obj_set_style_bg_opa(tongue,LV_OPA_TRANSP,0);
     status_label=lv_label_create(screen);
-    lv_obj_set_width(status_label,440);lv_obj_set_height(status_label,76);
+    lv_obj_set_width(status_label,440);lv_obj_set_height(status_label,56);
     lv_obj_set_style_text_align(status_label,LV_TEXT_ALIGN_CENTER,0);
     lv_obj_set_style_text_font(status_label,&lv_font_montserrat_20,0);
     lv_obj_align(status_label,LV_ALIGN_BOTTOM_MID,0,-76);
