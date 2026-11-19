@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -40,8 +41,35 @@ from .hub import AgentConn, hub
 from contextlib import asynccontextmanager
 
 
+_SECRET_PARAM = re.compile(r"([?&](?:key|k)=)[^&\s\"']+")
+
+
+class _RedactKeys(logging.Filter):
+    """Device keys can arrive in the address (/api/v1/agent?key=…, /files/x?k=…). The access
+    log writes addresses out in full, which would put live keys in `docker logs`. Masks them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and record.args:
+            record.args = tuple(_SECRET_PARAM.sub(r"\1***", a) if isinstance(a, str) else a
+                                for a in record.args)
+        if isinstance(record.msg, str) and "=" in record.msg:
+            record.msg = _SECRET_PARAM.sub(r"\1***", record.msg)
+        return True
+
+
+def _install_log_redaction() -> None:
+    for name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, _RedactKeys) for f in lg.filters):
+            lg.addFilter(_RedactKeys())
+
+
+_install_log_redaction()
+
+
 @asynccontextmanager
 async def _lifespan(_app):
+    _install_log_redaction()            # again, after uvicorn has set its logging up
     if store._db_path is None:          # tests (and embedders) may have opened another database
         store.init()
     tools.load()
@@ -615,10 +643,12 @@ async def photos_list(dev: dict = Depends(device_auth)):
 
 
 @app.get("/photos/{n}")
-async def photo(n: int, k: str = "", w: int = 1600, authorization: str | None = Header(None)):
-    if store.device_by_key(_key_from(authorization, k)) is None:
+async def photo(n: int, request: Request, k: str = "", w: int = 1600, authorization: str | None = Header(None)):
+    row = store.device_by_key(_key_from(authorization, k))
+    if row is None:
         raise HTTPException(401, "Unknown device key")
-    try: access.check_route(store.device_by_key(_key_from(authorization,k))["id"],"GET","/photos/")
+    _check_device(row, _ip(request))          # a device still waiting for approval gets nothing
+    try: access.check_route(row["id"],"GET","/photos/")
     except PermissionError as exc: raise HTTPException(403,str(exc))
     data = await asyncio.to_thread(photos.image, n, w)
     if data is None:
@@ -888,7 +918,7 @@ async def cam_snap(tok: str, i: int):
     try:
         jpg = await asyncio.to_thread(cameras.snapshot, cams[i])
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"camera unavailable: {e}")
+        raise HTTPException(502, f"camera unavailable: {cameras.redact(str(e))}")
     return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
@@ -900,11 +930,21 @@ async def upload_file(request: Request, name: str = "file", dev: dict = Depends(
     """A device shares a file (a photo from the phone…). Raw body. Returns its /files/<id> path, which any
     paired device can download with its own key — e.g. send it to the PC with device_action receive_file."""
     import re
-    data = await request.body()
+    try:
+        if int(request.headers.get("content-length") or 0) > MAX_UPLOAD:
+            raise HTTPException(413, "file too big (40 MB max)")
+    except ValueError:
+        raise HTTPException(400, "bad Content-Length")
+    # Read it in pieces and stop as soon as it's too big, so a huge upload can't fill the memory.
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_UPLOAD:
+            raise HTTPException(413, "file too big (40 MB max)")
+        chunks.append(chunk)
+    data = b"".join(chunks)
     if not data:
         raise HTTPException(400, "empty file")
-    if len(data) > MAX_UPLOAD:
-        raise HTTPException(413, "file too big (40 MB max)")
     safe = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(name).name)[:120] or "file"
     folder = config.FILES_DIR / time.strftime("%Y-%m")
     folder.mkdir(parents=True, exist_ok=True)
@@ -926,6 +966,7 @@ async def devices_ep(dev: dict = Depends(device_auth)):
 async def get_file(fid: str, request: Request, k: str = "", authorization: str | None = Header(None)):
     device = store.device_by_key(_key_from(authorization,k))
     if device is not None:
+        _check_device(device, _ip(request))   # a device still waiting for approval gets nothing
         try: access.check_route(device["id"],"GET","/files/")
         except PermissionError as exc: raise HTTPException(403,str(exc))
     ok = device is not None

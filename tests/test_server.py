@@ -966,11 +966,43 @@ def test_device_approval_and_key_rotation(server, admin, tmp_path):
                     return e.rcvd.code if e.rcvd else None
         assert asyncio.run(ws_code()) == 4403
 
+        # A waiting device can't pull photos or files either (it used to get both).
+        r = httpx.get(server + "/photos/0", headers=hdr)
+        assert r.status_code == 403 and "approval" in r.json()["detail"]
+        r = httpx.get(server + "/files/anything?k=" + p["device_key"])
+        assert r.status_code == 403 and "approval" in r.json()["detail"]
+
         sec = admin.get("/admin/api/security").json()
         assert any(d["id"] == p["device_id"] for d in sec["pending"])
         assert admin.post(f"/admin/api/devices/{p['device_id']}", json={"approve": True}).status_code == 200
         s = httpx.get(server + "/api/v1/session", headers=hdr).json()
         assert s["key"]["rotate_days"] == 30 and s["key"]["age_days"] < 1
+
+        # Once approved, the same requests get past the approval check (no such photo/file here).
+        assert httpx.get(server + "/photos/0", headers=hdr).status_code != 403
+        assert httpx.get(server + "/files/anything", headers=hdr).status_code == 404
+
+        # Uploads: too big is refused — from the declared size, and while streaming.
+        from ghost_server import app as app_module
+        import socket as _socket
+        host, port = server.split("//")[1].split(":")
+        with _socket.create_connection((host, int(port)), timeout=5) as sk:   # claims 40 MB+, sends 1 byte
+            sk.sendall((f"POST /api/v1/files?name=big.bin HTTP/1.1\r\nHost: x\r\n{list(hdr)[0]}: {hdr['Authorization']}\r\n"
+                        f"Content-Length: {app_module.MAX_UPLOAD + 1}\r\n\r\nx").encode())
+            assert b" 413 " in sk.recv(200).split(b"\r\n")[0] + b" "
+        old_max = app_module.MAX_UPLOAD
+        app_module.MAX_UPLOAD = 1000
+        try:
+            def gen():
+                for _ in range(10):
+                    yield b"y" * 500
+            r = httpx.post(server + "/api/v1/files?name=big.bin", headers=hdr, content=gen())
+            assert r.status_code == 413
+            r = httpx.post(server + "/api/v1/files?name=ok.txt", headers=hdr, content=b"hello")
+            assert r.status_code == 200 and r.json()["bytes"] == 5
+            assert httpx.get(server + r.json()["path"], headers=hdr).content == b"hello"
+        finally:
+            app_module.MAX_UPLOAD = old_max
         assert httpx.get(server + "/api/v1/key", headers=hdr).json()["rotate_days"] == 30
 
         # renew the key: new one works, old one still works for a grace period

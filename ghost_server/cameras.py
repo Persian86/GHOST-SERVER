@@ -165,6 +165,15 @@ async def mjpeg(cam: Cam):
     return "multipart/x-mixed-replace;boundary=ghostframe", gen()
 
 
+_CREDS = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s'\"]+@")
+
+
+def redact(text: str) -> str:
+    """rtsp://admin:hunter2@10.0.0.5/... → rtsp://***@10.0.0.5/... — for anything that might be
+    shown or logged (errors from ffmpeg / subprocess repeat the full command line)."""
+    return _CREDS.sub(r"\1***@", text or "")
+
+
 def snapshot(cam: Cam, timeout: float = 15) -> bytes:
     """One JPEG from the camera, now."""
     if cam.source == "ha":
@@ -178,7 +187,11 @@ def snapshot(cam: Cam, timeout: float = 15) -> bytes:
     if cam.url.lower().startswith("rtsp"):
         args += ["-rtsp_transport", "tcp"]
     args += ["-i", cam.url, "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "4", "-f", "image2", "pipe:1"]
-    out = subprocess.run(args, capture_output=True, timeout=timeout).stdout
+    try:
+        out = subprocess.run(args, capture_output=True, timeout=timeout).stdout
+    except subprocess.TimeoutExpired:
+        # Its message repeats the whole command — camera address, password and all.
+        raise RuntimeError(f"the camera didn't answer within {int(timeout)} seconds") from None
     if not out:
         raise RuntimeError("the camera didn't send a picture")
     return out

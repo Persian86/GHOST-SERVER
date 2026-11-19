@@ -100,6 +100,7 @@ def run(name: str, args: dict | None, ctx: Ctx) -> str:
         return out if isinstance(out, str) else str(out)
     except Exception as e:
         traceback.print_exc()
-        return f"The {name} tool failed: {type(e).__name__}: {e}"
+        from ..cameras import redact      # an error can repeat a camera address with its password
+        return f"The {name} tool failed: {type(e).__name__}: {redact(str(e))}"
 
 
