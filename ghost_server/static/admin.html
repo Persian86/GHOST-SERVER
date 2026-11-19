@@ -403,6 +403,18 @@
           <label>New password (8+ characters)</label><input id="pwNew" type="password" autocomplete="new-password">
           <div class="row" style="margin-top:10px"><button class="b" onclick="changePw()">Change password</button></div>
           <div class="status" id="pwStatus"></div></div>
+        <div class="card"><h3>Backup &amp; transfer</h3>
+          <div class="muted">Every setting and key on this server — Claude, Gemini, Home Assistant, Marquee, calendars, cameras, local AI, themes, Do Not Disturb — in one file locked with a password you choose. Import it on another Ghost Server (a new PC, a rebuilt container, a newer version) and nothing needs retyping. Your admin password and two-step login are never in the file: each server keeps its own. Devices pair with the new server as usual.</div>
+          <label>Choose a backup password (8+ characters — you'll need it to import)</label>
+          <input id="bkPw" type="password" autocomplete="new-password">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="backupExport()">Download backup</button></div>
+          <hr>
+          <label>Restore from a backup file</label>
+          <input id="bkFile" type="file" accept=".json,application/json">
+          <label>That backup's password</label>
+          <input id="bkPw2" type="password" autocomplete="off">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="backupImport()">Restore settings</button></div>
+          <div class="status" id="bkStatus" role="status"></div></div>
       </div>
       <h2>Security log</h2><div class="card"><table id="secLog"></table></div>
     </section>
@@ -635,6 +647,43 @@ async function newBackup() {
   const b = askPwCode(); if (!b) return;
   try { shownCodes = (await api("/admin/api/2fa/backup-codes", {method: "POST", body: JSON.stringify(b)})).backup_codes; drawSecurity(); }
   catch (e) { secMsg(e.message); }
+}
+function bkMsg(t, ok) { $("#bkStatus").innerHTML = t ? `<span class="${ok?"ok":"bad"}">${esc(t)}</span>` : ""; }
+function askAdmin() {
+  const password = prompt("Admin password (the backup holds every key, so it's needed again)"); if (!password) return null;
+  const code = prompt("6-digit code from your authenticator app — leave empty if two-step login is off") || "";
+  return {password, code};
+}
+async function backupExport() {
+  const backup_password = $("#bkPw").value;
+  if (backup_password.length < 8) return bkMsg("Choose a backup password of at least 8 characters.");
+  if (dirty && !confirm("Some settings aren't saved yet — the backup will hold the saved versions. Continue?")) return;
+  const b = askAdmin(); if (!b) return;
+  try {
+    const r = await api("/admin/api/backup/export", {method: "POST", body: JSON.stringify({...b, backup_password})});
+    const url = URL.createObjectURL(new Blob([r.content], {type: "application/json"}));
+    const a = document.createElement("a"); a.href = url; a.download = r.filename;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+    $("#bkPw").value = "";
+    bkMsg(`Saved ${r.count} settings to ${r.filename}. Keep it somewhere safe and remember the password — without it the file can't be opened.`, true);
+  } catch (e) { bkMsg(e.message); }
+}
+async function backupImport() {
+  const f = $("#bkFile").files[0];
+  if (!f) return bkMsg("Pick the backup file first.");
+  const backup_password = $("#bkPw2").value;
+  if (!backup_password) return bkMsg("Enter the password that backup was saved with.");
+  if (!confirm("Replace this server's settings and keys with the ones in the backup?\n\nYour admin password and two-step login stay as they are.")) return;
+  const b = askAdmin(); if (!b) return;
+  try {
+    const file = await f.text();
+    const r = await api("/admin/api/backup/import", {method: "POST", body: JSON.stringify({...b, backup_password, file})});
+    data.settings = r.settings; fillForm();
+    $("#bkPw2").value = ""; $("#bkFile").value = "";
+    bkMsg(`Restored ${r.restored} settings (${r.changed} changed).` +
+          (r.skipped.length ? ` Skipped ${r.skipped.length} this version doesn't use: ${r.skipped.join(", ")}.` : "") +
+          " Press Test on Claude, Home Assistant and Marquee to check the addresses still fit this server.", true);
+  } catch (e) { bkMsg(e.message); }
 }
 async function signOutOthers() { const r = await api("/admin/api/sessions/others", {method: "POST"}); drawSecurity(); }
 async function endSess(id) { await api(`/admin/api/sessions/${id}/end`, {method: "POST"}); drawSecurity(); }
