@@ -111,6 +111,11 @@ DEFAULTS: dict[str, Any] = {
     "anthropic_api_key": "",
     "claude_model": "claude-sonnet-5-5",
     "claude_fast_model": "claude-haiku-5-5",
+    # Offline backup brain (local_llm.py): Ollama on the AI PC answers when Claude can't.
+    "local_llm_mode": "fallback",          # off | fallback | only
+    "local_llm_url": "http://127.0.0.1:11434",
+    "local_llm_model": "qwen3.5:9b",
+    "local_llm_think": False,              # let the local model reason first (slower)
     "gemini_api_key": "",
     "gemini_live_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Fenrir",

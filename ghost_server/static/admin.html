@@ -168,6 +168,20 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('claude', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Local AI — offline backup</h3>
+          <div class="status">A model running on your own PC (Ollama). When Claude can't be reached — internet down, Anthropic outage, out of credit — Ghost answers with this instead, with all the same tools (smart home, Marquee, timers…). It retries Claude every couple of minutes.</div>
+          <label>Mode</label>
+          <select data-k="local_llm_mode">
+            <option value="fallback">Backup: Claude first, local when Claude can't answer</option>
+            <option value="only">Local only: never use the cloud</option>
+            <option value="off">Off: Claude only</option>
+          </select>
+          <label>Ollama address</label><input data-k="local_llm_url" placeholder="http://127.0.0.1:11434">
+          <label>Model</label><input data-k="local_llm_model" placeholder="qwen3.5:9b">
+          <label><input type="checkbox" data-k="local_llm_think" style="width:auto"> Let it think before answering (smarter, slower)</label>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('local', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
         <div class="card"><h3>Gemini Live — device voices</h3>
           <label>Gemini API key (stays on the server)</label><input data-k="gemini_api_key" type="password">
           <label>Live model</label><input data-k="gemini_live_model">

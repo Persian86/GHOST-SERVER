@@ -219,7 +219,9 @@ def admin_themes(_: bool = Depends(admin_auth)):
 
 @app.get("/api/v1/health")
 def health():
-    return {"ok": True, "app": "ghost-server", "version": __version__, "online": len(hub.conns)}
+    from .local_llm import status as brain_status
+    return {"ok": True, "app": "ghost-server", "version": __version__, "online": len(hub.conns),
+            "brain": "local (Claude unreachable)" if brain_status()["claude_unreachable"] else "claude"}
 
 
 @app.post("/api/v1/pair")
@@ -1197,6 +1199,8 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         raise HTTPException(400,"Conversation handoff must be on or off")
     if "camera_webrtc_enabled" in body and type(body["camera_webrtc_enabled"]) is not bool:
         raise HTTPException(400, "Direct camera playback must be on or off")
+    if "local_llm_mode" in body and body["local_llm_mode"] not in ("off", "fallback", "only"):
+        raise HTTPException(400, "Local AI mode must be off, fallback or only")
     changed = []
     for k, v in body.items():
         if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
@@ -1300,9 +1304,17 @@ async def test(what: str, _: bool = Depends(admin_auth)):
     def run():
         try:
             if what == "claude":
-                from .tools.brain import claude
-                t, _ = claude(fast=True).complete([{"role": "user", "content": "Reply with: ok"}], timeout=20, max_tokens=5)
+                from .claude import AnthropicLLM
+                key = store.get("anthropic_api_key")
+                if not key:
+                    return False, "Add the Anthropic key first."
+                t, _ = AnthropicLLM({"api_key": key, "routing": "", "model": store.get("claude_fast_model")}).complete(
+                    [{"role": "user", "content": "Reply with: ok"}], timeout=20, max_tokens=5)
                 return True, f"Claude answered: {t.strip()}"
+            if what == "local":
+                from .local_llm import OllamaLLM, DEFAULT_MODEL
+                return OllamaLLM({"url": store.get("local_llm_url"),
+                                  "model": store.get("local_llm_model") or DEFAULT_MODEL}).probe()
             if what == "gemini":
                 c = live.credentials()
                 return ("error" not in c), c.get("error") or ("Ephemeral token OK" if c.get("token") else c.get("note"))
