@@ -1191,8 +1191,8 @@ def overview(_: bool = Depends(admin_auth)):
             "tools": [t["name"] for t in tools.declarations("live")], "version": __version__}
 
 
-@app.put("/admin/api/settings")
-def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
+def _check_settings(body: dict) -> None:
+    """The type checks every way into the settings (the form, an imported backup) shares."""
     if "household_access" in body and not isinstance(body["household_access"],bool):
         raise HTTPException(400,"Household access must be on or off")
     if "handoff_enabled" in body and type(body["handoff_enabled"]) is not bool:
@@ -1201,6 +1201,11 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
         raise HTTPException(400, "Direct camera playback must be on or off")
     if "local_llm_mode" in body and body["local_llm_mode"] not in ("off", "fallback", "only"):
         raise HTTPException(400, "Local AI mode must be off, fallback or only")
+
+
+def _apply_settings(body: dict, request: Request, how: str = "Settings changed") -> list[str]:
+    """Saves settings and runs everything that has to follow a change. Returns the changed names."""
+    _check_settings(body)
     changed = []
     for k, v in body.items():
         if k not in store.DEFAULTS or k in store.PROTECTED_KEYS:
@@ -1225,12 +1230,52 @@ def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
     if changed:                           # names only — never the values (keys, tokens)
         sec = {"household_access", "approve_new_devices", "security_alerts"}
         off = [k for k in sec & set(changed) if not body.get(k)]
-        security.log("Settings changed: " + ", ".join(sorted(changed))[:180], _ip(request),
+        security.log(f"{how}: " + ", ".join(sorted(changed))[:180], _ip(request),
                      "warn" if off else "ok",
                      alert=("Security setting turned off: " + ", ".join(off)) if off else "")
     if any(k.startswith(("quiet_", "safety_")) for k in body):
         quiet.tick_soon()
+    return changed
+
+
+@app.put("/admin/api/settings")
+def save_settings(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    _apply_settings(body, request)
     return {"ok": True, "settings": store.all_settings()}
+
+
+# ── settings backup & transfer (backup.py) ───────────────────────────────────
+@app.post("/admin/api/backup/export")
+def backup_export(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    """Every setting and key in one password-locked file. Needs the admin password
+    (and 2-step code) again: the file holds every key this server has."""
+    _reauth(body, request, "settings backup")
+    from . import backup
+    try:
+        text, n = backup.export(str(body.get("backup_password") or ""))
+    except backup.BackupError as e:
+        raise HTTPException(400, str(e))
+    security.log(f"Settings backup downloaded ({n} settings)", _ip(request), "warn",
+                 alert="A full settings backup (with your keys) was downloaded from the Ghost admin page.")
+    return {"ok": True, "count": n, "content": text,
+            "filename": f"ghost-server-settings-{time.strftime('%Y-%m-%d')}.json"}
+
+
+@app.post("/admin/api/backup/import")
+def backup_import(body: dict, request: Request, _: bool = Depends(admin_auth)):
+    """Restores a backup file's settings into this server (admin sign-in is never touched)."""
+    _reauth(body, request, "settings restore")
+    from . import backup
+    try:
+        settings = backup.read(str(body.get("file") or ""), str(body.get("backup_password") or ""))
+    except backup.BackupError as e:
+        raise HTTPException(400, str(e))
+    usable, skipped = backup.plan(settings)
+    changed = _apply_settings(usable, request, how="Settings restored from a backup")
+    security.log(f"Settings restored from a backup ({len(usable)} settings, {len(changed)} changed)",
+                 _ip(request), "warn", alert="Settings were restored from a backup file on the Ghost admin page.")
+    return {"ok": True, "restored": len(usable), "changed": len(changed), "skipped": skipped,
+            "settings": store.all_settings()}
 
 
 

@@ -221,6 +221,48 @@ def test_settings_masking(server, admin):
     assert store.get("anthropic_api_key") == "sk-ant-secret-1234"
 
 
+
+def test_settings_backup_and_restore(server, admin):
+    from ghost_server import store, security
+    auth = {"password": "ghost-pass", "code": ""}
+    admin.put("/admin/api/settings", json={"anthropic_api_key": "sk-ant-real-key-9876", "ha_token": "ha-secret",
+                                           "ha_url": "http://192.168.80.165:8123", "city": "Melbourne"})
+    # Needs the admin password again, and the admin page session.
+    assert admin.post("/admin/api/backup/export", json={"password": "nope", "backup_password": "correct horse"}).status_code == 403
+    security.reset_all()
+    assert httpx.post(server + "/admin/api/backup/export", json={**auth, "backup_password": "correct horse"}).status_code in (401, 403)
+    r = admin.post("/admin/api/backup/export", json={**auth, "backup_password": "correct horse"})
+    assert r.status_code == 200, r.text
+    text = r.json()["content"]
+    assert r.json()["filename"].startswith("ghost-server-settings-")
+    assert "sk-ant-real-key-9876" not in text
+
+    pw_hash = store.get("admin_password_hash")
+    admin.put("/admin/api/settings", json={"anthropic_api_key": "", "ha_token": "", "ha_url": "http://old:8123", "city": "Sydney"})
+    r = admin.post("/admin/api/backup/import", json={**auth, "backup_password": "wrong horse", "file": text})
+    assert r.status_code == 400 and "Wrong backup password" in r.json()["detail"]
+    r = admin.post("/admin/api/backup/import", json={**auth, "backup_password": "correct horse", "file": text})
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] >= 4
+    assert store.get("anthropic_api_key") == "sk-ant-real-key-9876" and store.get("ha_token") == "ha-secret"
+    assert store.get("ha_url") == "http://192.168.80.165:8123" and store.get("city") == "Melbourne"
+    assert store.get("admin_password_hash") == pw_hash            # sign-in never travels in a backup
+    assert r.json()["settings"]["anthropic_api_key"] == "•••9876"  # the page only sees masks
+
+    # A backup carrying an invalid value is refused as a whole.
+    from ghost_server import backup
+    orig = backup.stored_settings
+    backup.stored_settings = lambda: {"local_llm_mode": "turbo"}
+    try:
+        bad = backup.export("correct horse")[0]
+    finally:
+        backup.stored_settings = orig
+    r = admin.post("/admin/api/backup/import", json={**auth, "backup_password": "correct horse", "file": bad})
+    assert r.status_code == 400 and "Local AI mode" in r.json()["detail"]
+    admin.put("/admin/api/settings", json={"anthropic_api_key": "", "ha_token": "", "ha_url": "http://ha"})
+    security.reset_all()
+
+
 def test_calendar_and_ha_matching():
     import datetime as dt
     from ghost_server.tools.web import events_on
