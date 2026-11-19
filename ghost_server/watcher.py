@@ -176,7 +176,8 @@ def _run(w: Watch, poll: float = POLL_SECONDS) -> None:
                 w.background = blend(w.background, cur, 0.04 if busy else 0.15)
         except Exception as e:  # noqa: BLE001
             fails += 1
-            w.error = str(e)[:200]
+            from .cameras import redact
+            w.error = redact(str(e))[:200]
             if fails == 10:
                 from .hub import hub
                 for dev_id in w.notify[:1]:
