@@ -205,8 +205,42 @@ verify the continuous capability, then test the new firmware. Merely flashing
 provider reuse, two questions in one session, transcript separation, per-turn
 limits, silent cancellation, turn caps, revocation and out-of-phase tools.
 
-Once follow-up conversations work on hardware, the next requested work is
-smoother motion and faster response/connection timing, measured on this board.
+Version 0.3.0 was installed on the owner's 4B and follow-up questions without
+another wake phrase were confirmed working. Logs also show the quiet timeout
+closing normally with WebSocket code 1000. A separate generated-speech server
+test completed two turns on one connection. This does not validate every
+room/noise condition or acoustic interruptions.
+
+## Capture responsiveness (0.3.1)
+
+The 0.3.0 board trace showed 100 ms audio writes taking 731–1415 ms at
+approximately -66 to -70 dBm. Since capture and upload shared one task,
+250 microphone frames (five seconds of PCM) took about nine seconds to read.
+Firmware 0.3.1 moves the blocking network writes to a separate task, keeping
+20 ms microphone reads and local silence detection independent of those writes.
+
+A fixed 32-slot queue in PSRAM holds at most 3.2 seconds of 100 ms batches
+(about 103 KB including metadata), not an unbounded recording. Slots remain
+owned by the sender during a blocking write and are cleared before reuse.
+The final partial batch and stop marker preserve order. Writes are paced at
+16 kHz mono PCM; queued blocks older than three seconds or a full queue stop
+the session with an error. A failed/partial write is never replayed. This
+absorbs short stalls; it cannot repair sustained poor Wi-Fi throughput.
+
+End cancels new capture/queued uploads immediately. A write already in progress
+may finish; the network worker must release its slot before the voice task
+destroys the client. Follow-ups cannot reuse an in-flight upload. Queued audio
+is discarded on cancellation and never carried into a new conversation.
+
+Mouth attack/release smoothing uses elapsed time rather than a fixed per-frame
+factor. Unchanging microphone visibility and eye pivot styles are no longer
+set every frame. Aggregate display frame intervals are logged every five
+seconds, excluding hidden Setup time. No animation frame-rate increase or
+wake-recognition model change is included. Native C queue tests cover concurrent
+producer/consumer order, held-slot ownership, capacity, cancellation, partial
+tail/stop ordering, erasure and counter rollover. Physical testing must compare
+capture frame timing, follow-ups, End, Wi-Fi stalls and visual smoothness before
+claiming an end-to-end speed improvement.
 
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.
