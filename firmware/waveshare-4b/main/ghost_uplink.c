@@ -4,9 +4,10 @@
 _Static_assert((GHOST_UPLINK_SLOTS & (GHOST_UPLINK_SLOTS-1))==0,
                "Power-of-two capacity preserves slots across counter rollover");
 
-void ghost_uplink_init(ghost_uplink_t *q)
+void ghost_uplink_init(ghost_uplink_t *q,ghost_uplink_block_t *blocks)
 {
     memset(q,0,sizeof(*q));
+    q->blocks=blocks;memset(blocks,0,sizeof(*blocks)*GHOST_UPLINK_SLOTS);
     atomic_init(&q->head,0);atomic_init(&q->tail,0);atomic_init(&q->cancelled,true);
 }
 

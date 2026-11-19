@@ -39,7 +39,8 @@ static esp_codec_dev_handle_t microphone, speaker;
 static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
-static ghost_uplink_t *uplink;
+static ghost_uplink_t uplink_state;
+static ghost_uplink_t *const uplink=&uplink_state;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static lv_obj_t *end_button;
 static lv_obj_t *mic_meter,*mic_caption;
@@ -587,9 +588,9 @@ void app_main(void)
     bsp_display_brightness_set(75);
     commands=xQueueCreate(4,sizeof(int));
     playback=xRingbufferCreate(64000,RINGBUF_TYPE_BYTEBUF);
-    uplink=heap_caps_malloc(sizeof(*uplink),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!commands || !playback || !uplink) return;
-    ghost_uplink_init(uplink);
+    ghost_uplink_block_t *upload_blocks=heap_caps_malloc(sizeof(*upload_blocks)*GHOST_UPLINK_SLOTS,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!commands || !playback || !upload_blocks) return;
+    ghost_uplink_init(uplink,upload_blocks);
     bsp_display_lock(0);build_ui();bsp_display_unlock();
     if(nvs_result!=ESP_OK) {status_message("Settings storage error. Original data was not erased.");return;}
     if(!ghost_config_connect(&config,status_message)) return;

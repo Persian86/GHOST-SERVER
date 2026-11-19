@@ -7,10 +7,11 @@
 #include <threads.h>
 
 static ghost_uplink_t queue;
+static ghost_uplink_block_t blocks[GHOST_UPLINK_SLOTS];
 
 static void test_bound_and_ownership(void)
 {
-    ghost_uplink_init(&queue);assert(ghost_uplink_begin(&queue));
+    ghost_uplink_init(&queue,blocks);assert(ghost_uplink_begin(&queue));
     int16_t pcm[GHOST_UPLINK_SAMPLES];
     for(unsigned i=0;i<GHOST_UPLINK_SAMPLES;i++) pcm[i]=1234;
     assert(!ghost_uplink_push(&queue,pcm,sizeof(pcm)+2,0,0));
@@ -32,7 +33,7 @@ static void test_bound_and_ownership(void)
 
 static void test_partial_tail_and_rollover(void)
 {
-    ghost_uplink_init(&queue);
+    ghost_uplink_init(&queue,blocks);
     // Cross the unsigned counter boundary without confusing empty/full slots.
     atomic_store(&queue.head,UINT_MAX-2);atomic_store(&queue.tail,UINT_MAX-2);
     assert(ghost_uplink_begin(&queue));
@@ -81,7 +82,7 @@ static int consumer(void *unused)
 int main(void)
 {
     test_bound_and_ownership();test_partial_tail_and_rollover();
-    ghost_uplink_init(&queue);assert(ghost_uplink_begin(&queue));
+    ghost_uplink_init(&queue,blocks);assert(ghost_uplink_begin(&queue));
     thrd_t writer,reader;assert(thrd_create(&writer,producer,NULL)==thrd_success);
     assert(thrd_create(&reader,consumer,NULL)==thrd_success);
     thrd_join(writer,NULL);thrd_join(reader,NULL);assert(ghost_uplink_idle(&queue));
