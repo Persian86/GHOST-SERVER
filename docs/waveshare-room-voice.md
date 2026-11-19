@@ -242,6 +242,34 @@ tail/stop ordering, erasure and counter rollover. Physical testing must compare
 capture frame timing, follow-ups, End, Wi-Fi stalls and visual smoothness before
 claiming an end-to-end speed improvement.
 
+## Fluid character motion (0.3.2)
+
+This animation-only firmware is based on working 0.3.0. It does not contain
+the withdrawn 0.3.1 queued-uploader experiment. WebSocket handling, microphone
+capture, playback, wake recognition initialization and Wi-Fi configuration
+remain unchanged. During stronger-signal testing, 0.3.0 captured about 49.9
+frames/sec with no slow-upload warnings; retain that baseline for comparison.
+
+A small procedural motion model uses bounded, critically damped springs for
+body sway, attentive posture, gaze, drapes and hem. Cloth offsets trail body
+velocity and settle smoothly. This is lightweight 2D shape animation rather
+than a cloth simulation or a new 3D renderer. No whole-avatar rotation or
+scaled off-screen texture is introduced. The existing 33 ms timer remains.
+
+Listening eases into a quieter float and centered gaze; thinking looks gently
+upward; idle glances vary over time. Blinks have a short close/hold and softer
+opening. Mouth motion uses elapsed-time attack/release smoothing with a slower
+close and a small tongue visible while open. A narrow ground shadow changes
+width with height. The taller invisible avatar container leaves room for the
+moving hem, and the status label remains below it.
+
+The motion model caps simulation steps after delayed callbacks and pauses
+while Setup hides the avatar. Five-second aggregate timer diagnostics support
+physical comparison without logging audio or private settings. A native C test
+exercises ten minutes of pose changes, motion bounds, delayed/invalid frame
+recovery, blink activity, mouth easing and 30/60 Hz path consistency. Hardware
+testing must still check visual quality, frame intervals and live conversation.
+
 Firmware 0.1.3 anchors the password keyboard to the bottom of the 480-pixel
 screen; the previous position offset could place it below the visible area.
 Microphone input gain is 30 dB (up from 24 dB). The level bar uses a smoothed
