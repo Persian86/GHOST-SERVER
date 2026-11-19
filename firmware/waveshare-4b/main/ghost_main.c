@@ -9,6 +9,7 @@
 #include "esp_system.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
 #include "esp_codec_dev.h"
 #include "esp_log.h"
@@ -38,6 +39,8 @@ static esp_codec_dev_handle_t microphone, speaker;
 static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
+static ghost_uplink_t uplink_state;
+static ghost_uplink_t *const uplink=&uplink_state;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static lv_obj_t *end_button;
 static lv_obj_t *mic_meter,*mic_caption;
@@ -108,8 +111,11 @@ static void user_tap(lv_event_t *event)
 static void end_tap(lv_event_t *event)
 {
     int command=3;
-    if(state==CONNECTING || state==LISTENING || state==THINKING || state==SPEAKING)
+    if(state==CONNECTING || state==LISTENING || state==THINKING || state==SPEAKING) {
+        abort_turn=true;
+        ghost_uplink_cancel(uplink);
         xQueueSend(commands,&command,0);
+    }
 }
 
 static void setup_touch(lv_event_t *event)
@@ -350,6 +356,48 @@ static bool upload_audio(const int16_t *samples,size_t bytes,unsigned frames)
     return true;
 }
 
+static bool queue_audio(const int16_t *samples,size_t bytes,unsigned frames)
+{
+    if(ghost_uplink_push(uplink,samples,bytes,frames,esp_timer_get_time())) return true;
+    if(!abort_turn) fail("Audio connection too slow. Move closer to Wi-Fi and retry.");
+    return false;
+}
+
+static void upload_task(void *arg)
+{
+    int64_t next_send=0;
+    while(true) {
+        const ghost_uplink_block_t *block=ghost_uplink_peek(uplink);
+        if(!block) {vTaskDelay(pdMS_TO_TICKS(5));continue;}
+        if(!ghost_uplink_cancelled(uplink)) {
+            // Keep writes paced even when a short stall leaves queued audio.
+            // The capture task never waits for this network operation.
+            while(block->bytes && esp_timer_get_time()<next_send && !ghost_uplink_cancelled(uplink))
+                vTaskDelay(pdMS_TO_TICKS(5));
+            if(!ghost_uplink_cancelled(uplink)) {
+                if(block->bytes) {
+                    int64_t now=esp_timer_get_time();
+                    if(now-block->captured_us>3000000) {
+                        fail("Audio connection too slow. Tap to retry.");
+                        ghost_uplink_cancel(uplink);
+                    } else {
+                        next_send=now+(int64_t)block->bytes*1000000/32000;
+                        if(!upload_audio(block->samples,block->bytes,block->frames)) ghost_uplink_cancel(uplink);
+                    }
+                } else {
+                    static const char stop[]="{\"type\":\"stop\"}";
+                    if(esp_websocket_client_send_text(socket_client,stop,sizeof(stop)-1,pdMS_TO_TICKS(3000))!=(int)sizeof(stop)-1)
+                        fail("Connection lost. Tap to try again.");
+                    next_send=0;
+                }
+            }
+        } else next_send=0;
+        // Release only after the write completes. Erases this PCM block and
+        // publishes ownership back to capture before socket teardown/reuse.
+        ghost_uplink_release(uplink);
+    }
+}
+
 static void play_task(void *arg)
 {
     int16_t stereo[2048];
@@ -410,6 +458,7 @@ static void voice_task(void *arg)
         if(ghost_wifi_ui_visible()) continue;
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
         drain_playback(); abort_turn=false; finish_turn=false;remote_done=false;disconnected=false;
+        if(!ghost_uplink_begin(uplink)) {fail("Audio is still closing. Tap to retry.");continue;}
         mic_level=0;
         continuous_supported=false;remote_follow_up=false;follow_up=false;
         auto_finish=wake_turn;
@@ -428,7 +477,6 @@ static void voice_task(void *arg)
         unsigned frames=0;
         size_t buffered=0;
         int64_t last_speech=0;
-        bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
                 if(command==2 && state==LISTENING) finish_turn=true;
@@ -439,11 +487,11 @@ static void voice_task(void *arg)
                 if(!record_started) record_started=esp_timer_get_time();
                 if(finish_turn || esp_timer_get_time()-record_started>19000000) {
                     state=THINKING;
-                    bool flushed=!buffered || upload_audio(samples,buffered*sizeof(samples[0]),frames);
+                    bool flushed=!buffered || queue_audio(samples,buffered*sizeof(samples[0]),frames);
                     buffered=0;
                     if(flushed) {
-                        sent_stop=esp_websocket_client_send_text(socket_client,"{\"type\":\"stop\"}",15,pdMS_TO_TICKS(3000))>0;
-                        if(!sent_stop) fail("Connection lost. Tap to try again.");
+                        // Ordered after all audio, including a short final block.
+                        queue_audio(NULL,0,frames);
                     }
                 } else {
                     // DMA can already contain several frames when recording starts.
@@ -485,7 +533,7 @@ static void voice_task(void *arg)
                         mic_level=(mic_level*2+meter)/3;
                         frames++;
                         buffered+=320;
-                        if(buffered==1600) {if(!abort_turn) upload_audio(samples,sizeof(samples),frames);buffered=0;}
+                        if(buffered==1600) {if(!abort_turn) queue_audio(samples,sizeof(samples),frames);buffered=0;}
                         if(frames==1 || frames%50==0) {
                             char unused_ssid[33];int rssi;ghost_wifi_status(unused_ssid,sizeof(unused_ssid),&rssi);
                             ESP_LOGW("ghost_voice","Capture frames=%u elapsed_ms=%lld last_read_us=%lld peak=%d rms=%u wifi_rssi=%d",frames,
@@ -509,6 +557,7 @@ static void voice_task(void *arg)
                             fail("Microphone read failed. Restart Ghost.");
                     }
                     if(abort_turn) break;
+                    if(!ghost_uplink_begin(uplink)) {fail("Previous audio is still closing. Tap to retry.");break;}
                     record_started=0;last_speech=0;next_frame_at=0;frames=0;buffered=0;
                     finish_turn=false;remote_done=false;remote_follow_up=false;
                     follow_up=true;auto_finish=true;state=CONNECTING;connecting_started=esp_timer_get_time();
@@ -522,6 +571,10 @@ static void voice_task(void *arg)
             if(esp_timer_get_time()-started>(continuous_supported?300000000:100000000) ||
                 (state==CONNECTING && esp_timer_get_time()-connecting_started>20000000)) {fail("Ghost timed out. Tap to retry.");break;}
         }
+        ghost_uplink_cancel(uplink);
+        // A send may already be in progress. Never destroy/reuse its client
+        // until the network worker has released every queued block.
+        while(!ghost_uplink_idle(uplink)) vTaskDelay(pdMS_TO_TICKS(10));
         if(abort_turn) {
             if(state!=ERROR_STATE && esp_websocket_client_is_connected(socket_client)) {
                 static const char cancel[]="{\"type\":\"cancel\"}";
@@ -547,7 +600,9 @@ void app_main(void)
     bsp_display_brightness_set(75);
     commands=xQueueCreate(4,sizeof(int));
     playback=xRingbufferCreate(64000,RINGBUF_TYPE_BYTEBUF);
-    if(!commands || !playback) return;
+    ghost_uplink_block_t *upload_blocks=heap_caps_malloc(sizeof(*upload_blocks)*GHOST_UPLINK_SLOTS,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!commands || !playback || !upload_blocks) return;
+    ghost_uplink_init(uplink,upload_blocks);
     bsp_display_lock(0);build_ui();bsp_display_unlock();
     if(nvs_result!=ESP_OK) {status_message("Settings storage error. Original data was not erased.");return;}
     if(!ghost_config_connect(&config,status_message)) return;
@@ -580,7 +635,8 @@ void app_main(void)
     status_message("Preparing local Hey Ghost detection...");
     ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
-    if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
+    if(xTaskCreate(upload_task,"ghost_upload",6144,NULL,4,NULL)!=pdPASS ||
+        xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
         xTaskCreate(voice_task,"ghost_voice",16384,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }
