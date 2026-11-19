@@ -876,12 +876,13 @@ def test_two_step_login(server, admin):
     assert c.post("/admin/login", json={"password": "ghost-pass"}).json() == {"ok": False, "need_code": True}
     assert c.post("/admin/login", json={"password": "ghost-pass", "code": "000000"}).status_code == 401
     security._last_step["n"] = 0                      # the code used to switch it on can be used again here
-    ok = c.post("/admin/login", json={"password": "ghost-pass", "code": security.totp_now(start["secret"])})
+    login_code = security.totp_now(start["secret"])
+    ok = c.post("/admin/login", json={"password": "ghost-pass", "code": login_code})
     assert ok.status_code == 200 and c.get("/admin/api/overview").status_code == 200
     # the same code can't be replayed
     c2 = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
     assert c2.post("/admin/login", json={"password": "ghost-pass",
-                                         "code": security.totp_now(start["secret"])}).status_code == 401
+                                         "code": login_code}).status_code == 401
     # a backup code works once
     assert c2.post("/admin/login", json={"password": "ghost-pass", "code": codes[0]}).status_code == 200
     c3 = httpx.Client(base_url=server, headers={"X-Ghost-Admin": "1"})
