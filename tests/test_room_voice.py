@@ -317,7 +317,8 @@ def test_cancel_of_silent_follow_up_does_not_generate_another_reply(monkeypatch)
     assert len(saved) == 2
 
 
-def test_provider_cannot_execute_tools_between_follow_up_questions(monkeypatch):
+@pytest.mark.parametrize("kind", ["tool", "audio", "done"])
+def test_provider_cannot_act_between_follow_up_questions(monkeypatch, kind):
     row, _ = setup(monkeypatch)
     monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
     monkeypatch.setattr(voice.tools, "declarations", lambda *args: [{"name": "weather", "parameters": {"type": "OBJECT"}}])
@@ -333,8 +334,10 @@ def test_provider_cannot_execute_tools_between_follow_up_questions(monkeypatch):
             if received == 1:
                 async for message in original_receive(): yield message
             else:
-                yield NS(data=None, server_content=None,
-                         tool_call=NS(function_calls=[NS(id="1", name="weather", args={})]))
+                yield NS(data=bytes(960) if kind == "audio" else None,
+                         server_content=NS(input_transcription=None, output_transcription=None,
+                                           turn_complete=True) if kind == "done" else None,
+                         tool_call=NS(function_calls=[NS(id="1", name="weather", args={})]) if kind == "tool" else None)
         cloud.receive = receive
         await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
         assert any(c.get("code") == 4400 for c in ws.closed)

@@ -205,6 +205,8 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                         async with send_lock:
                                             await asyncio.wait_for(ws.send_bytes(audio[offset:offset + 2048]), 5)
                             if sc and sc.turn_complete:
+                                if phase != "reply":
+                                    raise ValueError("premature turn completion")
                                 current()
                                 for role, parts in (("user", heard), ("assistant", said)):
                                     if parts:
