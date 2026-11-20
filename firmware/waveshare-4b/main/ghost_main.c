@@ -44,13 +44,17 @@ static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static lv_obj_t *sparkles[10];
 static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
-static lv_obj_t *eyes[2],*irises[2],*brows[2],*shadow;
+static lv_obj_t *eyes[2],*irises[2],*brows[2],*arms[2],*shadow;
 static ghost_motion_t motion;
 // Where the avatar sits on the 480x480 screen (centred near the top).
 #define AVATAR_X ((480-(int)ghost_art_body.header.w)/2)
-#define AVATAR_Y 22
+#define AVATAR_Y 40   // clear of the Setup button in the top-right corner
 static const lv_image_dsc_t *const mouths[GHOST_ART_MOUTHS]={&ghost_art_mouth0,&ghost_art_mouth1,
     &ghost_art_mouth2,&ghost_art_mouth3,&ghost_art_mouth4,&ghost_art_mouth5};
+static const lv_image_dsc_t *const arm_left[GHOST_ART_ARM_POSES]={&ghost_art_arm_l0,&ghost_art_arm_l1,
+    &ghost_art_arm_l2,&ghost_art_arm_l3,&ghost_art_arm_l4,&ghost_art_arm_l5,&ghost_art_arm_l6};
+static const lv_image_dsc_t *const arm_right[GHOST_ART_ARM_POSES]={&ghost_art_arm_r0,&ghost_art_arm_r1,
+    &ghost_art_arm_r2,&ghost_art_arm_r3,&ghost_art_arm_r4,&ghost_art_arm_r5,&ghost_art_arm_r6};
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
@@ -182,40 +186,91 @@ static void animate(lv_timer_t *timer)
         current==ERROR_STATE?GHOST_CONCERNED:GHOST_REST;
     ghost_motion_frame_t f;
     ghost_motion_step(&motion,elapsed/1000.0f,pose,speech_level/100.0f,&f);
-    // The desktop/phone avatar: rendered pearl sheet body (ghost_art.c) that
-    // bobs and sways, with live eyes, brows and mouth on top.
-    // Moving the 270x330 body redraws ~90k pixels read from flash, which
-    // starved both the frame rate and the wake-word model (0.3.5/0.3.6 logs:
-    // ~18 fps, wake detect ~300 ms). So the body bobs in 2 px steps at most
-    // ~6 times a second; eyes, blinks and mouth still animate every frame.
-    static int64_t body_moved_at;
-    static int body_x=0,body_y=0;
-    int want_x=2*(int)lroundf(f.x/2.0f),want_y=2*(int)lroundf(f.y/2.0f);
-    if((want_x!=body_x || want_y!=body_y) && now-body_moved_at>=160000) {
-        body_x=want_x;body_y=want_y;body_moved_at=now;
-        lv_obj_set_pos(avatar,AVATAR_X+body_x,AVATAR_Y+body_y);
-        int shadow_width=130-body_y*3/2;
-        lv_obj_set_size(shadow,shadow_width,12);lv_obj_set_x(shadow,240-shadow_width/2);
-        lv_obj_set_style_bg_opa(shadow,(lv_opa_t)(45-body_y),0);
+    // The desktop/phone avatar as a still picture with a live face. The body
+    // never moves: redrawing the 270x330 picture from flash every frame
+    // starved the frame rate and the wake-word model (0.3.5-0.3.7: ~18 fps,
+    // wake detect ~300 ms, flicker). Only the small eye and mouth patches
+    // redraw, and only when they actually change.
+    // Reactions (like the desktop): perk up when Ghost is woken, a happy
+    // squint and big smile when it finishes answering, brows down on error.
+    enum {REACT_NONE,REACT_PERK,REACT_HAPPY};
+    static int prev_state=-1,reaction=REACT_NONE;
+    static int64_t reaction_until;
+    if(prev_state!=current) {
+        if((prev_state==IDLE || prev_state==ERROR_STATE) && current==CONNECTING) {reaction=REACT_PERK;reaction_until=now+700000;}
+        else if(prev_state==SPEAKING && current==IDLE) {reaction=REACT_HAPPY;reaction_until=now+1600000;}
+        else if(current!=IDLE) reaction=REACT_NONE;
+        prev_state=current;
     }
-    int gaze_x=(int)lroundf(fmaxf(-7,fminf(7,f.gaze_x*1.3f)));
-    int gaze_y=(int)lroundf(fmaxf(-5,fminf(5,f.gaze_y*1.2f)));
+    if(reaction!=REACT_NONE && now>=reaction_until) reaction=REACT_NONE;
+    // Night mode: after 10 quiet minutes the backlight dims and Ghost sleeps
+    // (eyes shut, no movement). The wake word keeps listening; a touch or
+    // "Hey Ghost" wakes it. Brightness changes only on the transition.
+    bool asleep=ghost_sleepy(current==IDLE,(int64_t)lv_display_get_inactive_time(NULL),(now-busy_at)/1000);
+    static bool shown_asleep=false;
+    if(asleep!=shown_asleep) {bsp_display_brightness_set(asleep?8:75);shown_asleep=asleep;}
+    static int shown_blink=-1,shown_gx=99,shown_gy=99,shown_brow=99;
+    int blink=256-(int)lroundf(f.blink*240);
+    // Ease the happy squint in and out (~0.25 s) instead of snapping, which
+    // read as a flicker at the end of a conversation.
+    static float happy=0;
+    happy+=((reaction==REACT_HAPPY?1.0f:0.0f)-happy)*0.25f;
+    if(happy<0.02f) happy=0;
+    int squint=256-(int)lroundf(happy*126.0f);
+    if(blink>squint) blink=squint;
+    if(asleep) blink=40;
+    if(blink<32) blink=32;
+    int gaze_x=asleep?0:2*(int)lroundf(fmaxf(-6,fminf(6,f.gaze_x*1.2f))/2.0f);
+    int gaze_y=asleep?0:2*(int)lroundf(fmaxf(-4,fminf(4,f.gaze_y))/2.0f);
+    int brow=(int)lroundf(f.brow);
+    if(reaction==REACT_PERK) brow=-4;
+    else if(reaction==REACT_HAPPY) brow=-2;
+    else if(current==ERROR_STATE) brow=3;
+    if(asleep) brow=1;
     for(int side=0;side<2;side++) {
-        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)lroundf(f.blink*240),0);
-        lv_obj_set_pos(irises[side],(ghost_art_eye.header.w-ghost_art_iris.header.w)/2+gaze_x,
-            (ghost_art_eye.header.h-ghost_art_iris.header.h)/2+gaze_y);
-        lv_obj_set_y(brows[side],GHOST_ART_BROW_Y+(int)lroundf(f.brow));
+        if(blink!=shown_blink) lv_obj_set_style_transform_scale_y(eyes[side],blink,0);
+        if(gaze_x!=shown_gx || gaze_y!=shown_gy)
+            lv_obj_set_pos(irises[side],(ghost_art_eye.header.w-ghost_art_iris.header.w)/2+gaze_x,
+                (ghost_art_eye.header.h-ghost_art_iris.header.h)/2+gaze_y);
+        if(brow!=shown_brow) lv_obj_set_y(brows[side],GHOST_ART_BROW_Y+brow);
     }
+    shown_blink=blink;shown_gx=gaze_x;shown_gy=gaze_y;shown_brow=brow;
     // Friendly open smile at rest (like the desktop); speech opens it further.
     int shape_index=current==SPEAKING?1+(int)lroundf(f.mouth*4.0f):current==ERROR_STATE?0:2;
+    if(reaction==REACT_HAPPY) shape_index=3;
+    if(asleep) shape_index=0;
     if(shape_index<0) shape_index=0;
     if(shape_index>=GHOST_ART_MOUTHS) shape_index=GHOST_ART_MOUTHS-1;
     static int shown_mouth=-1;
     if(shape_index!=shown_mouth) {lv_image_set_src(mouth,mouths[shape_index]);shown_mouth=shape_index;}
-    // Sparkles twinkle slowly in the background.
-    float seconds=now/1000000.0f;
-    for(int i=0;i<10;i++)
-        lv_obj_set_style_opa(sparkles[i],(lv_opa_t)(70+(int)(110*(0.5f+0.5f*sinf(seconds*(0.7f+i*0.13f)+i*1.9f)))),0);
+    // Arms: seven real cloth poses rendered from the avatar model (low ..
+    // raised), so the arm always stays joined to the body. A smoothed pose
+    // value eases between them; the picture only swaps when the nearest pose
+    // changes, so only the two small arm patches ever redraw.
+    static float arm_pose[2]={GHOST_ART_ARM_REST,GHOST_ART_ARM_REST};
+    static int shown_arm[2]={GHOST_ART_ARM_REST,GHOST_ART_ARM_REST};
+    {
+        float t=now/1000000.0f,level=speech_level/100.0f;
+        for(int side=0;side<2;side++) {
+            float phase=side?2.1f:0.0f,target;
+            if(current==SPEAKING) target=3.4f+(0.8f+1.6f*level)*sinf(t*3.2f+phase);
+            else if(current==LISTENING) target=4.6f+0.4f*sinf(t*1.4f+phase);
+            else if(current==THINKING || current==CONNECTING) target=side?5.6f:2.6f;
+            else if(current==ERROR_STATE) target=1.0f;
+            else target=3.0f+0.7f*sinf(t*0.9f+phase);
+            if(reaction==REACT_PERK) target=6.0f;
+            else if(reaction==REACT_HAPPY) target=5.0f;
+            if(asleep) target=2.0f;
+            arm_pose[side]+=(target-arm_pose[side])*0.12f;
+            int pose=(int)lroundf(arm_pose[side]);
+            if(pose<0) pose=0;
+            if(pose>=GHOST_ART_ARM_POSES) pose=GHOST_ART_ARM_POSES-1;
+            if(pose!=shown_arm[side]) {
+                lv_image_set_src(arms[side],side?arm_right[pose]:arm_left[pose]);
+                shown_arm[side]=pose;
+            }
+        }
+    }
     lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
     int wake=ghost_wake_enabled();
     int wifi=ghost_wifi_ready();
@@ -263,6 +318,7 @@ static void build_ui(void)
     for(int i=0;i<10;i++) {
         sparkles[i]=lv_image_create(screen);lv_image_set_src(sparkles[i],&ghost_art_sparkle);
         lv_obj_set_pos(sparkles[i],sparkle_at[i].x,sparkle_at[i].y);
+        lv_obj_set_style_opa(sparkles[i],(lv_opa_t)(90+(i*37)%120),0);
     }
     shadow=shape(screen,165,AVATAR_Y+ghost_art_body.header.h+4,150,12,0x05030c,LV_RADIUS_CIRCLE);
     lv_obj_set_style_bg_opa(shadow,45,0);
@@ -270,6 +326,10 @@ static void build_ui(void)
     lv_obj_set_size(avatar,ghost_art_body.header.w,ghost_art_body.header.h);lv_obj_set_pos(avatar,AVATAR_X,AVATAR_Y);
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *body=lv_image_create(avatar);lv_image_set_src(body,&ghost_art_body);lv_obj_set_pos(body,0,0);
+    arms[0]=lv_image_create(avatar);lv_image_set_src(arms[0],arm_left[GHOST_ART_ARM_REST]);
+    lv_obj_set_pos(arms[0],GHOST_ART_ARM_L_X,GHOST_ART_ARM_L_Y);
+    arms[1]=lv_image_create(avatar);lv_image_set_src(arms[1],arm_right[GHOST_ART_ARM_REST]);
+    lv_obj_set_pos(arms[1],GHOST_ART_ARM_R_X,GHOST_ART_ARM_R_Y);
     int eye_w=ghost_art_eye.header.w,eye_h=ghost_art_eye.header.h;
     for(int side=0;side<2;side++) {
         int cx=GHOST_ART_CX+(side?GHOST_ART_EYE_DX:-GHOST_ART_EYE_DX);
@@ -442,7 +502,10 @@ static void voice_task(void *arg)
                 wake_after=esp_timer_get_time()+1000000;continue;
             }
             int64_t energy=0;
-            for(int i=0;i<320;i++) {samples[i]=capture[i*2];energy+=(int64_t)samples[i]*samples[i];}
+            for(int i=0;i<320;i++) {
+                int raw=capture[i*2];energy+=(int64_t)raw*raw;
+                samples[i]=ghost_wake_gain(raw);   // recognizer copy only: +6 dB, clipped
+            }
             float rms=sqrtf((float)energy/320);
             if(rms<noise_floor*2) noise_floor=noise_floor*0.995f+rms*0.005f;
             if(!ghost_wake_feed(samples,320)) {vTaskDelay(1);continue;}
@@ -597,7 +660,11 @@ void app_main(void)
 {
     // Do not erase the original NVS partition on initialization failure.
     esp_err_t nvs_result=nvs_flash_init();
-    if(!bsp_display_start()) return;
+    // Same as bsp_display_start(), but the LVGL task is pinned to core 0 so
+    // core 1 is left to the voice task (wake recognizer needs most of a core).
+    bsp_display_cfg_t display_cfg={.lvgl_port_cfg=ESP_LVGL_PORT_INIT_CONFIG()};
+    display_cfg.lvgl_port_cfg.task_affinity=0;
+    if(!bsp_display_start_with_config(&display_cfg)) return;
     bsp_display_brightness_set(75);
     commands=xQueueCreate(4,sizeof(int));
     playback=xRingbufferCreate(64000,RINGBUF_TYPE_BYTEBUF);
@@ -635,6 +702,11 @@ void app_main(void)
     ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
-        xTaskCreate(voice_task,"ghost_voice",16384,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
+        // Voice (wake word + conversation) owns core 1; LVGL is pinned to core 0
+        // (see app_main). Logs: voice on core 1 shared with LVGL -> ~3% wake
+        // audio loss but idle animation ~17 fps (0.3.11); voice on core 0 ->
+        // smooth animation but 8-15% wake audio loss (0.3.12, core 0 also
+        // carries Wi-Fi and the RGB panel refresh).
+        xTaskCreatePinnedToCore(voice_task,"ghost_voice",16384,NULL,5,NULL,1)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }

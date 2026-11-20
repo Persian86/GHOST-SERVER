@@ -27,3 +27,12 @@ bool ghost_controls_visible(bool busy, int64_t ms_since_touch, int64_t ms_since_
 
 // Voiced 20 ms frames needed before the listener treats sound as speech.
 #define GHOST_SPEECH_MIN_FRAMES 8
+
+// Night mode: after this long idle with no touch and no conversation the
+// screen dims and Ghost closes its eyes. The wake word keeps listening.
+#define GHOST_SLEEP_MS 600000
+bool ghost_sleepy(bool idle, int64_t ms_since_touch, int64_t ms_since_busy);
+
+// The wake recognizer's copy of the microphone: a fixed 2x boost (6 dB),
+// clipped. At 1 m "Hey Ghost" reached the recognizer at only ~-29 dBFS.
+int16_t ghost_wake_gain(int32_t sample);

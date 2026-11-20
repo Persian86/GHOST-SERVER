@@ -23,13 +23,47 @@ import ghost_sheet
 HERE = Path(__file__).resolve().parent
 MAIN = HERE.parent / "main"
 SS = 3                      # supersampling
-BODY_H = 330                # body sprite height on the 480x480 screen
+BODY_H = 300                # body sprite height on the 480x480 screen
 BG = (17, 9, 36)            # phone/desktop backdrop purple
 
 
 # ── body ────────────────────────────────────────────────────────────────────
-def body_mesh():
-    verts, faces = ghost_sheet.mesh()
+_SHEET_POINT = ghost_sheet.point
+
+
+def make_point(reach=1.0, lift=1.0):
+    """ghost_sheet.point with the cloth arms scaled: reach=0 folds them flat
+    (the torso the arms are cut from); lift raises (>1) or lowers (<1) them.
+    Same formula as the shared profile, so every pose is real cloth that stays
+    joined to the body."""
+    def point(u, angle):
+        if u < .38:
+            return _SHEET_POINT(u, angle)
+        sm = ghost_sheet.smooth
+        v = (u-.38)/.62
+        ripple = (.165*math.cos(7*angle+.65*v)+.045*math.cos(11*angle-.8*v))*sm(.06,.72,v)
+        radius = .86+.14*sm(0,.9,v)+ripple
+        side = abs(math.cos(angle))**10*sm(0,.12,v)
+        arm = .52*math.exp(-((v-.16)/.115)**2)*side*reach
+        thumb = .13*math.exp(-((v-.255)/.045)**2)*side*reach
+        roll = sm(.83,1,v)
+        radius += arm+thumb-.13*(1-math.cos(roll*math.pi/2))
+        height = (.55-ghost_sheet.BODY_DROP*v+(.13*math.cos(7*angle+.65)+.035*math.cos(3*angle))*sm(.35,1,v)
+                  +.14*math.sin(roll*math.pi/2)+arm*(.64 if math.cos(angle)<0 else .50)*lift+thumb*.25)
+        return (radius*math.cos(angle)+.035*v*v*math.sin(angle+.4), radius*.76*math.sin(angle), height)
+    return point
+
+
+def body_mesh(reach=1.0, lift=1.0):
+    if reach == 1.0 and lift == 1.0:
+        verts, faces = ghost_sheet.mesh()
+    else:
+        original = ghost_sheet.point
+        ghost_sheet.point = make_point(reach, lift)
+        try:
+            verts, faces = ghost_sheet.mesh()
+        finally:
+            ghost_sheet.point = original
     v = np.array(verts, dtype=np.float64)
     tris = []
     for f in faces:
@@ -52,19 +86,22 @@ def vertex_normals(v, t):
     return n
 
 
-def render_body():
-    v, t, rows = body_mesh()
+def render_body(reach=1.0, lift=1.0, frame=None):
+    v, t, rows = body_mesh(reach, lift)
     n = vertex_normals(v, t)
     # Camera: front (-Y) with a slight look down, orthographic. Screen x = X, y = -Z.
     tilt = math.radians(7)
     rot = np.array([[1, 0, 0], [0, math.cos(tilt), -math.sin(tilt)], [0, math.sin(tilt), math.cos(tilt)]])
     pv, pn = v @ rot.T, n @ rot.T
     xs, zs = pv[:, 0], pv[:, 2]
-    scale = (BODY_H * SS - 8 * SS) / (zs.max() - zs.min())
-    W = int((xs.max() - xs.min()) * scale) + 8 * SS
+    if frame is None:      # the full avatar fixes the projection for both renders
+        frame = (xs.min(), xs.max(), zs.min(), zs.max())
+    x0f, x1f, z0f, z1f = frame
+    scale = (BODY_H * SS - 8 * SS) / (z1f - z0f)
+    W = int((x1f - x0f) * scale) + 8 * SS
     H = BODY_H * SS
-    sx = (xs - xs.min()) * scale + 4 * SS
-    sy = (zs.max() - zs) * scale + 4 * SS
+    sx = (xs - x0f) * scale + 4 * SS
+    sy = (z1f - zs) * scale + 4 * SS
     depth = pv[:, 1]                       # smaller = nearer the camera
     color = np.zeros((H, W, 3)); alpha = np.zeros((H, W)); zbuf = np.full((H, W), np.inf)
 
@@ -128,7 +165,7 @@ def render_body():
     arr = np.array(img, dtype=np.float64)
     arr[..., :3] *= ao[..., None]
     img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
-    return img, (sx, sy, scale, v, pv)
+    return img, frame
 
 
 def face_layout(body_w, body_h):
@@ -259,18 +296,64 @@ def c_image(name, img):
             f"    .data_size = sizeof({name}_map), .data = {name}_map,\n}};\n\n")
 
 
+ARM_LIFTS = (0.55, 0.72, 0.87, 1.0, 1.14, 1.3, 1.46)   # pose 3 = the desktop's resting arms
+ARM_REST = 3
+
+
+def cut_arm_frames(poses, torso, lay):
+    """For each side, the arm in every pose: pixels of that posed avatar the
+    armless torso lacks, grown a few pixels into the shoulder so the joint
+    stays covered. All poses of a side share one box, so the screen only
+    swaps the picture - nothing rotates and nothing comes apart."""
+    tb = np.array(torso, dtype=np.int32)
+    H, W = tb.shape[:2]; cx = lay["cx"]
+    rows = np.arange(H)[:, None]; cols = np.arange(W)[None, :]
+    sides = []
+    for side in (-1, 1):
+        region = ((cols < cx - W * .17) if side < 0 else (cols > cx + W * .17)) & (rows > H * .06) & (rows < H * .66)
+        masks = []
+        for pose in poses:
+            fb = np.array(pose, dtype=np.int32)
+            arm = (fb[..., 3] > 10) & (tb[..., 3] < 100) & region
+            grown = np.array(Image.fromarray((arm * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
+            masks.append(grown & (fb[..., 3] > 10) & region)
+        union = np.logical_or.reduce(masks)
+        ys, xs = np.nonzero(union)
+        x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+        frames = []
+        for pose, mask in zip(poses, masks):
+            rgba = np.array(pose).copy(); rgba[..., 3] = np.where(mask, rgba[..., 3], 0)
+            frames.append(Image.fromarray(rgba[y0:y1, x0:x1], "RGBA"))
+        sides.append({"frames": frames, "x": int(x0), "y": int(y0)})
+    return sides
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--preview", type=Path)
+    ap.add_argument("--arm-pose", type=int, default=ARM_REST, help="preview this arm pose (0 low .. 6 high)")
     args = ap.parse_args()
-    big, _ = render_body()
+    big, frame = render_body()
     body = big.resize((big.width // SS, big.height // SS), Image.LANCZOS)
     lay = face_layout(*body.size)
     body = paint_blush(body, lay)
+    # The same projection without the cloth arms: the arms become their own
+    # sprites so the screen can sway/wave them over a still torso.
+    big_t, _ = render_body(reach=0.0, frame=frame)
+    torso = paint_blush(big_t.resize(body.size, Image.LANCZOS), lay)
+    poses = []
+    for lift in ARM_LIFTS:
+        big_p, _ = render_body(lift=lift, frame=frame)
+        poses.append(paint_blush(big_p.resize(body.size, Image.LANCZOS), lay))
+    arms = cut_arm_frames(poses, torso, lay)
     eye_d = int(round(lay["eye_d"])); iris_d = int(round(eye_d * .76)); mouth_w = int(round(body.height * .19))
-    flat = Image.new("RGBA", body.size, BG + (255,)); flat.alpha_composite(body)
+    flat = Image.new("RGBA", body.size, BG + (255,)); flat.alpha_composite(torso)
     sprites = {"ghost_art_body": flat.convert("RGB"), "ghost_art_eye": eye_white(eye_d), "ghost_art_iris": iris(iris_d),
-               "ghost_art_sparkle": sparkle(11)}
+               "ghost_art_sparkle": sparkle(11),
+               }
+    for side, arm in zip("lr", arms):
+        for i, img in enumerate(arm["frames"]):
+            sprites[f"ghost_art_arm_{side}{i}"] = img
     for i in range(6):
         sprites[f"ghost_art_mouth{i}"] = mouth(i / 5, mouth_w)
 
@@ -280,7 +363,11 @@ def main():
         hdr.append(f"extern const lv_image_dsc_t {n};")
     hdr += ["", f"#define GHOST_ART_EYE_Y {int(round(lay['eye_y']))}", f"#define GHOST_ART_EYE_DX {int(round(lay['eye_dx']))}",
             f"#define GHOST_ART_MOUTH_Y {int(round(lay['mouth_y']))}", f"#define GHOST_ART_BROW_Y {int(round(lay['brow_y']))}",
-            f"#define GHOST_ART_CX {int(round(lay['cx']))}", f"#define GHOST_ART_MOUTHS 6", ""]
+            f"#define GHOST_ART_CX {int(round(lay['cx']))}", f"#define GHOST_ART_MOUTHS 6"]
+    hdr += [f"#define GHOST_ART_ARM_POSES {len(ARM_LIFTS)}", f"#define GHOST_ART_ARM_REST {ARM_REST}"]
+    for side, arm in zip("LR", arms):
+        hdr += [f"#define GHOST_ART_ARM_{side}_X {arm['x']}", f"#define GHOST_ART_ARM_{side}_Y {arm['y']}"]
+    hdr.append("")
     (MAIN / "ghost_art.h").write_text("\n".join(hdr))
     src = '#include "ghost_art.h"\n// Generated by tools/render_ghost_art.py from the desktop avatar profile - do not edit.\n\n'
     src += "".join(c_image(n, sprites[n]) for n in names)
@@ -293,6 +380,8 @@ def main():
             canvas.alpha_composite(sprites["ghost_art_sparkle"], (x, y))
         ox = (480 - body.width) // 2; oy = 40
         canvas.alpha_composite(sprites["ghost_art_body"].convert("RGBA"), (ox, oy))
+        for arm in arms:
+            canvas.alpha_composite(arm["frames"][args.arm_pose], (ox + arm["x"], oy + arm["y"]))
         e, ir = sprites["ghost_art_eye"], sprites["ghost_art_iris"]
         for s in (-1, 1):
             ex = ox + int(lay["cx"] + s * lay["eye_dx"]); ey = oy + int(lay["eye_y"])
