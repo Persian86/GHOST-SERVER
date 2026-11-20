@@ -456,3 +456,7 @@ def test_weather_tool_sends_a_card_to_continuous_screens(monkeypatch):
         assert cards_sent and cards_sent[0]["kind"] == "weather" and cards_sent[0]["temp"] == 21
         assert [m["type"] for m in ws.messages if isinstance(m, dict)][-1] == "done"
     asyncio.run(run())
+
+
+def test_screens_are_told_they_can_show_the_weather():
+    assert "weather tool" in voice.SCREEN_NOTE and "audio-only" in voice.SCREEN_NOTE
