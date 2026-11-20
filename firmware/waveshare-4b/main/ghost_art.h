@@ -6,6 +6,8 @@ extern const lv_image_dsc_t ghost_art_body;
 extern const lv_image_dsc_t ghost_art_eye;
 extern const lv_image_dsc_t ghost_art_iris;
 extern const lv_image_dsc_t ghost_art_sparkle;
+extern const lv_image_dsc_t ghost_art_arm_l;
+extern const lv_image_dsc_t ghost_art_arm_r;
 extern const lv_image_dsc_t ghost_art_mouth0;
 extern const lv_image_dsc_t ghost_art_mouth1;
 extern const lv_image_dsc_t ghost_art_mouth2;
@@ -13,9 +15,17 @@ extern const lv_image_dsc_t ghost_art_mouth3;
 extern const lv_image_dsc_t ghost_art_mouth4;
 extern const lv_image_dsc_t ghost_art_mouth5;
 
-#define GHOST_ART_EYE_Y 78
-#define GHOST_ART_EYE_DX 33
-#define GHOST_ART_MOUTH_Y 129
-#define GHOST_ART_BROW_Y 45
-#define GHOST_ART_CX 134
+#define GHOST_ART_EYE_Y 70
+#define GHOST_ART_EYE_DX 30
+#define GHOST_ART_MOUTH_Y 117
+#define GHOST_ART_BROW_Y 40
+#define GHOST_ART_CX 122
 #define GHOST_ART_MOUTHS 6
+#define GHOST_ART_ARM_L_X 3
+#define GHOST_ART_ARM_L_Y 76
+#define GHOST_ART_ARM_L_PIVOT_X 44
+#define GHOST_ART_ARM_L_PIVOT_Y 40
+#define GHOST_ART_ARM_R_X 191
+#define GHOST_ART_ARM_R_Y 77
+#define GHOST_ART_ARM_R_PIVOT_X 4
+#define GHOST_ART_ARM_R_PIVOT_Y 30

@@ -44,11 +44,11 @@ static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
 static lv_obj_t *sparkles[10];
 static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
-static lv_obj_t *eyes[2],*irises[2],*brows[2],*shadow;
+static lv_obj_t *eyes[2],*irises[2],*brows[2],*arms[2],*shadow;
 static ghost_motion_t motion;
 // Where the avatar sits on the 480x480 screen (centred near the top).
 #define AVATAR_X ((480-(int)ghost_art_body.header.w)/2)
-#define AVATAR_Y 22
+#define AVATAR_Y 40   // clear of the Setup button in the top-right corner
 static const lv_image_dsc_t *const mouths[GHOST_ART_MOUTHS]={&ghost_art_mouth0,&ghost_art_mouth1,
     &ghost_art_mouth2,&ghost_art_mouth3,&ghost_art_mouth4,&ghost_art_mouth5};
 static char error_text[160] = "Tap Ghost to try again";
@@ -207,6 +207,32 @@ static void animate(lv_timer_t *timer)
     if(shape_index>=GHOST_ART_MOUTHS) shape_index=GHOST_ART_MOUTHS-1;
     static int shown_mouth=-1;
     if(shape_index!=shown_mouth) {lv_image_set_src(mouth,mouths[shape_index]);shown_mouth=shape_index;}
+    // Arms: separate small sprites rotating at the shoulder over the still
+    // torso. Gentle sway at rest, raised while listening, one hand up while
+    // thinking, gesturing with the voice while speaking. Whole degrees only,
+    // at most ~15 updates a second, so only the small arm patches redraw.
+    static int64_t arms_at;
+    static int shown_arm[2]={0,0};
+    if(now-arms_at>=66000) {
+        arms_at=now;
+        float t=now/1000000.0f,level=speech_level/100.0f;
+        for(int side=0;side<2;side++) {
+            float phase=side?1.7f:0.0f,up;
+            if(current==SPEAKING) up=2.0f+(3.0f+5.0f*level)*sinf(t*6.0f+phase);
+            else if(current==LISTENING) up=6.0f+1.5f*sinf(t*2.0f+phase);
+            else if(current==THINKING || current==CONNECTING) up=side?8.0f:1.0f;
+            else if(current==ERROR_STATE) up=-4.0f;
+            else up=2.5f*sinf(t*1.6f+phase);
+            if(up>8.0f) up=8.0f;
+            if(up<-6.0f) up=-6.0f;
+            int deg=(int)lroundf(up);
+            if(deg!=shown_arm[side]) {
+                // Left arm raises clockwise, right arm anticlockwise (tenths of a degree).
+                lv_image_set_rotation(arms[side],(side?-deg:deg)*10);
+                shown_arm[side]=deg;
+            }
+        }
+    }
     lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
     int wake=ghost_wake_enabled();
     int wifi=ghost_wifi_ready();
@@ -260,8 +286,15 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(shadow,45,0);
     avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
     lv_obj_set_size(avatar,ghost_art_body.header.w,ghost_art_body.header.h);lv_obj_set_pos(avatar,AVATAR_X,AVATAR_Y);
+    lv_obj_add_flag(avatar,LV_OBJ_FLAG_OVERFLOW_VISIBLE);   // raised arm tips may leave the box
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *body=lv_image_create(avatar);lv_image_set_src(body,&ghost_art_body);lv_obj_set_pos(body,0,0);
+    arms[0]=lv_image_create(avatar);lv_image_set_src(arms[0],&ghost_art_arm_l);
+    lv_obj_set_pos(arms[0],GHOST_ART_ARM_L_X,GHOST_ART_ARM_L_Y);
+    lv_image_set_pivot(arms[0],GHOST_ART_ARM_L_PIVOT_X,GHOST_ART_ARM_L_PIVOT_Y);
+    arms[1]=lv_image_create(avatar);lv_image_set_src(arms[1],&ghost_art_arm_r);
+    lv_obj_set_pos(arms[1],GHOST_ART_ARM_R_X,GHOST_ART_ARM_R_Y);
+    lv_image_set_pivot(arms[1],GHOST_ART_ARM_R_PIVOT_X,GHOST_ART_ARM_R_PIVOT_Y);
     int eye_w=ghost_art_eye.header.w,eye_h=ghost_art_eye.header.h;
     for(int side=0;side<2;side++) {
         int cx=GHOST_ART_CX+(side?GHOST_ART_EYE_DX:-GHOST_ART_EYE_DX);
