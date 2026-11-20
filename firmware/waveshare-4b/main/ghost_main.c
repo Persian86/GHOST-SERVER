@@ -184,10 +184,20 @@ static void animate(lv_timer_t *timer)
     ghost_motion_step(&motion,elapsed/1000.0f,pose,speech_level/100.0f,&f);
     // The desktop/phone avatar: rendered pearl sheet body (ghost_art.c) that
     // bobs and sways, with live eyes, brows and mouth on top.
-    lv_obj_set_pos(avatar,AVATAR_X+(int)lroundf(f.x),AVATAR_Y+(int)lroundf(f.y));
-    int shadow_width=130-(int)lroundf(f.y*1.5f);
-    lv_obj_set_size(shadow,shadow_width,12);lv_obj_set_x(shadow,240-shadow_width/2);
-    lv_obj_set_style_bg_opa(shadow,(lv_opa_t)(45-(int)lroundf(f.y)),0);
+    // Moving the 270x330 body redraws ~90k pixels read from flash, which
+    // starved both the frame rate and the wake-word model (0.3.5/0.3.6 logs:
+    // ~18 fps, wake detect ~300 ms). So the body bobs in 2 px steps at most
+    // ~6 times a second; eyes, blinks and mouth still animate every frame.
+    static int64_t body_moved_at;
+    static int body_x=0,body_y=0;
+    int want_x=2*(int)lroundf(f.x/2.0f),want_y=2*(int)lroundf(f.y/2.0f);
+    if((want_x!=body_x || want_y!=body_y) && now-body_moved_at>=160000) {
+        body_x=want_x;body_y=want_y;body_moved_at=now;
+        lv_obj_set_pos(avatar,AVATAR_X+body_x,AVATAR_Y+body_y);
+        int shadow_width=130-body_y*3/2;
+        lv_obj_set_size(shadow,shadow_width,12);lv_obj_set_x(shadow,240-shadow_width/2);
+        lv_obj_set_style_bg_opa(shadow,(lv_opa_t)(45-body_y),0);
+    }
     int gaze_x=(int)lroundf(fmaxf(-7,fminf(7,f.gaze_x*1.3f)));
     int gaze_y=(int)lroundf(fmaxf(-5,fminf(5,f.gaze_y*1.2f)));
     for(int side=0;side<2;side++) {
