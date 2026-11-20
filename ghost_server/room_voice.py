@@ -212,9 +212,13 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                     try:
                         card = await asyncio.wait_for(asyncio.to_thread(
                             cards.for_tool, name, args, store.get("city")), 8)
-                        if card:
-                            async with send_lock:
-                                await asyncio.wait_for(ws.send_json(card), 5)
+                        if not card:
+                            print(f"[room-voice] {row['name']}: no card for {name}", flush=True)
+                            return
+                        async with send_lock:
+                            await asyncio.wait_for(ws.send_json(card), 5)
+                        print(f"[room-voice] {row['name']}: sent {card.get('kind')} card "
+                              f"({len(json.dumps(card))} bytes)", flush=True)
                     except Exception as exc:
                         print(f"[room-voice] card for {name} skipped: {type(exc).__name__}", flush=True)
 
@@ -244,6 +248,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                         raise PermissionError("tool was not offered to this device")
                                     if len(json.dumps(dict(fc.args or {}))) > 16384:
                                         raise ValueError("tool arguments too large")
+                                    print(f"[room-voice] {row['name']}: tool {fc.name}", flush=True)
                                     ctx = tools.Ctx(did, row["name"], "live")
                                     result = await asyncio.wait_for(asyncio.to_thread(
                                         tools.run, fc.name, dict(fc.args or {}), ctx), 40)
