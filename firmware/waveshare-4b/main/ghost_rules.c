@@ -53,3 +53,16 @@ bool ghost_controls_visible(bool busy, int64_t ms_since_touch, int64_t ms_since_
     return (ms_since_touch >= 0 && ms_since_touch < hide_ms) ||
            (ms_since_busy >= 0 && ms_since_busy < hide_ms);
 }
+
+bool ghost_sleepy(bool idle, int64_t ms_since_touch, int64_t ms_since_busy)
+{
+    return idle && ms_since_touch >= GHOST_SLEEP_MS && ms_since_busy >= GHOST_SLEEP_MS;
+}
+
+int16_t ghost_wake_gain(int32_t sample)
+{
+    int32_t v = sample * 2;
+    if (v > 32767) return 32767;
+    if (v < -32768) return -32768;
+    return (int16_t)v;
+}

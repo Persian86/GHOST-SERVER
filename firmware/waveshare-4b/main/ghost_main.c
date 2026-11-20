@@ -191,12 +191,36 @@ static void animate(lv_timer_t *timer)
     // starved the frame rate and the wake-word model (0.3.5-0.3.7: ~18 fps,
     // wake detect ~300 ms, flicker). Only the small eye and mouth patches
     // redraw, and only when they actually change.
+    // Reactions (like the desktop): perk up when Ghost is woken, a happy
+    // squint and big smile when it finishes answering, brows down on error.
+    enum {REACT_NONE,REACT_PERK,REACT_HAPPY};
+    static int prev_state=-1,reaction=REACT_NONE;
+    static int64_t reaction_until;
+    if(prev_state!=current) {
+        if((prev_state==IDLE || prev_state==ERROR_STATE) && current==CONNECTING) {reaction=REACT_PERK;reaction_until=now+700000;}
+        else if(prev_state==SPEAKING && current==IDLE) {reaction=REACT_HAPPY;reaction_until=now+1600000;}
+        else if(current!=IDLE) reaction=REACT_NONE;
+        prev_state=current;
+    }
+    if(reaction!=REACT_NONE && now>=reaction_until) reaction=REACT_NONE;
+    // Night mode: after 10 quiet minutes the backlight dims and Ghost sleeps
+    // (eyes shut, no movement). The wake word keeps listening; a touch or
+    // "Hey Ghost" wakes it. Brightness changes only on the transition.
+    bool asleep=ghost_sleepy(current==IDLE,(int64_t)lv_display_get_inactive_time(NULL),(now-busy_at)/1000);
+    static bool shown_asleep=false;
+    if(asleep!=shown_asleep) {bsp_display_brightness_set(asleep?8:75);shown_asleep=asleep;}
     static int shown_blink=-1,shown_gx=99,shown_gy=99,shown_brow=99;
     int blink=256-(int)lroundf(f.blink*240);
+    if(reaction==REACT_HAPPY && blink>130) blink=130;
+    if(asleep) blink=40;
     if(blink<32) blink=32;
-    int gaze_x=2*(int)lroundf(fmaxf(-6,fminf(6,f.gaze_x*1.2f))/2.0f);
-    int gaze_y=2*(int)lroundf(fmaxf(-4,fminf(4,f.gaze_y))/2.0f);
+    int gaze_x=asleep?0:2*(int)lroundf(fmaxf(-6,fminf(6,f.gaze_x*1.2f))/2.0f);
+    int gaze_y=asleep?0:2*(int)lroundf(fmaxf(-4,fminf(4,f.gaze_y))/2.0f);
     int brow=(int)lroundf(f.brow);
+    if(reaction==REACT_PERK) brow=-4;
+    else if(reaction==REACT_HAPPY) brow=-2;
+    else if(current==ERROR_STATE) brow=3;
+    if(asleep) brow=1;
     for(int side=0;side<2;side++) {
         if(blink!=shown_blink) lv_obj_set_style_transform_scale_y(eyes[side],blink,0);
         if(gaze_x!=shown_gx || gaze_y!=shown_gy)
@@ -207,6 +231,8 @@ static void animate(lv_timer_t *timer)
     shown_blink=blink;shown_gx=gaze_x;shown_gy=gaze_y;shown_brow=brow;
     // Friendly open smile at rest (like the desktop); speech opens it further.
     int shape_index=current==SPEAKING?1+(int)lroundf(f.mouth*4.0f):current==ERROR_STATE?0:2;
+    if(reaction==REACT_HAPPY) shape_index=3;
+    if(asleep) shape_index=0;
     if(shape_index<0) shape_index=0;
     if(shape_index>=GHOST_ART_MOUTHS) shape_index=GHOST_ART_MOUTHS-1;
     static int shown_mouth=-1;
@@ -226,6 +252,9 @@ static void animate(lv_timer_t *timer)
             else if(current==THINKING || current==CONNECTING) target=side?5.6f:2.6f;
             else if(current==ERROR_STATE) target=1.0f;
             else target=3.0f+0.7f*sinf(t*0.9f+phase);
+            if(reaction==REACT_PERK) target=6.0f;
+            else if(reaction==REACT_HAPPY) target=5.0f;
+            if(asleep) target=2.0f;
             arm_pose[side]+=(target-arm_pose[side])*0.12f;
             int pose=(int)lroundf(arm_pose[side]);
             if(pose<0) pose=0;
@@ -467,7 +496,10 @@ static void voice_task(void *arg)
                 wake_after=esp_timer_get_time()+1000000;continue;
             }
             int64_t energy=0;
-            for(int i=0;i<320;i++) {samples[i]=capture[i*2];energy+=(int64_t)samples[i]*samples[i];}
+            for(int i=0;i<320;i++) {
+                int raw=capture[i*2];energy+=(int64_t)raw*raw;
+                samples[i]=ghost_wake_gain(raw);   // recognizer copy only: +6 dB, clipped
+            }
             float rms=sqrtf((float)energy/320);
             if(rms<noise_floor*2) noise_floor=noise_floor*0.995f+rms*0.005f;
             if(!ghost_wake_feed(samples,320)) {vTaskDelay(1);continue;}
@@ -660,6 +692,8 @@ void app_main(void)
     ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
-        xTaskCreate(voice_task,"ghost_voice",16384,NULL,4,NULL)!=pdPASS) {fail("Not enough memory for voice.");return;}
+        // Voice (wake word + conversation) outranks the screen: priority 5 on
+        // core 1, above the LVGL task (4), so animation can never starve it.
+        xTaskCreatePinnedToCore(voice_task,"ghost_voice",16384,NULL,5,NULL,1)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }

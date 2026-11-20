@@ -22,7 +22,7 @@ static atomic_int sensitivity=70;
 static int applied_sensitivity=-1;
 static float threshold;
 // Bump for a materially changed initializer so a repaired version can retry.
-#define WAKE_INITIALIZER_VERSION 0x00020201u
+#define WAKE_INITIALIZER_VERSION 0x00020301u
 
 static esp_err_t boot_guard(uint32_t value)
 {
@@ -100,7 +100,9 @@ bool ghost_wake_init(void)
     frame=calloc(chunk,sizeof(*frame));
     if(!frame) goto failed;
     if(esp_mn_commands_alloc(recognizer,model)!=ESP_OK) goto failed;
-    if(esp_mn_commands_add(1,"hey ghost")!=ESP_OK || esp_mn_commands_update()!=NULL) {
+    // Same command id for both spellings: "hi ghost" catches a clipped "hey".
+    if(esp_mn_commands_add(1,"hey ghost")!=ESP_OK || esp_mn_commands_add(1,"hi ghost")!=ESP_OK ||
+        esp_mn_commands_update()!=NULL) {
         esp_mn_commands_free();goto failed;
     }
     nvs_handle_t handle;uint8_t saved;
@@ -138,6 +140,8 @@ bool ghost_wake_feed(const int16_t *samples,size_t count)
     static int64_t reported_at;
     static unsigned frames;
     static unsigned maximum_rms,maximum_detect_us;
+    static uint64_t fed_samples;   // audio actually reaching the recognizer
+    fed_samples+=count;
     int64_t energy=0;
     for(size_t i=0;i<count;i++) energy+=(int64_t)samples[i]*samples[i];
     unsigned rms=count?(unsigned)sqrtf((float)energy/count):0;
@@ -162,9 +166,11 @@ bool ghost_wake_feed(const int16_t *samples,size_t count)
         } else if(state==ESP_MN_STATE_TIMEOUT) recognizer->clean(model);
     }
     if(esp_timer_get_time()-reported_at>5000000) {
-        ESP_LOGW("ghost_wake","Idle frames=%u max_rms=%u max_detect_us=%u sensitivity=%d internal_free=%u",
-            frames,maximum_rms,maximum_detect_us,applied_sensitivity,(unsigned)esp_get_free_internal_heap_size());
-        reported_at=esp_timer_get_time();frames=0;maximum_rms=0;maximum_detect_us=0;
+        // audio_ms vs window_ms: equal means no microphone audio was dropped.
+        ESP_LOGW("ghost_wake","Idle frames=%u chunk=%d audio_ms=%u window_ms=%u max_rms=%u max_detect_us=%u sensitivity=%d internal_free=%u",
+            frames,chunk,(unsigned)(fed_samples/16),(unsigned)((esp_timer_get_time()-reported_at)/1000),
+            maximum_rms,maximum_detect_us,applied_sensitivity,(unsigned)esp_get_free_internal_heap_size());
+        reported_at=esp_timer_get_time();frames=0;maximum_rms=0;maximum_detect_us=0;fed_samples=0;
     }
     return false;
 }
