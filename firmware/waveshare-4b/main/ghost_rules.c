@@ -46,3 +46,10 @@ bool ghost_server_url_normalise(const char *typed, char *out, size_t capacity)
     if (written < 0 || (size_t)written >= capacity) return false;
     return ghost_server_url_ok(out);
 }
+
+bool ghost_controls_visible(bool busy, int64_t ms_since_touch, int64_t ms_since_busy, int64_t hide_ms)
+{
+    if (busy || hide_ms <= 0) return true;
+    return (ms_since_touch >= 0 && ms_since_touch < hide_ms) ||
+           (ms_since_busy >= 0 && ms_since_busy < hide_ms);
+}
