@@ -1,6 +1,6 @@
 idf_component_register(SRCS "ghost_main.c" "ghost_config.c" "ghost_wifi_ui.c" "ghost_wake.c" "ghost_motion.c" "ghost_rules.c" "ghost_art.c" INCLUDE_DIRS "."
     REQUIRES esp_wifi esp_event esp_netif nvs_flash esp_http_server esp_http_client
-    esp_timer json esp_psram)
+    esp_timer json esp_psram mbedtls)
 
 # Pack only the English model into the application. Never replace the owner's
 # original model partition or require a new partition table.

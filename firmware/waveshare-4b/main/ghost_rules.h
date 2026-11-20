@@ -44,3 +44,12 @@ void ghost_card_text(char *dst, size_t capacity, const char *src);
 
 // How long a card stays up before Ghost's face comes back.
 #define GHOST_CARD_MS 30000
+
+// HTTPS: the screen keeps its paired address as "http://IP:8780" and, once it
+// has pinned the server's certificate, talks to "https://IP:<tls port>".
+// Builds "https://IP:port<path>" from that address; false if it doesn't fit.
+bool ghost_https_url(const char *server, int port, const char *path, char *out, size_t capacity);
+
+// A single PEM certificate small enough to keep: BEGIN/END lines around
+// base64 only, and shorter than capacity (including the terminator).
+bool ghost_pem_ok(const char *pem, size_t capacity);

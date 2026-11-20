@@ -85,3 +85,33 @@ void ghost_card_text(char *dst, size_t capacity, const char *src)
     }
     dst[n]=0;
 }
+
+bool ghost_https_url(const char *server, int port, const char *path, char *out, size_t capacity)
+{
+    if (!ghost_server_url_ok(server) || port <= 0 || port > 65535 || !path || !out) return false;
+    const char *host = server + 7;
+    size_t len = strcspn(host, ":");
+    int written = snprintf(out, capacity, "https://%.*s:%d%s", (int)len, host, port, path);
+    return written > 0 && (size_t)written < capacity;
+}
+
+bool ghost_pem_ok(const char *pem, size_t capacity)
+{
+    static const char begin[] = "-----BEGIN CERTIFICATE-----", end[] = "-----END CERTIFICATE-----";
+    if (!pem) return false;
+    size_t n = strnlen(pem, capacity);
+    if (n == capacity || strncmp(pem, begin, sizeof(begin) - 1)) return false;
+    const char *body = pem + sizeof(begin) - 1;
+    const char *stop = strstr(body, end);
+    if (!stop || stop == body) return false;
+    for (const char *c = stop + sizeof(end) - 1; *c; c++)
+        if (*c != '\n' && *c != '\r') return false;              // exactly one certificate
+    size_t data = 0;
+    for (const char *c = body; c < stop; c++) {
+        char ch = *c;
+        if (ch != '\n' && ch != '\r') data++;
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+              ch == '+' || ch == '/' || ch == '=' || ch == '\n' || ch == '\r')) return false;
+    }
+    return data >= 4;
+}

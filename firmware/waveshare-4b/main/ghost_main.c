@@ -27,6 +27,7 @@
 #include "ghost_art.h"
 #include "cJSON.h"
 #include <ctype.h>
+#include "esp_heap_caps.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
@@ -70,6 +71,9 @@ static const lv_image_dsc_t *const arm_right[GHOST_ART_ARM_POSES]={&ghost_art_ar
     &ghost_art_arm_r2,&ghost_art_arm_r3,&ghost_art_arm_r4,&ghost_art_arm_r5,&ghost_art_arm_r6};
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
+static char voice_pin[GHOST_PIN_MAX];
+static int64_t connect_started;
+static bool connect_secure;
 static int packet_opcode;
 
 bool ghost_audio_ready(void) {return audio_ready;}
@@ -245,7 +249,7 @@ static void show_card(const weather_card_t *w)
         }
     }
     card_until=esp_timer_get_time()+(int64_t)GHOST_CARD_MS*1000;
-    ESP_LOGI("ghost_card","Weather card shown: %d days",w->days);
+    ESP_LOGW("ghost_card","Weather card shown: %d days",w->days);
 }
 
 static void animate(lv_timer_t *timer)
@@ -481,9 +485,11 @@ static int card_int(const cJSON *item,int fallback)
 static void take_card(const cJSON *json)
 {
     const cJSON *kind=cJSON_GetObjectItemCaseSensitive(json,"kind");
-    if(!cJSON_IsString(kind) || strcmp(kind->valuestring,"weather")) return;   // unknown cards: ignore
+    if(!cJSON_IsString(kind) || strcmp(kind->valuestring,"weather")) {
+        ESP_LOGW("ghost_card","Ignored card kind=%s",cJSON_IsString(kind)?kind->valuestring:"?");return;
+    }
     const cJSON *temp=cJSON_GetObjectItemCaseSensitive(json,"temp");
-    if(!cJSON_IsNumber(temp)) return;
+    if(!cJSON_IsNumber(temp)) {ESP_LOGW("ghost_card","Weather card without temperature");return;}
     weather_card_t w={0};
     card_string(w.city,sizeof w.city,cJSON_GetObjectItemCaseSensitive(json,"city"));
     card_string(w.desc,sizeof w.desc,cJSON_GetObjectItemCaseSensitive(json,"desc"));
@@ -500,12 +506,21 @@ static void take_card(const cJSON *json)
         if(d->rain>100) d->rain=100;
     }
     taskENTER_CRITICAL(&card_mux);incoming=w;card_ready=true;taskEXIT_CRITICAL(&card_mux);
+    ESP_LOGW("ghost_card","Weather card received: %s %d, %d days",w.city,w.temp,w.days);
 }
 
 static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,void *event_data)
 {
     esp_websocket_event_data_t *data=event_data;
+    if (event_id==WEBSOCKET_EVENT_CONNECTED) {
+        ESP_LOGW("ghost_voice","Connected secure=%d in %lld ms internal_free=%u",(int)connect_secure,
+            (long long)((esp_timer_get_time()-connect_started)/1000),
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return;
+    }
     if (event_id==WEBSOCKET_EVENT_DISCONNECTED || event_id==WEBSOCKET_EVENT_ERROR) {
+        if(connect_secure && data->error_handle.esp_tls_cert_verify_flags)
+            fail("Ghost Server's certificate changed. Re-pair this screen in Setup > Server.");
         ESP_LOGW("ghost_voice","Transport event=%ld close=%d handshake=%d errno=%d",(long)event_id,
             data->close_status_code,data->error_handle.esp_ws_handshake_status_code,data->error_handle.esp_transport_sock_errno);
         disconnected=true; return;
@@ -714,10 +729,22 @@ static void voice_task(void *arg)
         continuous_supported=false;remote_follow_up=false;follow_up=false;
         auto_finish=wake_turn;
         state=CONNECTING;
-        snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice?continuous=1",config.server+7);
+        // Encrypted, certificate-pinned WSS once the server's certificate is known;
+        // never a silent fallback to plain once pinned.
+        int tls_port=0;
+        connect_secure=ghost_server_pin(voice_pin,sizeof(voice_pin),&tls_port);
+        if(connect_secure) {
+            char https[160];
+            if(!ghost_https_url(config.server,tls_port,"/api/v1/room-voice?continuous=1",https,sizeof(https))) {
+                fail("Ghost Server address is too long.");continue;
+            }
+            snprintf(uri,sizeof(uri),"wss://%.150s",https+8);
+        } else snprintf(uri,sizeof(uri),"ws://%.88s/api/v1/room-voice?continuous=1",config.server+7);
         snprintf(headers,sizeof(headers),"Authorization: Bearer %.159s\r\n",config.key);
         esp_websocket_client_config_t ws={.uri=uri,.headers=headers,.disable_auto_reconnect=true,
-            .network_timeout_ms=12000,.buffer_size=4096,.task_stack=6144};
+            .network_timeout_ms=12000,.buffer_size=4096,.task_stack=connect_secure?8192:6144,
+            .cert_pem=connect_secure?voice_pin:NULL,.skip_cert_common_name_check=connect_secure};
+        connect_started=esp_timer_get_time();
         socket_client=esp_websocket_client_init(&ws);
         if(!socket_client) {fail("Not enough memory to connect.");continue;}
         esp_websocket_register_events(socket_client,WEBSOCKET_EVENT_ANY,websocket_event,NULL);
@@ -863,6 +890,7 @@ void app_main(void)
     bsp_display_lock(0);build_ui();bsp_display_unlock();
     if(nvs_result!=ESP_OK) {status_message("Settings storage error. Original data was not erased.");return;}
     if(!ghost_config_connect(&config,status_message)) return;
+    ghost_server_secure_start();
     // Configure the shared bus BEFORE constructing either codec. BSP's default
     // is 22.05 kHz mono, which differs from this application's stereo DMA layout.
     const i2s_std_config_t bus={
