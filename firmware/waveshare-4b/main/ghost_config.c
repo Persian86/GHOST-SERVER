@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <strings.h>
 #include <stdatomic.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -18,6 +19,10 @@
 #include "nvs.h"
 #include "cJSON.h"
 #include "lwip/inet.h"
+#include "freertos/semphr.h"
+#include "esp_log.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
 
 static EventGroupHandle_t events;
 static ghost_status_fn status_fn;
@@ -27,6 +32,137 @@ static atomic_bool submitting, reconnect_enabled;
 static const int GOT_IP = 1;
 static ghost_config_t *current_config;
 static atomic_bool wifi_operation;
+
+// ── HTTPS certificate pin ────────────────────────────────────────────────────
+static SemaphoreHandle_t pin_lock;
+static char pin_pem[GHOST_PIN_MAX], pin_fp[24];
+static int pin_port;
+
+// SHA-256 of the certificate's DER bytes (what Ghost Server shows as its fingerprint).
+static bool pem_sha256(const char *pem, unsigned char digest[32])
+{
+    const char *begin = strstr(pem, "-----BEGIN CERTIFICATE-----");
+    const char *end = strstr(pem, "-----END CERTIFICATE-----");
+    if (!begin || !end || end <= begin) return false;
+    begin += strlen("-----BEGIN CERTIFICATE-----");
+    size_t span = end - begin, n = 0;
+    char *b64 = malloc(span + 1);
+    unsigned char *der = malloc(span);
+    bool ok = false;
+    if (b64 && der) {
+        for (const char *c = begin; c < end; c++) if (*c != '\n' && *c != '\r') b64[n++] = *c;
+        size_t der_len = 0;
+        ok = mbedtls_base64_decode(der, span, &der_len, (const unsigned char *)b64, n) == 0 && der_len > 0 &&
+             mbedtls_sha256(der, der_len, digest, 0) == 0;
+    }
+    free(b64); free(der);
+    return ok;
+}
+
+static void set_pin(const char *pem, int port)
+{
+    unsigned char digest[32];
+    char fp[24] = "";
+    if (pem[0] && pem_sha256(pem, digest))
+        snprintf(fp, sizeof(fp), "%02X%02X %02X%02X %02X%02X %02X%02X", digest[0], digest[1], digest[2],
+                 digest[3], digest[4], digest[5], digest[6], digest[7]);
+    xSemaphoreTake(pin_lock, portMAX_DELAY);
+    strlcpy(pin_pem, fp[0] ? pem : "", sizeof(pin_pem));
+    pin_port = fp[0] ? port : 0;
+    strlcpy(pin_fp, fp, sizeof(pin_fp));
+    xSemaphoreGive(pin_lock);
+}
+
+bool ghost_server_pin(char *pem, size_t capacity, int *port)
+{
+    if (!pin_lock) return false;
+    xSemaphoreTake(pin_lock, portMAX_DELAY);
+    bool secure = pin_pem[0] && pin_port > 0 && strlen(pin_pem) < capacity;
+    if (secure) {strlcpy(pem, pin_pem, capacity); *port = pin_port;}
+    xSemaphoreGive(pin_lock);
+    return secure;
+}
+
+void ghost_server_fingerprint(char *out, size_t capacity)
+{
+    if (!pin_lock) {if (capacity) out[0] = 0; return;}
+    xSemaphoreTake(pin_lock, portMAX_DELAY);
+    strlcpy(out, pin_fp, capacity);
+    xSemaphoreGive(pin_lock);
+}
+
+// Saved next to the config blob so older firmware ignores it. An empty pem clears it.
+static esp_err_t save_pin(const char *pem, int port)
+{
+    nvs_handle_t nvs;
+    esp_err_t result = nvs_open("ghost_room", NVS_READWRITE, &nvs);
+    if (result != ESP_OK) return result;
+    if (pem[0]) {
+        result = nvs_set_str(nvs, "tls_pem", pem);
+        if (result == ESP_OK) result = nvs_set_u16(nvs, "tls_port", (uint16_t)port);
+    } else {
+        nvs_erase_key(nvs, "tls_pem"); nvs_erase_key(nvs, "tls_port");
+    }
+    if (result == ESP_OK) result = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (result == ESP_OK) set_pin(pem, port);
+    return result;
+}
+
+static void load_pin(void)
+{
+    nvs_handle_t nvs;
+    char *pem = calloc(1, GHOST_PIN_MAX);
+    uint16_t port = 0;
+    size_t size = GHOST_PIN_MAX;
+    if (pem && nvs_open("ghost_room", NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_str(nvs, "tls_pem", pem, &size) == ESP_OK && nvs_get_u16(nvs, "tls_port", &port) == ESP_OK &&
+            ghost_pem_ok(pem, GHOST_PIN_MAX) && port)
+            set_pin(pem, port);
+        nvs_close(nvs);
+    }
+    free(pem);
+}
+
+// GET <server>/api/v1/tls (public, plain HTTP): the certificate to pin, checked
+// against the fingerprint sent with it and the shape we accept.
+static bool fetch_tls(const char *server, char *pem, size_t capacity, int *port)
+{
+    char url[128];
+    snprintf(url, sizeof(url), "%.95s/api/v1/tls", server);
+    esp_http_client_config_t http = {.url=url, .timeout_ms=8000, .disable_auto_redirect=true};
+    esp_http_client_handle_t client = esp_http_client_init(&http);
+    if (!client) return false;
+    bool ok = false;
+    char *body = calloc(1, 3072);
+    if (body && esp_http_client_open(client, 0) == ESP_OK && esp_http_client_fetch_headers(client) >= 0 &&
+        esp_http_client_get_status_code(client) == 200) {
+        int len = esp_http_client_read_response(client, body, 3071);
+        cJSON *json = len > 0 ? cJSON_Parse(body) : NULL;
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(json, "enabled");
+        const cJSON *got_pem = cJSON_GetObjectItemCaseSensitive(json, "pem");
+        const cJSON *got_port = cJSON_GetObjectItemCaseSensitive(json, "port");
+        const cJSON *sha = cJSON_GetObjectItemCaseSensitive(json, "sha256");
+        unsigned char digest[32];
+        if (cJSON_IsTrue(enabled) && cJSON_IsString(got_pem) && cJSON_IsNumber(got_port) && cJSON_IsString(sha) &&
+            got_port->valueint > 0 && got_port->valueint <= 65535 && ghost_pem_ok(got_pem->valuestring, capacity) &&
+            pem_sha256(got_pem->valuestring, digest)) {
+            char hex[65];
+            for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02X", digest[i]);
+            if (!strcasecmp(hex, sha->valuestring)) {
+                strlcpy(pem, got_pem->valuestring, capacity); *port = got_port->valueint; ok = true;
+            }
+        }
+        cJSON_Delete(json);
+    }
+    free(body);
+    esp_http_client_cleanup(client);
+    return ok;
+}
+
+// Pairing's own copy of the server certificate; one pairing runs at a time.
+static char pair_pem[GHOST_PIN_MAX];
+static int pair_port;
 
 bool ghost_wifi_ready(void) { return events && (xEventGroupGetBits(events) & GOT_IP); }
 
@@ -179,12 +315,21 @@ static bool pair_with(const char *server, const char *code, char *key, size_t ke
 {
     char url[128], response[1024] = {0}, name[48];
     *http_status = 0;
-    snprintf(url, sizeof(url), "%.95s/api/v1/pair", server);
+    pair_pem[0] = 0; pair_port = 0;
+    // HTTPS when the server has a certificate, so the device key never crosses Wi-Fi in the clear.
+    bool secure = fetch_tls(server, pair_pem, sizeof(pair_pem), &pair_port);
+    if (secure) {
+        if (!ghost_https_url(server, pair_port, "/api/v1/pair", url, sizeof(url))) return false;
+    } else {
+        pair_pem[0] = 0; pair_port = 0;
+        snprintf(url, sizeof(url), "%.95s/api/v1/pair", server);
+    }
     // Name each screen apart on the admin page (bedroom, lounge, office all look alike).
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(name, sizeof(name), "Ghost room screen %02X%02X", mac[4], mac[5]);
-    esp_http_client_config_t http = {.url=url, .timeout_ms=12000, .disable_auto_redirect=true};
+    esp_http_client_config_t http = {.url=url, .timeout_ms=12000, .disable_auto_redirect=true,
+        .cert_pem=secure ? pair_pem : NULL, .skip_cert_common_name_check=secure};
     esp_http_client_handle_t client = esp_http_client_init(&http);
     if (!client) return false;
     char body[200];
@@ -252,7 +397,10 @@ esp_err_t ghost_server_repair(const char *typed_server, const char *code)
     } else {
         // Only replace the working pairing once the new one is saved.
         result = save_config(&next);
-        if (result == ESP_OK) *current_config = next;
+        if (result == ESP_OK) {
+            *current_config = next;
+            result = save_pin(pair_pem, pair_port);   // the new server's certificate (or none)
+        }
     }
     memset(&next, 0, sizeof(next));
     wifi_operation = false;
@@ -262,7 +410,7 @@ esp_err_t ghost_server_repair(const char *typed_server, const char *code)
 static void save_task(void *arg)
 {
     status_fn("Connecting to home Wi-Fi...");
-    if (join(&pending) && pair_device() && save_config(&pending) == ESP_OK) {
+    if (join(&pending) && pair_device() && save_config(&pending) == ESP_OK && save_pin(pair_pem, pair_port) == ESP_OK) {
         status_fn("Paired. Approve this device on Ghost Server if requested.");
         vTaskDelay(pdMS_TO_TICKS(1500)); esp_restart();
     }
@@ -294,7 +442,7 @@ static esp_err_t save_page(httpd_req_t *req)
     }
     memset(form,0,sizeof(form)); submitting = true;
     httpd_resp_sendstr(req,"Connecting. Check Ghost's screen. If setup fails, return to the setup page and try again.");
-    if (xTaskCreate(save_task,"setup_save",8192,NULL,4,NULL) != pdPASS) {
+    if (xTaskCreate(save_task,"setup_save",12288,NULL,4,NULL) != pdPASS) {
         submitting = false; status_fn("Not enough memory for setup. Restart and try again.");
     }
     return ESP_OK;
@@ -304,6 +452,8 @@ bool ghost_config_connect(ghost_config_t *cfg, ghost_status_fn status)
 {
     current_config=cfg;
     status_fn = status;
+    pin_lock = xSemaphoreCreateMutex();
+    load_pin();
     events = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -361,4 +511,39 @@ bool ghost_config_connect(ghost_config_t *cfg, ghost_status_fn status)
     ESP_ERROR_CHECK(httpd_register_uri_handler(server,&home));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server,&save));
     return false;
+}
+
+// Screens paired before HTTPS learn their server's certificate once, in the
+// background (a slow server never delays the wake word or a conversation).
+static void secure_task(void *arg)
+{
+    static char pem[GHOST_PIN_MAX];
+    int port = 0;
+    for (;;) {
+        char fp[24];
+        ghost_server_fingerprint(fp, sizeof(fp));
+        if (fp[0]) {vTaskDelay(pdMS_TO_TICKS(60000)); continue;}           // already secure
+        if (!ghost_wifi_ready() || !current_config || !current_config->key[0] || submitting) {
+            vTaskDelay(pdMS_TO_TICKS(5000)); continue;
+        }
+        char server[96];
+        strlcpy(server, current_config->server, sizeof(server));
+        bool got = fetch_tls(server, pem, sizeof(pem), &port);
+        if (got && !atomic_exchange(&wifi_operation, true)) {
+            if (!strcmp(server, current_config->server)) {
+                esp_err_t saved = save_pin(pem, port);
+                ESP_LOGW("ghost_tls", "Pinned Ghost Server certificate (port %d): %s", port,
+                         saved == ESP_OK ? "saved" : esp_err_to_name(saved));
+            }
+            wifi_operation = false;
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(got ? 2000 : 60000));
+    }
+}
+
+void ghost_server_secure_start(void)
+{
+    if (xTaskCreate(secure_task, "ghost_tls", 6144, NULL, 2, NULL) != pdPASS)
+        ESP_LOGW("ghost_tls", "No memory for the HTTPS setup task");
 }

@@ -67,6 +67,22 @@ int main(void)
     ghost_card_text(t, sizeof t, NULL); assert(!strcmp(t, ""));
     ghost_card_text(t, 4, "ab\xE2\x80\xA6"); assert(!strcmp(t, "ab."));
     ghost_card_text(t, sizeof t, "\xE2"); assert(t[0]==' ' && t[1]==0);
+    // HTTPS address from the paired plain address.
+    char u[64];
+    assert(ghost_https_url("http://192.168.80.165:8780", 8781, "/api/v1/pair", u, sizeof u));
+    assert(!strcmp(u, "https://192.168.80.165:8781/api/v1/pair"));
+    assert(ghost_https_url("http://10.0.0.2", 8781, "", u, sizeof u) && !strcmp(u, "https://10.0.0.2:8781"));
+    assert(!ghost_https_url("http://8.8.8.8:8780", 8781, "", u, sizeof u));
+    assert(!ghost_https_url("http://192.168.80.165:8780", 0, "", u, sizeof u));
+    assert(!ghost_https_url("http://192.168.80.165:8780", 8781, "/a/very/long/path/that/does/not/fit/here", u, 32));
+    // Pinned certificate shape.
+    const char *pem = "-----BEGIN CERTIFICATE-----\nMIIB+zCCAaGgAwIBAgIU/x==\n-----END CERTIFICATE-----\n";
+    assert(ghost_pem_ok(pem, 200));
+    assert(!ghost_pem_ok(pem, 20));
+    assert(!ghost_pem_ok("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n", 200));
+    assert(!ghost_pem_ok("-----BEGIN CERTIFICATE-----\nab\"cd\n-----END CERTIFICATE-----\n", 200));
+    assert(!ghost_pem_ok("-----BEGIN CERTIFICATE-----\nabcd\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\n", 200));
+    assert(!ghost_pem_ok(NULL, 200));
     puts("rules ok");
     return 0;
 }

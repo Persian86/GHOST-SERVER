@@ -235,7 +235,7 @@ static void repair_tap(lv_event_t *event)
     strlcpy(entered_server,lv_textarea_get_text(server_field),sizeof(entered_server));
     strlcpy(entered_code,lv_textarea_get_text(code_field),sizeof(entered_code));
     busy=true;lv_label_set_text(message,"Pairing... please wait.");
-    if(xTaskCreate(repair_worker,"ghost_repair",8192,NULL,3,NULL)!=pdPASS) {
+    if(xTaskCreate(repair_worker,"ghost_repair",12288,NULL,3,NULL)!=pdPASS) {
         busy=false;memset(entered_code,0,sizeof(entered_code));
         lv_label_set_text(message,"Not enough memory. Please try again.");
     }
@@ -271,6 +271,11 @@ static void server_settings_tap(lv_event_t *event)
     lv_obj_t *text=lv_label_create(pair);lv_label_set_text(text,"Re-pair");lv_obj_center(text);
     lv_obj_add_event_cb(pair,repair_tap,LV_EVENT_CLICKED,NULL);
     message=label(panel,"Make a code on the Ghost Server admin page (New pairing code). Wi-Fi is kept.",20,146,296);
+    // Compare with the certificate fingerprint on Ghost Server's admin page / log.
+    char fp[24],security[64];ghost_server_fingerprint(fp,sizeof(fp));
+    if(fp[0]) snprintf(security,sizeof(security),"Secure (HTTPS)  %s",fp);
+    else strlcpy(security,"Not encrypted yet (plain HTTP)",sizeof(security));
+    label(panel,security,20,222,440);
     repair_keyboard=lv_keyboard_create(panel);lv_obj_set_size(repair_keyboard,480,226);
     lv_obj_align(repair_keyboard,LV_ALIGN_BOTTOM_MID,0,0);
     lv_keyboard_set_mode(repair_keyboard,LV_KEYBOARD_MODE_NUMBER);
