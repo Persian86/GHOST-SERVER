@@ -211,7 +211,13 @@ static void animate(lv_timer_t *timer)
     if(asleep!=shown_asleep) {bsp_display_brightness_set(asleep?8:75);shown_asleep=asleep;}
     static int shown_blink=-1,shown_gx=99,shown_gy=99,shown_brow=99;
     int blink=256-(int)lroundf(f.blink*240);
-    if(reaction==REACT_HAPPY && blink>130) blink=130;
+    // Ease the happy squint in and out (~0.25 s) instead of snapping, which
+    // read as a flicker at the end of a conversation.
+    static float happy=0;
+    happy+=((reaction==REACT_HAPPY?1.0f:0.0f)-happy)*0.25f;
+    if(happy<0.02f) happy=0;
+    int squint=256-(int)lroundf(happy*126.0f);
+    if(blink>squint) blink=squint;
     if(asleep) blink=40;
     if(blink<32) blink=32;
     int gaze_x=asleep?0:2*(int)lroundf(fmaxf(-6,fminf(6,f.gaze_x*1.2f))/2.0f);
