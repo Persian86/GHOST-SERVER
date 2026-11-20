@@ -287,7 +287,12 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
         pass
     except PermissionError:
         await ws.close(code=4403, reason="device access changed")
-    except (ValueError, json.JSONDecodeError):
+    except json.JSONDecodeError:
+        print(f"[room-voice] {row.get('name') or did}: rejected (4400): control frame was not JSON", flush=True)
+        await ws.close(code=4400, reason="invalid voice input")
+    except ValueError as exc:
+        # These are Ghost Server's own short reasons ("reply too long", ...).
+        print(f"[room-voice] {row.get('name') or did}: rejected (4400): {str(exc)[:80]}", flush=True)
         await ws.close(code=4400, reason="invalid voice input")
     except Exception as exc:
         # Provider exceptions may contain URLs or credentials; never forward or
