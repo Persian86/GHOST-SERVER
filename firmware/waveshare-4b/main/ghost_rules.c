@@ -66,3 +66,22 @@ int16_t ghost_wake_gain(int32_t sample)
     if (v < -32768) return -32768;
     return (int16_t)v;
 }
+
+void ghost_card_text(char *dst, size_t capacity, const char *src)
+{
+    if(!dst || !capacity) return;
+    size_t n=0;
+    const unsigned char *p=(const unsigned char *)(src?src:"");
+    while(*p && n+1<capacity) {
+        if(p[0]==0xE2 && p[1]==0x80 && p[2]==0xA6) {           // U+2026 ellipsis
+            for(int i=0;i<3 && n+1<capacity;i++) dst[n++]='.';
+            p+=3; continue;
+        }
+        if(*p>=0x80) {                                           // skip one UTF-8 character
+            p++; while((*p&0xC0)==0x80) p++;
+            dst[n++]=' '; continue;
+        }
+        dst[n++]=*p<0x20?' ':(char)*p; p++;
+    }
+    dst[n]=0;
+}
