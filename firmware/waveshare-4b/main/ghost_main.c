@@ -46,7 +46,7 @@ static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
 static lv_obj_t *eyes[2],*irises[2],*brows[2],*shadow;
 static ghost_motion_t motion;
-// Where the avatar sits on the 480x480 screen (centred, under the title bar).
+// Where the avatar sits on the 480x480 screen (centred near the top).
 #define AVATAR_X ((480-(int)ghost_art_body.header.w)/2)
 #define AVATAR_Y 22
 static const lv_image_dsc_t *const mouths[GHOST_ART_MOUTHS]={&ghost_art_mouth0,&ghost_art_mouth1,
@@ -214,7 +214,7 @@ static void animate(lv_timer_t *timer)
     last=current;
     if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
     else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
-    const char *labels[]={!wifi?"Waiting for Wi-Fi... Ghost keeps trying":wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
+    const char *labels[]={!wifi?"Waiting for Wi-Fi... Ghost keeps trying":"", "Connecting to Ghost...",
         follow_up?"Anything else? Listening...":auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
     if (current!=SETUP) lv_label_set_text(status_label,labels[current]);
@@ -238,10 +238,6 @@ static void build_ui(void)
     lv_obj_t *screen=lv_screen_active();
     lv_obj_set_style_bg_color(screen,lv_color_hex(0x110924),0);
     lv_obj_set_style_text_color(screen,lv_color_hex(0xeeeafb),0);
-    lv_obj_t *title=lv_label_create(screen);
-    lv_label_set_text(title,"Ghost");
-    lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0);
-    lv_obj_align(title,LV_ALIGN_TOP_LEFT,24,18);
     lv_obj_t *setup=setup_button=lv_button_create(screen);
     lv_obj_set_size(setup,94,48); lv_obj_align(setup,LV_ALIGN_TOP_RIGHT,-18,12);
     lv_obj_set_style_bg_color(setup,lv_color_hex(0x302943),0);
@@ -252,8 +248,8 @@ static void build_ui(void)
     lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
     lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
     ghost_motion_init(&motion,esp_random());
-    static const lv_point_t sparkle_at[10]={{40,92},{432,118},{58,330},{418,300},{120,58},
-        {372,404},{26,214},{452,222},{86,450},{300,40}};
+    static const lv_point_t sparkle_at[10]={{40,92},{432,118},{58,330},{418,300},{62,150},
+        {372,404},{26,214},{452,222},{86,450},{404,176}};
     for(int i=0;i<10;i++) {
         sparkles[i]=lv_image_create(screen);lv_image_set_src(sparkles[i],&ghost_art_sparkle);
         lv_obj_set_pos(sparkles[i],sparkle_at[i].x,sparkle_at[i].y);
