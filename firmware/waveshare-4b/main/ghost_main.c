@@ -124,7 +124,7 @@ static void setup_touch(lv_event_t *event)
 static void animate(lv_timer_t *timer)
 {
     static int last=-1;
-    static int last_wake=-1;
+    static int last_wake=-1,last_wifi=-1;
     static int64_t previous_frame,report_at;
     static unsigned frame_count,slow_frames,max_frame_ms;
     if(ghost_wifi_ui_visible()) {previous_frame=report_at=0;frame_count=slow_frames=max_frame_ms=0;return;}
@@ -168,12 +168,13 @@ static void animate(lv_timer_t *timer)
     lv_obj_align(tongue,LV_ALIGN_BOTTOM_MID,0,0);
     lv_obj_set_style_bg_opa(tongue,f.mouth>0.2f?LV_OPA_COVER:LV_OPA_TRANSP,0);
     int wake=ghost_wake_enabled();
-    if (current==last && wake==last_wake) return;
-    last_wake=wake;
+    int wifi=ghost_wifi_ready();
+    if (current==last && wake==last_wake && wifi==last_wifi) return;
+    last_wake=wake;last_wifi=wifi;
     last=current;
     if(current==LISTENING) {lv_obj_remove_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
     else {lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);}
-    const char *labels[]={wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
+    const char *labels[]={!wifi?"Waiting for Wi-Fi... Ghost keeps trying":wake?"Say Hey Ghost, or tap to talk":"Tap Ghost to talk", "Connecting to Ghost...",
         follow_up?"Anything else? Listening...":auto_finish?"Listening - pause when finished":"Listening - tap when finished",
         "Thinking...", "Speaking", error_text, "Setting up Ghost"};
     if (current!=SETUP) lv_label_set_text(status_label,labels[current]);
@@ -355,7 +356,9 @@ static void play_task(void *arg)
     int16_t stereo[2048];
     while(true) {
         size_t len; void *item=xRingbufferReceiveUpTo(playback,&len,pdMS_TO_TICKS(50),2048);
-        if(!item) continue;
+        // Close the mouth only when speech actually stops (no audio for 50 ms),
+        // not after every 64 ms chunk, which made it flicker while talking.
+        if(!item) {speech_level=0;continue;}
         if(!abort_turn) {
             bsp_audio_poweramp_enable(true);
             const int16_t *mono=item;
@@ -366,7 +369,6 @@ static void play_task(void *arg)
             if(esp_codec_dev_write(speaker,stereo,len*2)!=ESP_OK) fail("Speaker error. Restart Ghost.");
         }
         vRingbufferReturnItem(playback,item);
-        speech_level=0;
     }
 }
 
