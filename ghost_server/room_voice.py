@@ -14,6 +14,14 @@ from fastapi import WebSocketDisconnect
 
 from . import access, cards, prompt, store, tools
 
+# Screens running the continuous protocol show cards. Without this the model
+# believes it is a speaker and answers "show me the weather" with "I'm audio only".
+SCREEN_NOTE = ("\n\n[THIS DEVICE HAS A SCREEN]\nThis device has a touchscreen. Whenever you call the "
+               "weather tool here, a forecast card (temperature, conditions and the next 3 days) "
+               "appears on the screen automatically. So when asked to show, display or check the "
+               "weather or forecast, call the weather tool, then give a short spoken summary - "
+               "never say this device is audio-only or cannot show things.")
+
 MAX_INPUT_SECONDS = 20
 MAX_SESSION_SECONDS = 100
 MAX_CONVERSATION_SECONDS = 300
@@ -133,7 +141,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
         declarations = [t for t in tools.declarations("live") if access.tool_allowed(did, t["name"])]
         cfg = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            system_instruction=prompt.build(dict(row)),
+            system_instruction=prompt.build(dict(row)) + (SCREEN_NOTE if continuous else ""),
             tools=[{"function_declarations": declarations}] if declarations else [],
             speech_config={"voice_config": {"prebuilt_voice_config": {
                 "voice_name": store.get("gemini_voice") or "Fenrir"}}},
