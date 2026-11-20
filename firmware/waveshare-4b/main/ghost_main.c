@@ -252,8 +252,8 @@ static void build_ui(void)
     lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
     lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
     ghost_motion_init(&motion,esp_random());
-    static const lv_point_t sparkle_at[10]={{40,92},{432,118},{58,330},{418,300},{120,58},
-        {372,404},{26,214},{452,222},{86,450},{300,40}};
+    static const lv_point_t sparkle_at[10]={{40,92},{432,118},{58,330},{418,300},{62,150},
+        {372,404},{26,214},{452,222},{86,450},{404,176}};
     for(int i=0;i<10;i++) {
         sparkles[i]=lv_image_create(screen);lv_image_set_src(sparkles[i],&ghost_art_sparkle);
         lv_obj_set_pos(sparkles[i],sparkle_at[i].x,sparkle_at[i].y);
