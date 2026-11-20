@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -476,6 +477,50 @@ static void play_task(void *arg)
     }
 }
 
+// Idle wake-word microphone path. The board's I2S driver holds only ~90 ms
+// of audio (6 x 240-frame DMA buffers), and the recognizer's detect() can
+// take 90-120 ms, so reading the microphone from the voice task lost ~5% of
+// the audio (0.3.14 log: audio_ms ~4600-4940 per ~5000 ms). A small
+// high-priority task now only moves microphone frames into a 0.5 s ring;
+// the voice task consumes from the ring at its own pace. It runs only while
+// idle-listening for "Hey Ghost"; conversations read the microphone directly.
+static RingbufHandle_t mic_ring;
+static SemaphoreHandle_t mic_lock;
+static atomic_bool mic_capturing;
+static atomic_uint mic_dropped;
+
+static void mic_task(void *arg)
+{
+    static int16_t stereo[640];
+    static int16_t mono[320];
+    while(true) {
+        if(!mic_capturing) {vTaskDelay(pdMS_TO_TICKS(10));continue;}
+        xSemaphoreTake(mic_lock,portMAX_DELAY);
+        esp_err_t result=mic_capturing?esp_codec_dev_read(microphone,stereo,sizeof(stereo)):ESP_ERR_INVALID_STATE;
+        xSemaphoreGive(mic_lock);
+        if(result!=ESP_OK) {vTaskDelay(pdMS_TO_TICKS(20));continue;}
+        for(int i=0;i<320;i++) mono[i]=stereo[i*2];   // ES7210 first microphone, as before
+        if(xRingbufferSend(mic_ring,mono,sizeof(mono),0)!=pdTRUE) mic_dropped++;
+    }
+}
+
+static void mic_ring_drain(void)
+{
+    size_t size;void *item;
+    while((item=xRingbufferReceiveUpTo(mic_ring,&size,0,sizeof(int16_t)*1600))) vRingbufferReturnItem(mic_ring,item);
+}
+
+// Start/stop idle capture. Stopping waits for any in-flight read, so the
+// voice task can read the microphone directly straight afterwards.
+static void mic_capture(bool on)
+{
+    if(on==mic_capturing) return;
+    if(on) {mic_ring_drain();mic_capturing=true;return;}
+    mic_capturing=false;
+    xSemaphoreTake(mic_lock,portMAX_DELAY);xSemaphoreGive(mic_lock);
+    mic_ring_drain();
+}
+
 static void voice_task(void *arg)
 {
     char uri[160],headers[200];
@@ -493,28 +538,35 @@ static void voice_task(void *arg)
             bool monitor=(state==IDLE || state==ERROR_STATE) && ghost_wake_enabled() &&
                 !ghost_wifi_ui_visible() && ghost_wifi_ready() && esp_timer_get_time()>=wake_after;
             if(!monitor) {
-                if(idle_monitoring) {ghost_wake_reset();idle_monitoring=false;}
+                if(idle_monitoring) {mic_capture(false);ghost_wake_reset();idle_monitoring=false;}
                 vTaskDelay(pdMS_TO_TICKS(20));continue;
             }
-            if(!idle_monitoring) {ghost_wake_reset();idle_monitoring=true;}
-            memset(capture,0,sizeof(capture));
-            if(esp_codec_dev_read(microphone,capture,sizeof(capture))!=ESP_OK) {
-                wake_after=esp_timer_get_time()+1000000;continue;
-            }
+            if(!idle_monitoring) {ghost_wake_reset();mic_capture(true);idle_monitoring=true;}
+            size_t got=0;
+            int16_t *chunk=xRingbufferReceiveUpTo(mic_ring,&got,pdMS_TO_TICKS(200),sizeof(int16_t)*320);
+            if(!chunk) continue;   // no audio yet; loop re-checks state, commands and Wi-Fi
+            int n=(int)(got/sizeof(int16_t));
             int64_t energy=0;
-            for(int i=0;i<320;i++) {
-                int raw=capture[i*2];energy+=(int64_t)raw*raw;
+            for(int i=0;i<n;i++) {
+                int raw=chunk[i];energy+=(int64_t)raw*raw;
                 samples[i]=ghost_wake_gain(raw);   // recognizer copy only: +6 dB, clipped
             }
-            float rms=sqrtf((float)energy/320);
+            vRingbufferReturnItem(mic_ring,chunk);
+            static int64_t mic_report_at;
+            if(esp_timer_get_time()-mic_report_at>5000000) {
+                if(mic_report_at) ESP_LOGW("ghost_mic","Idle capture ring dropped=%u",(unsigned)mic_dropped);
+                mic_report_at=esp_timer_get_time();mic_dropped=0;
+            }
+            if(n<=0) continue;
+            float rms=sqrtf((float)energy/n);
             if(rms<noise_floor*2) noise_floor=noise_floor*0.995f+rms*0.005f;
-            if(!ghost_wake_feed(samples,320)) {vTaskDelay(1);continue;}
+            if(!ghost_wake_feed(samples,n)) continue;
             // Setup or a saved toggle may have changed during inference.
             if(!ghost_wake_enabled() || ghost_wifi_ui_visible()) continue;
             command=1;wake_turn=true;
         }
         if(command!=1) continue;
-        ghost_wake_reset();idle_monitoring=false;
+        mic_capture(false);ghost_wake_reset();idle_monitoring=false;
         if(state!=IDLE && state!=ERROR_STATE) continue;
         if(ghost_wifi_ui_visible()) continue;
         if(!ghost_wifi_ready()) {fail("Wi-Fi disconnected. Reconnecting...");continue;}
@@ -701,6 +753,11 @@ void app_main(void)
     status_message("Preparing local Hey Ghost detection...");
     ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
+    mic_ring=xRingbufferCreate(16000,RINGBUF_TYPE_BYTEBUF);   // 0.5 s of 16 kHz mono
+    mic_lock=xSemaphoreCreateMutex();
+    if(!mic_ring || !mic_lock ||
+        // Microphone mover outranks everything on core 1; it only blocks on I2S.
+        xTaskCreatePinnedToCore(mic_task,"ghost_mic",3072,NULL,6,NULL,1)!=pdPASS) {fail("Not enough memory for microphone.");return;}
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
         // Voice (wake word + conversation) owns core 1; LVGL is pinned to core 0
         // (see app_main). Logs: voice on core 1 shared with LVGL -> ~3% wake
