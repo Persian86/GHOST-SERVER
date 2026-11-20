@@ -10,8 +10,11 @@
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
+#include "esp_wifi.h"
 
 static lv_obj_t *panel,*list,*message,*password,*refresh;
+static lv_obj_t *server_field,*code_field,*repair_keyboard;
+static char entered_server[96],entered_code[7];
 static atomic_bool busy;
 static atomic_bool visible;
 static ghost_network_t networks[20],selected;
@@ -50,7 +53,7 @@ static void close_page(lv_event_t *event)
 {
     if(busy) return;
     if(password) lv_textarea_set_text(password,"");
-    lv_obj_delete(panel);panel=NULL;list=NULL;password=NULL;
+    lv_obj_delete(panel);panel=NULL;list=NULL;password=NULL;server_field=NULL;code_field=NULL;repair_keyboard=NULL;
     visible=false;
     memset(entered_password,0,sizeof(entered_password));
 }
@@ -100,7 +103,7 @@ static void wake_settings_tap(lv_event_t *event)
 
 static void header(const char *title,lv_event_cb_t back)
 {
-    lv_obj_clean(panel);list=NULL;password=NULL;
+    lv_obj_clean(panel);list=NULL;password=NULL;server_field=NULL;code_field=NULL;repair_keyboard=NULL;
     lv_obj_t *heading=label(panel,title,20,18,335);
     lv_obj_set_style_text_font(heading,&lv_font_montserrat_24,0);
     lv_obj_t *button=lv_button_create(panel);lv_obj_set_pos(button,382,10);lv_obj_set_size(button,80,46);
@@ -202,6 +205,79 @@ static void scan_tap(lv_event_t *event)
     }
 }
 
+
+// ── Server & pairing: move this screen to another Ghost Server (or re-pair) ──
+static void repair_worker(void *arg)
+{
+    esp_err_t result=ghost_server_repair(entered_server,entered_code);
+    memset(entered_code,0,sizeof(entered_code));
+    bsp_display_lock(0);
+    if(code_field) lv_textarea_set_text(code_field,"");
+    const char *text=
+        result==ESP_OK?"Paired. If Ghost Server asks, approve this screen on its Security page. Tap Back.":
+        result==ESP_ERR_INVALID_ARG?"Use the server's home-network address, e.g. 192.168.80.165":
+        result==ESP_ERR_INVALID_SIZE?"The pairing code is six digits.":
+        result==ESP_ERR_WIFI_NOT_CONNECT?"Wi-Fi isn't connected. Connect Wi-Fi first.":
+        result==ESP_ERR_TIMEOUT?"Couldn't reach that server. Check the address and that it's running.":
+        result==ESP_ERR_NOT_FOUND?"Wrong or expired code. Make a new one on the admin page.":
+        result==ESP_ERR_INVALID_STATE?"Busy, or pairing is paused after wrong codes. Wait and retry.":
+        "Couldn't save the pairing. Try again.";
+    if(message) lv_label_set_text(message,text);
+    if(result==ESP_OK && server_field) {
+        char now[96];ghost_config_server(now,sizeof(now));lv_textarea_set_text(server_field,now);
+    }
+    busy=false;bsp_display_unlock();vTaskDelete(NULL);
+}
+
+static void repair_tap(lv_event_t *event)
+{
+    if(busy || !server_field || !code_field) return;
+    strlcpy(entered_server,lv_textarea_get_text(server_field),sizeof(entered_server));
+    strlcpy(entered_code,lv_textarea_get_text(code_field),sizeof(entered_code));
+    busy=true;lv_label_set_text(message,"Pairing... please wait.");
+    if(xTaskCreate(repair_worker,"ghost_repair",8192,NULL,3,NULL)!=pdPASS) {
+        busy=false;memset(entered_code,0,sizeof(entered_code));
+        lv_label_set_text(message,"Not enough memory. Please try again.");
+    }
+}
+
+static void field_focused(lv_event_t *event)
+{
+    lv_obj_t *field=lv_event_get_target(event);
+    if(!repair_keyboard) return;
+    lv_keyboard_set_textarea(repair_keyboard,field);
+    lv_keyboard_set_mode(repair_keyboard,field==code_field?LV_KEYBOARD_MODE_NUMBER:LV_KEYBOARD_MODE_TEXT_LOWER);
+}
+
+static void server_settings_tap(lv_event_t *event)
+{
+    if(busy) return;
+    header("Ghost Server",back_page);
+    char now[96];ghost_config_server(now,sizeof(now));
+    label(panel,"Server address",20,62,290);
+    server_field=lv_textarea_create(panel);lv_obj_set_pos(server_field,20,86);lv_obj_set_size(server_field,290,49);
+    lv_textarea_set_one_line(server_field,true);lv_textarea_set_max_length(server_field,95);
+    lv_textarea_set_text(server_field,now);
+    lv_textarea_set_placeholder_text(server_field,"192.168.80.165");
+    lv_obj_add_event_cb(server_field,field_focused,LV_EVENT_FOCUSED,NULL);
+    label(panel,"Pairing code",326,62,134);
+    code_field=lv_textarea_create(panel);lv_obj_set_pos(code_field,326,86);lv_obj_set_size(code_field,134,49);
+    lv_textarea_set_one_line(code_field,true);lv_textarea_set_max_length(code_field,6);
+    lv_textarea_set_accepted_chars(code_field,"0123456789");
+    lv_textarea_set_placeholder_text(code_field,"123456");
+    lv_obj_add_event_cb(code_field,field_focused,LV_EVENT_FOCUSED,NULL);
+    lv_obj_t *pair=lv_button_create(panel);lv_obj_set_pos(pair,326,146);lv_obj_set_size(pair,134,48);
+    lv_obj_set_style_bg_color(pair,lv_color_hex(0x65508c),0);
+    lv_obj_t *text=lv_label_create(pair);lv_label_set_text(text,"Re-pair");lv_obj_center(text);
+    lv_obj_add_event_cb(pair,repair_tap,LV_EVENT_CLICKED,NULL);
+    message=label(panel,"Make a code on the Ghost Server admin page (New pairing code). Wi-Fi is kept.",20,146,296);
+    repair_keyboard=lv_keyboard_create(panel);lv_obj_set_size(repair_keyboard,480,226);
+    lv_obj_align(repair_keyboard,LV_ALIGN_BOTTOM_MID,0,0);
+    lv_keyboard_set_mode(repair_keyboard,LV_KEYBOARD_MODE_NUMBER);
+    lv_keyboard_set_textarea(repair_keyboard,code_field);
+    lv_obj_add_state(code_field,LV_STATE_FOCUSED);
+}
+
 static void show_networks(void)
 {
     if(password) lv_textarea_set_text(password,"");
@@ -209,7 +285,11 @@ static void show_networks(void)
     char ssid[33],summary[120];int rssi;
     if(ghost_wifi_status(ssid,sizeof(ssid),&rssi)) snprintf(summary,sizeof(summary),"Connected: %.32s  (%d dBm)",ssid,rssi);
     else snprintf(summary,sizeof(summary),"Disconnected. Saved network: %.32s",ssid);
-    label(panel,summary,20,64,440);
+    label(panel,summary,20,64,300);
+    lv_obj_t *server=lv_button_create(panel);lv_obj_set_pos(server,330,58);lv_obj_set_size(server,130,40);
+    lv_obj_set_style_bg_color(server,lv_color_hex(0x493d68),0);
+    lv_obj_t *server_text=lv_label_create(server);lv_label_set_text(server_text,"Server");lv_obj_center(server_text);
+    lv_obj_add_event_cb(server,server_settings_tap,LV_EVENT_CLICKED,NULL);
     volume_label=label(panel,"",20,102,440);
     lv_label_set_text_fmt(volume_label,"Speaker volume: %d / 100",ghost_audio_volume());
     lv_obj_t *volume=lv_slider_create(panel);lv_obj_set_pos(volume,38,152);lv_obj_set_size(volume,404,16);

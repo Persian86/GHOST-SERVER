@@ -1,4 +1,5 @@
 #include "ghost_config.h"
+#include "ghost_rules.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include "esp_http_client.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "nvs.h"
 #include "cJSON.h"
 #include "lwip/inet.h"
@@ -122,24 +124,9 @@ esp_err_t ghost_wifi_update(const char *ssid,const char *password,bool keep_pass
     wifi_operation=false;return result;
 }
 
-// First release intentionally supports only HTTP on an explicit private LAN IPv4 address.
+// Only plain HTTP on an explicit private LAN IPv4 address (see ghost_rules.c).
 // No credentials may be posted to a redirected, public or userinfo URL.
-static bool server_ok(const char *url)
-{
-    char host[32], tail = 0;
-    unsigned port = 8780;
-    if (strncmp(url, "http://", 7)) return false;
-    const char *p = url + 7;
-    const char *colon = strchr(p, ':');
-    size_t len = colon ? (size_t)(colon - p) : strlen(p);
-    if (!len || len >= sizeof(host)) return false;
-    memcpy(host, p, len); host[len] = 0;
-    if (colon && (sscanf(colon + 1, "%u%c", &port, &tail) != 1 || !port || port > 65535)) return false;
-    struct in_addr addr;
-    if (inet_pton(AF_INET, host, &addr) != 1) return false;
-    uint32_t ip = ntohl(addr.s_addr);
-    return (ip >> 24) == 10 || (ip >> 20) == 0xac1 || (ip >> 16) == 0xc0a8;
-}
+static bool server_ok(const char *url) {return ghost_server_url_ok(url);}
 
 static bool field(const char *form, const char *name, char *out, size_t cap)
 {
@@ -176,7 +163,7 @@ static esp_err_t setup_page(httpd_req_t *req)
         "<form method='post' action='/save'><input type='hidden' name='csrf' value='%s'>"
         "<label>Wi-Fi name<input name='ssid' maxlength='32' required></label>"
         "<label>Wi-Fi password<input type='password' name='password' maxlength='64'></label>"
-        "<label>Ghost Server<input name='server' value='http://192.168.80.244:8780' maxlength='95' required></label>"
+        "<label>Ghost Server<input name='server' value='http://192.168.80.165:8780' maxlength='95' required></label>"
         "<label>Ghost pairing code<input name='code' inputmode='numeric' pattern='[0-9]{6}' maxlength='6' required></label>"
         "<p>Create the six-digit code on Ghost Server. Use trusted home Wi-Fi: this prototype uses local HTTP.</p>"
         "<button>Connect Ghost</button></form>", csrf);
@@ -186,15 +173,22 @@ static esp_err_t setup_page(httpd_req_t *req)
     esp_err_t result = httpd_resp_sendstr(req, page); free(page); return result;
 }
 
-static bool pair_device(void)
+// Pairs with `server` using a six-digit code; on success copies the new device key
+// into `key`. `http_status` gets the server's answer (0 = it couldn't be reached).
+static bool pair_with(const char *server, const char *code, char *key, size_t key_capacity, int *http_status)
 {
-    char url[128], response[1024] = {0};
-    snprintf(url, sizeof(url), "%.95s/api/v1/pair", pending.server);
+    char url[128], response[1024] = {0}, name[48];
+    *http_status = 0;
+    snprintf(url, sizeof(url), "%.95s/api/v1/pair", server);
+    // Name each screen apart on the admin page (bedroom, lounge, office all look alike).
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(name, sizeof(name), "Ghost room screen %02X%02X", mac[4], mac[5]);
     esp_http_client_config_t http = {.url=url, .timeout_ms=12000, .disable_auto_redirect=true};
     esp_http_client_handle_t client = esp_http_client_init(&http);
     if (!client) return false;
-    char body[160];
-    snprintf(body, sizeof(body), "{\"code\":\"%s\",\"name\":\"Ghost Waveshare room\",\"kind\":\"room\",\"info\":{\"model\":\"waveshare-4b\"}}", pair_code);
+    char body[200];
+    snprintf(body, sizeof(body), "{\"code\":\"%s\",\"name\":\"%s\",\"kind\":\"room\",\"info\":{\"model\":\"waveshare-4b\"}}", code, name);
     bool ok = false;
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -202,11 +196,12 @@ static bool pair_device(void)
         esp_http_client_write(client, body, strlen(body)) == (int)strlen(body)) {
         esp_http_client_fetch_headers(client);
         int len = esp_http_client_read_response(client, response, sizeof(response)-1);
-        if (len > 0 && esp_http_client_get_status_code(client) == 200) {
+        *http_status = esp_http_client_get_status_code(client);
+        if (len > 0 && *http_status == 200) {
             cJSON *json = cJSON_Parse(response);
-            const cJSON *key = cJSON_GetObjectItemCaseSensitive(json, "device_key");
-            if (cJSON_IsString(key) && strlen(key->valuestring) < sizeof(pending.key)) {
-                strlcpy(pending.key, key->valuestring, sizeof(pending.key)); ok = true;
+            const cJSON *got = cJSON_GetObjectItemCaseSensitive(json, "device_key");
+            if (cJSON_IsString(got) && strlen(got->valuestring) < key_capacity) {
+                strlcpy(key, got->valuestring, key_capacity); ok = true;
             }
             cJSON_Delete(json);
         }
@@ -216,20 +211,60 @@ static bool pair_device(void)
     return ok;
 }
 
+static bool pair_device(void)
+{
+    int status;
+    return pair_with(pending.server, pair_code, pending.key, sizeof(pending.key), &status);
+}
+
+static esp_err_t save_config(const ghost_config_t *cfg)
+{
+    nvs_handle_t nvs;
+    esp_err_t result = nvs_open("ghost_room", NVS_READWRITE, &nvs);
+    if (result == ESP_OK) {
+        result = nvs_set_blob(nvs, "config", cfg, sizeof(*cfg));
+        if (result == ESP_OK) result = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    return result;
+}
+
+void ghost_config_server(char *out, size_t capacity)
+{
+    strlcpy(out, current_config ? current_config->server : "", capacity);
+}
+
+esp_err_t ghost_server_repair(const char *typed_server, const char *code)
+{
+    if (!current_config || !current_config->ssid[0]) return ESP_ERR_INVALID_STATE;
+    char server[96];
+    if (!ghost_server_url_normalise(typed_server, server, sizeof(server))) return ESP_ERR_INVALID_ARG;
+    if (!ghost_pair_code_ok(code)) return ESP_ERR_INVALID_SIZE;
+    if (!ghost_wifi_ready()) return ESP_ERR_WIFI_NOT_CONNECT;
+    if (submitting || atomic_exchange(&wifi_operation, true)) return ESP_ERR_INVALID_STATE;
+    ghost_config_t next = *current_config;
+    strlcpy(next.server, server, sizeof(next.server));
+    int status = 0;
+    esp_err_t result;
+    if (!pair_with(next.server, code, next.key, sizeof(next.key), &status)) {
+        // 0: unreachable; 400: wrong or expired code; 429: pairing paused after wrong codes.
+        result = status == 0 ? ESP_ERR_TIMEOUT : status == 429 ? ESP_ERR_INVALID_STATE : ESP_ERR_NOT_FOUND;
+    } else {
+        // Only replace the working pairing once the new one is saved.
+        result = save_config(&next);
+        if (result == ESP_OK) *current_config = next;
+    }
+    memset(&next, 0, sizeof(next));
+    wifi_operation = false;
+    return result;
+}
+
 static void save_task(void *arg)
 {
     status_fn("Connecting to home Wi-Fi...");
-    if (join(&pending) && pair_device()) {
-        nvs_handle_t nvs;
-        if (nvs_open("ghost_room", NVS_READWRITE, &nvs) == ESP_OK) {
-            esp_err_t err = nvs_set_blob(nvs, "config", &pending, sizeof(pending));
-            if (err == ESP_OK) err = nvs_commit(nvs);
-            nvs_close(nvs);
-            if (err == ESP_OK) {
-                status_fn("Paired. Approve this device on Ghost Server if requested.");
-                vTaskDelay(pdMS_TO_TICKS(1500)); esp_restart();
-            }
-        }
+    if (join(&pending) && pair_device() && save_config(&pending) == ESP_OK) {
+        status_fn("Paired. Approve this device on Ghost Server if requested.");
+        vTaskDelay(pdMS_TO_TICKS(1500)); esp_restart();
     }
     status_fn("Setup failed. Check Wi-Fi, server and pairing code, then try again.");
     memset(&pending, 0, sizeof(pending)); memset(pair_code, 0, sizeof(pair_code));
@@ -292,7 +327,18 @@ bool ghost_config_connect(ghost_config_t *cfg, ghost_status_fn status)
         cfg->ssid[32]=0; cfg->password[64]=0; cfg->server[95]=0; cfg->key[159]=0;
         if (server_ok(cfg->server) && cfg->key[0]) {
             status("Connecting to home Wi-Fi...");
-            if (join(cfg)) { esp_wifi_set_ps(WIFI_PS_NONE); return true; }
+            bool joined = join(cfg);
+            esp_wifi_set_ps(WIFI_PS_NONE);
+            if (!joined) {
+                // After a power cut the router often takes longer to come back than
+                // the 20 s join window. A paired screen must never fall back to the
+                // setup hotspot for that: keep retrying in the background (the
+                // disconnect handler reconnects) and let Setup change the network.
+                char message[120];
+                snprintf(message, sizeof(message), "Waiting for Wi-Fi \"%.32s\"... Ghost keeps trying.", cfg->ssid);
+                status(message);
+            }
+            return true;
         }
     }
     uint32_t randoms[4]; esp_fill_random(randoms,sizeof(randoms));
