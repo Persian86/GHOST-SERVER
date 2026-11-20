@@ -182,40 +182,31 @@ static void animate(lv_timer_t *timer)
         current==ERROR_STATE?GHOST_CONCERNED:GHOST_REST;
     ghost_motion_frame_t f;
     ghost_motion_step(&motion,elapsed/1000.0f,pose,speech_level/100.0f,&f);
-    // The desktop/phone avatar: rendered pearl sheet body (ghost_art.c) that
-    // bobs and sways, with live eyes, brows and mouth on top.
-    // Moving the 270x330 body redraws ~90k pixels read from flash, which
-    // starved both the frame rate and the wake-word model (0.3.5/0.3.6 logs:
-    // ~18 fps, wake detect ~300 ms). So the body bobs in 2 px steps at most
-    // ~6 times a second; eyes, blinks and mouth still animate every frame.
-    static int64_t body_moved_at;
-    static int body_x=0,body_y=0;
-    int want_x=2*(int)lroundf(f.x/2.0f),want_y=2*(int)lroundf(f.y/2.0f);
-    if((want_x!=body_x || want_y!=body_y) && now-body_moved_at>=160000) {
-        body_x=want_x;body_y=want_y;body_moved_at=now;
-        lv_obj_set_pos(avatar,AVATAR_X+body_x,AVATAR_Y+body_y);
-        int shadow_width=130-body_y*3/2;
-        lv_obj_set_size(shadow,shadow_width,12);lv_obj_set_x(shadow,240-shadow_width/2);
-        lv_obj_set_style_bg_opa(shadow,(lv_opa_t)(45-body_y),0);
-    }
-    int gaze_x=(int)lroundf(fmaxf(-7,fminf(7,f.gaze_x*1.3f)));
-    int gaze_y=(int)lroundf(fmaxf(-5,fminf(5,f.gaze_y*1.2f)));
+    // The desktop/phone avatar as a still picture with a live face. The body
+    // never moves: redrawing the 270x330 picture from flash every frame
+    // starved the frame rate and the wake-word model (0.3.5-0.3.7: ~18 fps,
+    // wake detect ~300 ms, flicker). Only the small eye and mouth patches
+    // redraw, and only when they actually change.
+    static int shown_blink=-1,shown_gx=99,shown_gy=99,shown_brow=99;
+    int blink=256-(int)lroundf(f.blink*240);
+    if(blink<32) blink=32;
+    int gaze_x=2*(int)lroundf(fmaxf(-6,fminf(6,f.gaze_x*1.2f))/2.0f);
+    int gaze_y=2*(int)lroundf(fmaxf(-4,fminf(4,f.gaze_y))/2.0f);
+    int brow=(int)lroundf(f.brow);
     for(int side=0;side<2;side++) {
-        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)lroundf(f.blink*240),0);
-        lv_obj_set_pos(irises[side],(ghost_art_eye.header.w-ghost_art_iris.header.w)/2+gaze_x,
-            (ghost_art_eye.header.h-ghost_art_iris.header.h)/2+gaze_y);
-        lv_obj_set_y(brows[side],GHOST_ART_BROW_Y+(int)lroundf(f.brow));
+        if(blink!=shown_blink) lv_obj_set_style_transform_scale_y(eyes[side],blink,0);
+        if(gaze_x!=shown_gx || gaze_y!=shown_gy)
+            lv_obj_set_pos(irises[side],(ghost_art_eye.header.w-ghost_art_iris.header.w)/2+gaze_x,
+                (ghost_art_eye.header.h-ghost_art_iris.header.h)/2+gaze_y);
+        if(brow!=shown_brow) lv_obj_set_y(brows[side],GHOST_ART_BROW_Y+brow);
     }
+    shown_blink=blink;shown_gx=gaze_x;shown_gy=gaze_y;shown_brow=brow;
     // Friendly open smile at rest (like the desktop); speech opens it further.
     int shape_index=current==SPEAKING?1+(int)lroundf(f.mouth*4.0f):current==ERROR_STATE?0:2;
     if(shape_index<0) shape_index=0;
     if(shape_index>=GHOST_ART_MOUTHS) shape_index=GHOST_ART_MOUTHS-1;
     static int shown_mouth=-1;
     if(shape_index!=shown_mouth) {lv_image_set_src(mouth,mouths[shape_index]);shown_mouth=shape_index;}
-    // Sparkles twinkle slowly in the background.
-    float seconds=now/1000000.0f;
-    for(int i=0;i<10;i++)
-        lv_obj_set_style_opa(sparkles[i],(lv_opa_t)(70+(int)(110*(0.5f+0.5f*sinf(seconds*(0.7f+i*0.13f)+i*1.9f)))),0);
     lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
     int wake=ghost_wake_enabled();
     int wifi=ghost_wifi_ready();
@@ -263,6 +254,7 @@ static void build_ui(void)
     for(int i=0;i<10;i++) {
         sparkles[i]=lv_image_create(screen);lv_image_set_src(sparkles[i],&ghost_art_sparkle);
         lv_obj_set_pos(sparkles[i],sparkle_at[i].x,sparkle_at[i].y);
+        lv_obj_set_style_opa(sparkles[i],(lv_opa_t)(90+(i*37)%120),0);
     }
     shadow=shape(screen,165,AVATAR_Y+ghost_art_body.header.h+4,150,12,0x05030c,LV_RADIUS_CIRCLE);
     lv_obj_set_style_bg_opa(shadow,45,0);
