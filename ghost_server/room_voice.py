@@ -19,25 +19,37 @@ MAX_SESSION_SECONDS = 100
 MAX_CONVERSATION_SECONDS = 300
 MAX_CONVERSATION_TURNS = 12
 
-# Short replies that mean "I'm done" — after one of these (or after a turn in
-# which nothing was actually said) the room screen stops listening.
-_CLOSERS = {
-    "thanks", "thank you", "thanks ghost", "thank you ghost", "cheers", "ta",
-    "thats all", "thats it", "that is all", "thats all thanks", "thats it thanks",
-    "bye", "goodbye", "bye ghost", "good bye", "see ya", "see you", "good night", "goodnight",
-    "no", "nope", "no thanks", "no thank you", "nothing", "nothing else", "no thats all",
-    "no thats it", "stop", "cancel", "never mind", "nevermind", "all good", "im good",
-    "im done", "done", "ok thanks", "okay thanks", "ok thank you", "okay thank you", "great thanks",
+# Saying goodbye ends the conversation: after "thanks", "that's all", "bye",
+# "goodnight" and friends (or a turn where nothing was actually said) the room
+# screen stops listening. A short reply made only of these words counts, so
+# "ok thanks Ghost, that's all" and "nah I'm good mate" end it, while anything
+# with a real request in it ("thanks, now turn off the lights") carries on.
+_CLOSING = {                      # at least one of these must be said
+    "thanks", "thank", "thankyou", "ta", "cheers", "bye", "byebye", "goodbye", "goodnight",
+    "night", "nite", "later", "laters", "all", "it", "nothing", "no", "nope", "nah",
+    "stop", "cancel", "nevermind", "mind", "done", "finished", "enough",
+}
+_FILLER = {                       # may surround them
+    "ok", "okay", "alright", "right", "cool", "great", "awesome", "perfect", "lovely",
+    "brilliant", "good", "fine", "sweet", "yeah", "yep", "yes", "so", "and", "just",
+    "you", "very", "much", "heaps", "mate", "ghost", "hey", "please", "for", "now",
+    "thats", "that", "is", "ill", "be", "will", "thatll", "im", "i", "am", "were", "we",
+    "else", "see", "ya", "you", "soon", "never", "have", "a", "nice", "night", "sleep",
+    "well", "tonight", "today", "really", "appreciate", "it", "the", "help", "go",
 }
 
 
 def conversation_over(heard: str) -> bool:
     """True when the user's last turn means the conversation should end:
-    nothing was transcribed (room noise, not speech) or it was a closer."""
-    words = "".join(c for c in (heard or "").lower() if c.isalnum() or c.isspace()).split()
+    nothing was transcribed (room noise, not speech) or it was a goodbye."""
+    words = "".join(c for c in (heard or "").lower().replace("'", "")
+                    if c.isalnum() or c.isspace()).split()
     if not words:
         return True
-    return len(words) <= 6 and " ".join(words) in _CLOSERS
+    if len(words) > 10:
+        return False
+    return (all(w in _CLOSING or w in _FILLER for w in words)
+            and any(w in _CLOSING for w in words))
 _active: set[str] = set()
 
 

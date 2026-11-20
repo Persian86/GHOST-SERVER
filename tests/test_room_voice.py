@@ -346,9 +346,13 @@ def test_provider_cannot_act_between_follow_up_questions(monkeypatch, kind):
 
 
 @pytest.mark.parametrize("heard,over", [("", True), ("   ", True), ("Thanks!", True),
-    ("No, that's all.", True), ("Thank you Ghost", True), ("Bye", True),
+    ("No, that's all.", True), ("Thank you Ghost", True), ("Bye", True), ("Goodnight Ghost", True),
+    ("Ok thanks Ghost, that's all", True), ("Cheers mate", True), ("Nah I'm good", True),
+    ("That'll be all for now, thanks", True), ("Thanks heaps, see ya", True),
+    ("Good night", True), ("That's it", True),
     ("Turn off the kitchen lights", False), ("Thanks, now turn off the lights", False),
-    ("No I mean the bedroom", False)])
+    ("No I mean the bedroom", False), ("What's the weather tonight", False),
+    ("Good morning", False), ("Yes please", False), ("Is the door locked", False)])
 def test_conversation_ends_on_silence_or_a_closer(heard, over):
     assert voice.conversation_over(heard) is over
 
