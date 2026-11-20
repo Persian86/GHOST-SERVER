@@ -692,8 +692,10 @@ void app_main(void)
     ghost_wake_init(); // Recognition failure leaves manual tap-to-talk available.
     bsp_audio_poweramp_enable(false);
     if(xTaskCreate(play_task,"ghost_speaker",8192,NULL,5,NULL)!=pdPASS ||
-        // Voice (wake word + conversation) outranks the screen: priority 5 on
-        // core 1, above the LVGL task (4), so animation can never starve it.
-        xTaskCreatePinnedToCore(voice_task,"ghost_voice",16384,NULL,5,NULL,1)!=pdPASS) {fail("Not enough memory for voice.");return;}
+        // Voice (wake word + conversation) gets its own core. 0.3.11 put it on
+        // core 1 at priority 5: wake audio loss fell to ~3% but the screen
+        // (LVGL runs on core 1) dropped to ~17 fps while idle. Core 0 keeps
+        // the priority over drawing without the two ever competing.
+        xTaskCreatePinnedToCore(voice_task,"ghost_voice",16384,NULL,5,NULL,0)!=pdPASS) {fail("Not enough memory for voice.");return;}
     state=IDLE;
 }
