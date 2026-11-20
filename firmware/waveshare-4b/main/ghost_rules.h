@@ -17,3 +17,10 @@ bool ghost_server_url_normalise(const char *typed, char *out, size_t capacity);
 
 // Exactly six ASCII digits.
 bool ghost_pair_code_ok(const char *code);
+
+// Auto-hiding buttons. They stay up while Ghost is doing anything (busy: not
+// plain idle) and for hide_ms after the last touch or the end of the last
+// conversation; then they fade away until the screen is touched again.
+#include <stdint.h>
+#define GHOST_CONTROLS_HIDE_MS 8000
+bool ghost_controls_visible(bool busy, int64_t ms_since_touch, int64_t ms_since_busy, int64_t hide_ms);

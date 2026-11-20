@@ -42,6 +42,14 @@ int main(void)
     assert(!ghost_pair_code_ok("1234567"));
     assert(!ghost_pair_code_ok("12a456"));
     assert(!ghost_pair_code_ok(NULL));
+    // Buttons: always up while busy; fade after 8 s of no touch once idle.
+    assert(ghost_controls_visible(true, 999999, 999999, GHOST_CONTROLS_HIDE_MS));
+    assert(ghost_controls_visible(false, 0, 999999, GHOST_CONTROLS_HIDE_MS));
+    assert(ghost_controls_visible(false, 7999, 999999, GHOST_CONTROLS_HIDE_MS));
+    assert(!ghost_controls_visible(false, 8000, 999999, GHOST_CONTROLS_HIDE_MS));
+    assert(ghost_controls_visible(false, 999999, 3000, GHOST_CONTROLS_HIDE_MS));  // just finished talking
+    assert(!ghost_controls_visible(false, 999999, 8000, GHOST_CONTROLS_HIDE_MS));
+    assert(ghost_controls_visible(false, 999999, 999999, 0));                     // hiding switched off
     puts("rules ok");
     return 0;
 }
