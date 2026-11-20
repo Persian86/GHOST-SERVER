@@ -343,3 +343,34 @@ def test_provider_cannot_act_between_follow_up_questions(monkeypatch, kind):
         assert any(c.get("code") == 4400 for c in ws.closed)
         assert cloud.closed and "room" not in voice._active
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("heard,over", [("", True), ("   ", True), ("Thanks!", True),
+    ("No, that's all.", True), ("Thank you Ghost", True), ("Bye", True), ("Goodnight Ghost", True),
+    ("Ok thanks Ghost, that's all", True), ("Cheers mate", True), ("Nah I'm good", True),
+    ("That'll be all for now, thanks", True), ("Thanks heaps, see ya", True),
+    ("Good night", True), ("That's it", True),
+    ("Turn off the kitchen lights", False), ("Thanks, now turn off the lights", False),
+    ("No I mean the bedroom", False), ("What's the weather tonight", False),
+    ("Good morning", False), ("Yes please", False), ("Is the door locked", False)])
+def test_conversation_ends_on_silence_or_a_closer(heard, over):
+    assert voice.conversation_over(heard) is over
+
+
+def test_follow_up_that_heard_nothing_ends_the_conversation(monkeypatch):
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+
+    class Silent(ConversationCloud):
+        async def receive(self):
+            await self.ends.get()
+            yield NS(data=bytes(960), tool_call=None, server_content=None)
+            yield NS(data=None, tool_call=None, server_content=NS(
+                input_transcription=None, output_transcription=NS(text="Hmm?"), turn_complete=True))
+
+    async def run():
+        ws = Socket(); cloud = Silent(ws)
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        done = [m for m in ws.messages if isinstance(m, dict) and m["type"] == "done"]
+        assert done == [{"type": "done", "follow_up": False}]
+    asyncio.run(run())

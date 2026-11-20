@@ -22,6 +22,7 @@
 #include "ghost_audio.h"
 #include "ghost_wake.h"
 #include "ghost_motion.h"
+#include "ghost_rules.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
@@ -39,7 +40,7 @@ static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
-static lv_obj_t *end_button;
+static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
 static lv_obj_t *eyes[2],*irises[2],*drapes[2],*hem[4];
 static lv_obj_t *dome,*skirt,*brows[2],*tongue,*shadow;
@@ -121,6 +122,33 @@ static void setup_touch(lv_event_t *event)
     ghost_wifi_ui_open();
 }
 
+static void set_opa(void *obj, int32_t value)
+{
+    lv_obj_set_style_opa(obj,(lv_opa_t)value,0);
+}
+
+// Buttons fade out when Ghost is idle and nobody has touched the screen for a
+// while; the next touch anywhere brings them back. While hidden they can't be
+// pressed, so the first touch only reveals them and never starts a conversation.
+static void show_controls(bool show)
+{
+    static bool shown=true;
+    if(show==shown) return;
+    shown=show;
+    lv_obj_t *buttons[]={setup_button,talk_button,end_button};
+    for(int i=0;i<3;i++) {
+        lv_obj_t *b=buttons[i];
+        if(show) lv_obj_add_flag(b,LV_OBJ_FLAG_CLICKABLE);
+        else lv_obj_remove_flag(b,LV_OBJ_FLAG_CLICKABLE);
+        lv_anim_delete(b,set_opa);
+        lv_anim_t a;lv_anim_init(&a);
+        lv_anim_set_var(&a,b);lv_anim_set_exec_cb(&a,set_opa);
+        lv_anim_set_values(&a,lv_obj_get_style_opa(b,0),show?LV_OPA_COVER:LV_OPA_TRANSP);
+        lv_anim_set_duration(&a,show?180:600);
+        lv_anim_start(&a);
+    }
+}
+
 static void animate(lv_timer_t *timer)
 {
     static int last=-1;
@@ -139,6 +167,10 @@ static void animate(lv_timer_t *timer)
         report_at=now;frame_count=slow_frames=max_frame_ms=0;
     }
     int current=state;
+    static int64_t busy_at;
+    if(current!=IDLE) busy_at=now;
+    show_controls(ghost_controls_visible(current!=IDLE,(int64_t)lv_display_get_inactive_time(NULL),
+        (now-busy_at)/1000,GHOST_CONTROLS_HIDE_MS));
     ghost_pose_t pose=current==LISTENING?GHOST_ATTENTIVE:current==THINKING?GHOST_PONDER:
         current==SPEAKING?GHOST_TALK:current==CONNECTING?GHOST_WAIT:
         current==ERROR_STATE?GHOST_CONCERNED:GHOST_REST;
@@ -202,7 +234,7 @@ static void build_ui(void)
     lv_label_set_text(title,"Ghost");
     lv_obj_set_style_text_font(title,&lv_font_montserrat_28,0);
     lv_obj_align(title,LV_ALIGN_TOP_LEFT,24,18);
-    lv_obj_t *setup=lv_button_create(screen);
+    lv_obj_t *setup=setup_button=lv_button_create(screen);
     lv_obj_set_size(setup,94,48); lv_obj_align(setup,LV_ALIGN_TOP_RIGHT,-18,12);
     lv_obj_set_style_bg_color(setup,lv_color_hex(0x302943),0);
     lv_obj_add_event_cb(setup,setup_touch,LV_EVENT_ALL,NULL);
@@ -430,6 +462,7 @@ static void voice_task(void *arg)
         unsigned frames=0;
         size_t buffered=0;
         int64_t last_speech=0;
+        unsigned voiced_frames=0;
         bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
@@ -472,7 +505,14 @@ static void voice_task(void *arg)
                         unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
                         if(auto_finish) {
                             int64_t now=esp_timer_get_time();
-                            if(rms>fmaxf(120,noise_floor*2.5f)) last_speech=now;
+                            // A cough, a door or the tail of Ghost's own voice is a few
+                            // loud frames; real speech is sustained. Only count speech
+                            // once ~160 ms of voiced audio has been heard, so room
+                            // noise can't keep a follow-up open forever.
+                            if(rms>fmaxf(120,noise_floor*2.5f)) {
+                                if(voiced_frames<GHOST_SPEECH_MIN_FRAMES) voiced_frames++;
+                                if(voiced_frames>=GHOST_SPEECH_MIN_FRAMES) last_speech=now;
+                            }
                             if(last_speech && now-last_speech>1300000) finish_turn=true;
                             if(!last_speech && now-record_started>(follow_up?10000000:6000000)) {
                                 if(follow_up) {ESP_LOGW("ghost_voice","Conversation ended after quiet");abort_turn=true;}
@@ -511,7 +551,7 @@ static void voice_task(void *arg)
                             fail("Microphone read failed. Restart Ghost.");
                     }
                     if(abort_turn) break;
-                    record_started=0;last_speech=0;next_frame_at=0;frames=0;buffered=0;
+                    record_started=0;last_speech=0;voiced_frames=0;next_frame_at=0;frames=0;buffered=0;
                     finish_turn=false;remote_done=false;remote_follow_up=false;
                     follow_up=true;auto_finish=true;state=CONNECTING;connecting_started=esp_timer_get_time();
                     static const char start[]="{\"type\":\"start\"}";
