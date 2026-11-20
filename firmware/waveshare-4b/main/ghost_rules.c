@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #ifdef ESP_PLATFORM
+#include "lwip/sockets.h"   /* inet_pton, AF_INET */
 #include "lwip/inet.h"
 #else
 #include <arpa/inet.h>
