@@ -59,6 +59,14 @@ int main(void)
     assert(ghost_wake_gain(1000) == 2000 && ghost_wake_gain(-1000) == -2000);
     assert(ghost_wake_gain(20000) == 32767 && ghost_wake_gain(-20000) == -32768);
     assert(ghost_wake_gain(-32768) == -32768);
+    // Card text: ASCII only, ellipsis kept as dots, never overflows.
+    char t[16];
+    ghost_card_text(t, sizeof t, "Light rain\xE2\x80\xA6"); assert(!strcmp(t, "Light rain..."));
+    ghost_card_text(t, sizeof t, "Caf\xC3\xA9\tX"); assert(!strcmp(t, "Caf  X"));
+    ghost_card_text(t, 6, "Thunderstorm"); assert(!strcmp(t, "Thund"));
+    ghost_card_text(t, sizeof t, NULL); assert(!strcmp(t, ""));
+    ghost_card_text(t, 4, "ab\xE2\x80\xA6"); assert(!strcmp(t, "ab."));
+    ghost_card_text(t, sizeof t, "\xE2"); assert(t[0]==' ' && t[1]==0);
     puts("rules ok");
     return 0;
 }

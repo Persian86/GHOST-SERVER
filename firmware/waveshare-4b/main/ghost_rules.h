@@ -36,3 +36,11 @@ bool ghost_sleepy(bool idle, int64_t ms_since_touch, int64_t ms_since_busy);
 // The wake recognizer's copy of the microphone: a fixed 2x boost (6 dB),
 // clipped. At 1 m "Hey Ghost" reached the recognizer at only ~-29 dBFS.
 int16_t ghost_wake_gain(int32_t sample);
+
+// Card text for the screen's fonts (plain ASCII plus the degree sign): copies
+// src into dst, turning "…" into "..." and any other non-ASCII character or
+// control character into a single space; always terminates dst.
+void ghost_card_text(char *dst, size_t capacity, const char *src);
+
+// How long a card stays up before Ghost's face comes back.
+#define GHOST_CARD_MS 30000

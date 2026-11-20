@@ -26,6 +26,7 @@
 #include "ghost_rules.h"
 #include "ghost_art.h"
 #include "cJSON.h"
+#include <ctype.h>
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
@@ -47,6 +48,17 @@ static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
 static lv_obj_t *eyes[2],*irises[2],*brows[2],*arms[2],*shadow;
 static ghost_motion_t motion;
+// Weather card. The websocket task fills `incoming` and raises card_ready; the
+// LVGL task copies it and builds the panel once. The panel is opaque and never
+// changes while shown, and Ghost's face is hidden underneath it, so a card
+// costs nothing per frame (no extra redraws competing with the wake word).
+typedef struct {char dow[8];int hi,lo,rain;char desc[20];} card_day_t;
+typedef struct {char city[28];int temp;char desc[28];bool day;int days;card_day_t day_info[3];} weather_card_t;
+static weather_card_t incoming;
+static portMUX_TYPE card_mux=portMUX_INITIALIZER_UNLOCKED;
+static atomic_bool card_ready;
+static lv_obj_t *card_panel;
+static int64_t card_until;
 // Where the avatar sits on the 480x480 screen (centred near the top).
 #define AVATAR_X ((480-(int)ghost_art_body.header.w)/2)
 #define AVATAR_Y 40   // clear of the Setup button in the top-right corner
@@ -160,6 +172,82 @@ static void show_controls(bool show)
     }
 }
 
+static lv_obj_t *card_label(lv_obj_t *parent,int x,int y,int w,const lv_font_t *font,uint32_t color,const char *text)
+{
+    lv_obj_t *l=lv_label_create(parent);
+    lv_obj_set_pos(l,x,y);
+    if(w>0) {lv_obj_set_width(l,w);lv_label_set_long_mode(l,LV_LABEL_LONG_MODE_DOTS);}
+    lv_obj_set_style_text_font(l,font,0);lv_obj_set_style_text_color(l,lv_color_hex(color),0);
+    lv_label_set_text(l,text);
+    return l;
+}
+
+// A small weather symbol from plain shapes: sun or moon, cloud, rain.
+static void weather_icon(lv_obj_t *parent,int x,int y,int size,const char *desc,bool day)
+{
+    char d[32];int i=0;
+    for(;desc[i] && i<31;i++) d[i]=(char)tolower((unsigned char)desc[i]);
+    d[i]=0;
+    bool rain=strstr(d,"rain")||strstr(d,"shower")||strstr(d,"drizzle")||strstr(d,"storm");
+    bool cloud=rain||strstr(d,"cloud")||strstr(d,"overcast")||strstr(d,"fog")||strstr(d,"mist");
+    bool clear=!cloud||strstr(d,"partly")||strstr(d,"mainly");
+    int s=size;
+    if(clear) {
+        lv_obj_t *sun=shape(parent,x+s*45/100,y,s*48/100,s*48/100,day?0xffc94a:0xe8e2c4,LV_RADIUS_CIRCLE);
+        if(!day) {lv_obj_t *bite=shape(parent,x+s*58/100,y-s*4/100,s*40/100,s*40/100,0x241b3d,LV_RADIUS_CIRCLE);(void)bite;}
+        (void)sun;
+    }
+    if(cloud) {
+        uint32_t c=rain?0x9aa3bf:0xd9dcec;
+        shape(parent,x+s*8/100,y+s*30/100,s*44/100,s*44/100,c,LV_RADIUS_CIRCLE);
+        shape(parent,x+s*30/100,y+s*20/100,s*50/100,s*50/100,c,LV_RADIUS_CIRCLE);
+        shape(parent,x,y+s*46/100,s*92/100,s*26/100,c,s*13/100);
+    }
+    if(rain) for(int k=0;k<3;k++)
+        shape(parent,x+s*20/100+k*s*24/100,y+s*80/100,s*6/100+2,s*18/100,0x6fb7ff,3);
+}
+
+static void hide_card(void)
+{
+    if(!card_panel) return;
+    lv_obj_delete(card_panel);card_panel=NULL;
+    lv_obj_remove_flag(avatar,LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(shadow,LV_OBJ_FLAG_HIDDEN);
+}
+
+// Deleting the panel inside its own click handler is unsafe; the next frame does it.
+static void card_tap(lv_event_t *event) {card_until=0;}
+
+static void show_card(const weather_card_t *w)
+{
+    hide_card();
+    lv_obj_add_flag(avatar,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(shadow,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *p=card_panel=shape(lv_screen_active(),24,68,432,272,0x241b3d,22);
+    lv_obj_add_flag(p,LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(p,card_tap,LV_EVENT_CLICKED,NULL);
+    char text[48];
+    card_label(p,22,14,260,&lv_font_montserrat_20,0xb9b3cc,w->city[0]?w->city:"Weather");
+    snprintf(text,sizeof text,"%d\xC2\xB0",w->temp);
+    card_label(p,20,40,0,&lv_font_montserrat_48,0xffffff,text);
+    card_label(p,22,98,270,&lv_font_montserrat_20,0xeeeafb,w->desc);
+    weather_icon(p,312,18,96,w->desc,w->day);
+    if(w->days) shape(p,18,136,396,2,0x3a2f57,1);
+    for(int i=0;i<w->days;i++) {
+        const card_day_t *d=&w->day_info[i];
+        int x=14+i*136;
+        card_label(p,x+8,148,0,&lv_font_montserrat_20,0xb9b3cc,d->dow);
+        weather_icon(p,x+78,146,40,d->desc,true);
+        snprintf(text,sizeof text,"%d\xC2\xB0 / %d\xC2\xB0",d->hi,d->lo);
+        card_label(p,x+8,190,124,&lv_font_montserrat_24,0xffffff,text);
+        card_label(p,x+8,222,124,&lv_font_montserrat_16,0xd2cde4,d->desc);
+        if(d->rain>=0) {
+            snprintf(text,sizeof text,"%d%% rain",d->rain);
+            card_label(p,x+8,244,124,&lv_font_montserrat_16,0x6fb7ff,text);
+        }
+    }
+    card_until=esp_timer_get_time()+(int64_t)GHOST_CARD_MS*1000;
+    ESP_LOGI("ghost_card","Weather card shown: %d days",w->days);
+}
+
 static void animate(lv_timer_t *timer)
 {
     static int last=-1;
@@ -177,6 +265,12 @@ static void animate(lv_timer_t *timer)
         ESP_LOGW("ghost_motion","Frames=%u slow_over_80ms=%u max_interval_ms=%u",frame_count,slow_frames,max_frame_ms);
         report_at=now;frame_count=slow_frames=max_frame_ms=0;
     }
+    if(card_ready) {
+        weather_card_t w;
+        taskENTER_CRITICAL(&card_mux);w=incoming;card_ready=false;taskEXIT_CRITICAL(&card_mux);
+        show_card(&w);
+    }
+    if(card_panel && now>card_until) hide_card();
     int current=state;
     static int64_t busy_at;
     if(current!=IDLE) busy_at=now;
@@ -371,6 +465,43 @@ static void fail(const char *message)
     state=ERROR_STATE; abort_turn=true;
 }
 
+static void card_string(char *dst,size_t capacity,const cJSON *item)
+{
+    ghost_card_text(dst,capacity,cJSON_IsString(item)?item->valuestring:"");
+}
+
+static int card_int(const cJSON *item,int fallback)
+{
+    if(!cJSON_IsNumber(item)) return fallback;
+    double v=item->valuedouble;
+    return v<-99?-99:v>999?999:(int)v;
+}
+
+// Runs on the websocket task: validate and copy, nothing touches LVGL here.
+static void take_card(const cJSON *json)
+{
+    const cJSON *kind=cJSON_GetObjectItemCaseSensitive(json,"kind");
+    if(!cJSON_IsString(kind) || strcmp(kind->valuestring,"weather")) return;   // unknown cards: ignore
+    const cJSON *temp=cJSON_GetObjectItemCaseSensitive(json,"temp");
+    if(!cJSON_IsNumber(temp)) return;
+    weather_card_t w={0};
+    card_string(w.city,sizeof w.city,cJSON_GetObjectItemCaseSensitive(json,"city"));
+    card_string(w.desc,sizeof w.desc,cJSON_GetObjectItemCaseSensitive(json,"desc"));
+    w.temp=card_int(temp,0);
+    w.day=!cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(json,"day"));
+    const cJSON *days=cJSON_GetObjectItemCaseSensitive(json,"days"),*day;
+    cJSON_ArrayForEach(day,days) {
+        if(w.days>=3 || !cJSON_IsArray(day) || cJSON_GetArraySize(day)<5) continue;
+        card_day_t *d=&w.day_info[w.days++];
+        card_string(d->dow,sizeof d->dow,cJSON_GetArrayItem(day,0));
+        d->hi=card_int(cJSON_GetArrayItem(day,1),0);d->lo=card_int(cJSON_GetArrayItem(day,2),0);
+        card_string(d->desc,sizeof d->desc,cJSON_GetArrayItem(day,3));
+        d->rain=card_int(cJSON_GetArrayItem(day,4),-1);
+        if(d->rain>100) d->rain=100;
+    }
+    taskENTER_CRITICAL(&card_mux);incoming=w;card_ready=true;taskEXIT_CRITICAL(&card_mux);
+}
+
 static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,void *event_data)
 {
     esp_websocket_event_data_t *data=event_data;
@@ -432,6 +563,7 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
             remote_follow_up=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json,"follow_up"));
             remote_done=true;
         }
+        else if(!strcmp(type->valuestring,"card")) take_card(json);
         else if(!strcmp(type->valuestring,"error")) {
             const cJSON *message=cJSON_GetObjectItemCaseSensitive(json,"message");
             fail(cJSON_IsString(message)?message->valuestring:"Ghost voice could not connect. Check the server, then retry.");
