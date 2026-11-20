@@ -374,3 +374,33 @@ def test_follow_up_that_heard_nothing_ends_the_conversation(monkeypatch):
         done = [m for m in ws.messages if isinstance(m, dict) and m["type"] == "done"]
         assert done == [{"type": "done", "follow_up": False}]
     asyncio.run(run())
+
+
+def test_long_reply_is_not_cut_off_by_the_between_turns_wait(monkeypatch):
+    """A long answer streams while the device stays silent; that silence must
+    be judged by the reply wait, not the shorter between-turns wait."""
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+    monkeypatch.setattr(voice, "BETWEEN_TURNS_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(voice, "REPLY_WAIT_SECONDS", 5)
+
+    class SlowCloud(Cloud):
+        async def receive(self):
+            await self.end.wait()
+            for _ in range(4):                       # ~0.4 s of streaming reply
+                await asyncio.sleep(0.1)
+                yield NS(data=bytes(960), tool_call=None, server_content=None)
+            yield NS(data=None, tool_call=None, server_content=NS(
+                input_transcription=NS(text="Count to a hundred"),
+                output_transcription=NS(text="One, two, three"), turn_complete=True))
+
+    async def run():
+        ws = Socket(); cloud = SlowCloud(ws)
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud)
+        kinds = [m["type"] for m in ws.messages if isinstance(m, dict)]
+        assert "error" not in kinds and kinds[-1] == "done"
+    asyncio.run(run())
+
+
+def test_reply_audio_cap_allows_long_answers():
+    assert voice.MAX_REPLY_AUDIO_SECONDS >= 120

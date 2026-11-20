@@ -18,6 +18,12 @@ MAX_INPUT_SECONDS = 20
 MAX_SESSION_SECONDS = 100
 MAX_CONVERSATION_SECONDS = 300
 MAX_CONVERSATION_TURNS = 12
+# A long answer ("count to 100") streams for well over a minute. The device
+# sends nothing while it plays, so the reply phase must not use the 70 s
+# between-turns wait, and the spoken-reply cap must allow long answers.
+REPLY_WAIT_SECONDS = 240
+MAX_REPLY_AUDIO_SECONDS = 180
+BETWEEN_TURNS_WAIT_SECONDS = 70
 
 # Saying goodbye ends the conversation: after "thanks", "that's all", "bye",
 # "goodnight" and friends (or a turn where nothing was actually said) the room
@@ -154,7 +160,10 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                     total = 0
                     nonlocal phase, began, turns
                     while True:
-                        message = await asyncio.wait_for(ws.receive(), MAX_INPUT_SECONDS + 5 if phase == "recording" else 70)
+                        wait = (MAX_INPUT_SECONDS + 5 if phase == "recording"
+                                else REPLY_WAIT_SECONDS if phase == "reply"
+                                else BETWEEN_TURNS_WAIT_SECONDS)
+                        message = await asyncio.wait_for(ws.receive(), wait)
                         current()
                         if message["type"] == "websocket.disconnect":
                             raise WebSocketDisconnect()
@@ -227,7 +236,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                 audio = resampler.feed(msg.data)
                                 if audio:
                                     output_bytes += len(audio)
-                                    if output_bytes > 32000 * 60:
+                                    if output_bytes > 32000 * MAX_REPLY_AUDIO_SECONDS:
                                         raise ValueError("reply too long")
                                     if not speaking:
                                         await event("speaking")
@@ -264,7 +273,7 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                         current()
                         if phase == "recording" and time.monotonic() - began > MAX_INPUT_SECONDS + 2:
                             raise TimeoutError("recording timed out")
-                        if phase == "await_start" and time.monotonic() - waiting_since > 70:
+                        if phase == "await_start" and time.monotonic() - waiting_since > BETWEEN_TURNS_WAIT_SECONDS:
                             raise TimeoutError("follow-up timed out")
 
                 tasks = [asyncio.create_task(fn()) for fn in (input_audio, output_audio, watch_access)]
@@ -280,8 +289,10 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
         await ws.close(code=4403, reason="device access changed")
     except (ValueError, json.JSONDecodeError):
         await ws.close(code=4400, reason="invalid voice input")
-    except Exception:
-        # Provider exceptions may contain URLs or credentials; never forward them.
+    except Exception as exc:
+        # Provider exceptions may contain URLs or credentials; never forward or
+        # log their text - only the exception type, so failures are diagnosable.
+        print(f"[room-voice] {row.get('name') or did}: session ended by {type(exc).__name__}", flush=True)
         try:
             await event("error", message="Voice could not connect. Tap Ghost to try again.")
         except Exception:
