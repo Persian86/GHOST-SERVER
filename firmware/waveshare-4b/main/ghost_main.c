@@ -23,6 +23,7 @@
 #include "ghost_wake.h"
 #include "ghost_motion.h"
 #include "ghost_rules.h"
+#include "ghost_art.h"
 #include "cJSON.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
@@ -40,11 +41,16 @@ static esp_websocket_client_handle_t socket_client;
 static RingbufHandle_t playback;
 static QueueHandle_t commands;
 static lv_obj_t *avatar, *mouth, *status_label, *talk_label, *talk_button;
+static lv_obj_t *sparkles[10];
 static lv_obj_t *end_button,*setup_button;
 static lv_obj_t *mic_meter,*mic_caption;
-static lv_obj_t *eyes[2],*irises[2],*drapes[2],*hem[4];
-static lv_obj_t *dome,*skirt,*brows[2],*tongue,*shadow;
+static lv_obj_t *eyes[2],*irises[2],*brows[2],*shadow;
 static ghost_motion_t motion;
+// Where the avatar sits on the 480x480 screen (centred, under the title bar).
+#define AVATAR_X ((480-(int)ghost_art_body.header.w)/2)
+#define AVATAR_Y 22
+static const lv_image_dsc_t *const mouths[GHOST_ART_MOUTHS]={&ghost_art_mouth0,&ghost_art_mouth1,
+    &ghost_art_mouth2,&ghost_art_mouth3,&ghost_art_mouth4,&ghost_art_mouth5};
 static char error_text[160] = "Tap Ghost to try again";
 static char packet[4097];
 static int packet_opcode;
@@ -176,29 +182,31 @@ static void animate(lv_timer_t *timer)
         current==ERROR_STATE?GHOST_CONCERNED:GHOST_REST;
     ghost_motion_frame_t f;
     ghost_motion_step(&motion,elapsed/1000.0f,pose,speech_level/100.0f,&f);
-    lv_obj_set_pos(avatar,100+(int)lroundf(f.x),82+(int)lroundf(f.y));
-    int breath=(int)lroundf(f.breath);
-    lv_obj_set_pos(dome,55-breath/2,0);lv_obj_set_width(dome,170+breath);
-    lv_obj_set_pos(skirt,51-breath/2,110);lv_obj_set_width(skirt,178+breath);
-    int shadow_width=142+(int)lroundf(f.y*1.3f);
-    lv_obj_set_size(shadow,shadow_width,9);lv_obj_set_x(shadow,240-shadow_width/2);
+    // The desktop/phone avatar: rendered pearl sheet body (ghost_art.c) that
+    // bobs and sways, with live eyes, brows and mouth on top.
+    lv_obj_set_pos(avatar,AVATAR_X+(int)lroundf(f.x),AVATAR_Y+(int)lroundf(f.y));
+    int shadow_width=130-(int)lroundf(f.y*1.5f);
+    lv_obj_set_size(shadow,shadow_width,12);lv_obj_set_x(shadow,240-shadow_width/2);
+    lv_obj_set_style_bg_opa(shadow,(lv_opa_t)(45-(int)lroundf(f.y)),0);
+    int gaze_x=(int)lroundf(fmaxf(-7,fminf(7,f.gaze_x*1.3f)));
+    int gaze_y=(int)lroundf(fmaxf(-5,fminf(5,f.gaze_y*1.2f)));
     for(int side=0;side<2;side++) {
-        lv_obj_set_pos(drapes[side],(side?180:25)+(int)lroundf(f.trail),83+(int)lroundf(f.drape[side]));
-        lv_obj_set_height(drapes[side],97+(int)lroundf(f.drape[side]*0.4f));
-        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)lroundf(f.blink*235),0);
-        lv_obj_set_pos(irises[side],5+(int)lroundf(f.gaze_x),3+(int)lroundf(f.gaze_y));
-        lv_obj_set_y(brows[side],45+(int)lroundf(f.brow)+(side?(int)lroundf(-f.gaze_y*0.5f):0));
+        lv_obj_set_style_transform_scale_y(eyes[side],256-(int)lroundf(f.blink*240),0);
+        lv_obj_set_pos(irises[side],(ghost_art_eye.header.w-ghost_art_iris.header.w)/2+gaze_x,
+            (ghost_art_eye.header.h-ghost_art_iris.header.h)/2+gaze_y);
+        lv_obj_set_y(brows[side],GHOST_ART_BROW_Y+(int)lroundf(f.brow));
     }
-    for(int i=0;i<4;i++) {
-        lv_obj_set_pos(hem[i],55+i*43+(int)lroundf(f.trail*0.65f),179+(int)lroundf(f.hem[i]));
-        lv_obj_set_height(hem[i],56+(i%2)*7+(int)lroundf(f.hem[i]*0.35f));
-    }
+    // Friendly open smile at rest (like the desktop); speech opens it further.
+    int shape_index=current==SPEAKING?1+(int)lroundf(f.mouth*4.0f):current==ERROR_STATE?0:2;
+    if(shape_index<0) shape_index=0;
+    if(shape_index>=GHOST_ART_MOUTHS) shape_index=GHOST_ART_MOUTHS-1;
+    static int shown_mouth=-1;
+    if(shape_index!=shown_mouth) {lv_image_set_src(mouth,mouths[shape_index]);shown_mouth=shape_index;}
+    // Sparkles twinkle slowly in the background.
+    float seconds=now/1000000.0f;
+    for(int i=0;i<10;i++)
+        lv_obj_set_style_opa(sparkles[i],(lv_opa_t)(70+(int)(110*(0.5f+0.5f*sinf(seconds*(0.7f+i*0.13f)+i*1.9f)))),0);
     lv_bar_set_value(mic_meter,current==LISTENING?mic_level:0,LV_ANIM_OFF);
-    int mouth_width=30-(int)lroundf(f.mouth*6),mouth_height=7+(int)lroundf(f.mouth*23);
-    lv_obj_set_size(mouth,mouth_width,mouth_height);lv_obj_set_x(mouth,140-mouth_width/2);
-    lv_obj_set_size(tongue,mouth_width-10,5+(int)lroundf(f.mouth*3));
-    lv_obj_align(tongue,LV_ALIGN_BOTTOM_MID,0,0);
-    lv_obj_set_style_bg_opa(tongue,f.mouth>0.2f?LV_OPA_COVER:LV_OPA_TRANSP,0);
     int wake=ghost_wake_enabled();
     int wifi=ghost_wifi_ready();
     if (current==last && wake==last_wake && wifi==last_wifi) return;
@@ -228,7 +236,7 @@ static void animate(lv_timer_t *timer)
 static void build_ui(void)
 {
     lv_obj_t *screen=lv_screen_active();
-    lv_obj_set_style_bg_color(screen,lv_color_hex(0x171526),0);
+    lv_obj_set_style_bg_color(screen,lv_color_hex(0x110924),0);
     lv_obj_set_style_text_color(screen,lv_color_hex(0xeeeafb),0);
     lv_obj_t *title=lv_label_create(screen);
     lv_label_set_text(title,"Ghost");
@@ -244,32 +252,30 @@ static void build_ui(void)
     lv_bar_set_range(mic_meter,0,100);lv_obj_set_style_bg_color(mic_meter,lv_color_hex(0x6fddb0),LV_PART_INDICATOR);
     lv_obj_add_flag(mic_meter,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(mic_caption,LV_OBJ_FLAG_HIDDEN);
     ghost_motion_init(&motion,esp_random());
-    shadow=shape(screen,169,329,142,9,0x0d0b17,LV_RADIUS_CIRCLE);
-    lv_obj_set_style_bg_opa(shadow,LV_OPA_40,0);
-    avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
-    lv_obj_set_size(avatar,280,255);lv_obj_set_pos(avatar,100,82);
-    lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE);
-    // Native LVGL silhouette: dome, soft drapes, scalloped hem and glossy eyes.
-    dome=shape(avatar,55,0,170,220,0xf2f0ff,84);
-    drapes[0]=shape(avatar,25,83,75,97,0xddd9ee,38);
-    drapes[1]=shape(avatar,180,83,75,97,0xddd9ee,38);
-    skirt=shape(avatar,51,110,178,106,0xf2f0ff,30);
-    for(int i=0;i<4;i++) hem[i]=shape(avatar,55+i*43,179,42,56+(i%2)*7,0xf2f0ff,22);
-    for(int side=0;side<2;side++) {
-        int x=91+side*68;
-        eyes[side]=shape(avatar,x-5,56,40,48,0xffffff,24);
-        lv_obj_set_style_transform_pivot_y(eyes[side],24,0);
-        irises[side]=shape(eyes[side],5,3,30,40,0x4c9edc,20);
-        shape(irises[side],5,3,20,30,0x13223c,15);
-        shape(irises[side],8,6,8,10,0xffffff,5);
-        shape(irises[side],20,24,4,5,0xc3f3ff,3);
-        brows[side]=shape(avatar,x+3,45,23,4,0xb4aecb,3);
+    static const lv_point_t sparkle_at[10]={{40,92},{432,118},{58,330},{418,300},{120,58},
+        {372,404},{26,214},{452,222},{86,450},{300,40}};
+    for(int i=0;i<10;i++) {
+        sparkles[i]=lv_image_create(screen);lv_image_set_src(sparkles[i],&ghost_art_sparkle);
+        lv_obj_set_pos(sparkles[i],sparkle_at[i].x,sparkle_at[i].y);
     }
-    shape(avatar,73,108,24,10,0xf5adc7,8);
-    shape(avatar,185,108,24,10,0xf5adc7,8);
-    mouth=shape(avatar,126,119,30,9,0x342338,14);
-    tongue=shape(mouth,5,5,20,5,0xf29ab8,8);
-    lv_obj_set_style_bg_opa(tongue,LV_OPA_TRANSP,0);
+    shadow=shape(screen,165,AVATAR_Y+ghost_art_body.header.h+4,150,12,0x05030c,LV_RADIUS_CIRCLE);
+    lv_obj_set_style_bg_opa(shadow,45,0);
+    avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
+    lv_obj_set_size(avatar,ghost_art_body.header.w,ghost_art_body.header.h);lv_obj_set_pos(avatar,AVATAR_X,AVATAR_Y);
+    lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *body=lv_image_create(avatar);lv_image_set_src(body,&ghost_art_body);lv_obj_set_pos(body,0,0);
+    int eye_w=ghost_art_eye.header.w,eye_h=ghost_art_eye.header.h;
+    for(int side=0;side<2;side++) {
+        int cx=GHOST_ART_CX+(side?GHOST_ART_EYE_DX:-GHOST_ART_EYE_DX);
+        eyes[side]=lv_image_create(avatar);lv_image_set_src(eyes[side],&ghost_art_eye);
+        lv_obj_set_pos(eyes[side],cx-eye_w/2,GHOST_ART_EYE_Y-eye_h/2);
+        lv_obj_set_style_transform_pivot_y(eyes[side],eye_h/2,0);
+        irises[side]=lv_image_create(eyes[side]);lv_image_set_src(irises[side],&ghost_art_iris);
+        lv_obj_set_pos(irises[side],(eye_w-ghost_art_iris.header.w)/2,(eye_h-ghost_art_iris.header.h)/2);
+        brows[side]=shape(avatar,cx-14,GHOST_ART_BROW_Y,28,4,0xb9b3cc,3);
+    }
+    mouth=lv_image_create(avatar);lv_image_set_src(mouth,mouths[2]);
+    lv_obj_set_pos(mouth,GHOST_ART_CX-ghost_art_mouth0.header.w/2,GHOST_ART_MOUTH_Y-ghost_art_mouth0.header.h/4);
     status_label=lv_label_create(screen);
     lv_obj_set_width(status_label,440);lv_obj_set_height(status_label,56);
     lv_obj_set_style_text_align(status_label,LV_TEXT_ALIGN_CENTER,0);
