@@ -392,9 +392,15 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
         disconnected=true; return;
     }
     if (data->op_code==0x9 || data->op_code==0xa) return;
+    // An empty frame carries nothing; skip it rather than end the conversation.
+    if(data->payload_len==0 && data->data_len==0) {
+        ESP_LOGW("ghost_voice","Ignored empty frame op=%d",(int)data->op_code);return;
+    }
     if(data->payload_offset==0) packet_opcode=data->op_code;
     if(data->payload_len <= 0 || data->payload_len > 4096 || data->payload_offset<0 ||
         data->data_len<0 || data->payload_offset+data->data_len > data->payload_len) {
+        ESP_LOGW("ghost_voice","Rejected frame op=%d payload_len=%d offset=%d data_len=%d",
+            (int)data->op_code,(int)data->payload_len,(int)data->payload_offset,(int)data->data_len);
         fail("Invalid server reply.");return;
     }
     memcpy(packet+data->payload_offset,data->data_ptr,data->data_len);
@@ -408,6 +414,7 @@ static void websocket_event(void *arg,esp_event_base_t base,int32_t event_id,voi
         state=SPEAKING; return;
     }
     if(packet_opcode!=0x1 || data->payload_len > 512) {
+        ESP_LOGW("ghost_voice","Rejected message opcode=%d payload_len=%d",packet_opcode,(int)data->payload_len);
         fail("Invalid server reply.");return;
     }
     packet[data->payload_len]=0;
