@@ -404,3 +404,55 @@ def test_long_reply_is_not_cut_off_by_the_between_turns_wait(monkeypatch):
 
 def test_reply_audio_cap_allows_long_answers():
     assert voice.MAX_REPLY_AUDIO_SECONDS >= 120
+
+
+def test_weather_card_is_small_and_complete():
+    from ghost_server import cards
+    data = {"city": "Sunbury", "temp": 21, "desc": "Partly cloudy", "is_day": True,
+            "days": [{"date": "2026-11-21", "max": 24, "min": 13, "desc": "Light rain", "rain": 60},
+                     {"date": "2026-11-22", "max": 27, "min": 15, "desc": "Clear", "rain": 5},
+                     {"date": "2026-11-23", "max": 19, "min": 11, "desc": "Thunderstorm", "rain": None},
+                     {"date": "2026-11-24", "max": 20, "min": 10, "desc": "Clear", "rain": 0}]}
+    card = cards.weather_card(data)
+    assert card["kind"] == "weather" and card["temp"] == 21 and card["city"] == "Sunbury"
+    assert card["days"][0] == ["Sat", 24, 13, "Light rain", 60] and card["days"][2][4] == -1
+    assert len(card["days"]) == 3
+    assert len(json.dumps(card).encode()) <= cards.MAX_CARD_BYTES
+    huge = dict(data, city="X" * 400, desc="Y" * 400)
+    assert len(json.dumps(cards.weather_card(huge)).encode()) <= cards.MAX_CARD_BYTES
+    assert cards.weather_card(None) is None
+
+
+def test_weather_tool_sends_a_card_to_continuous_screens(monkeypatch):
+    row, _ = setup(monkeypatch)
+    monkeypatch.setattr(voice.store, "add_turn", lambda *args: None)
+    monkeypatch.setattr(voice.tools, "declarations", lambda *args: [{"name": "weather"}])
+    monkeypatch.setattr(voice.tools, "run", lambda name, args, ctx: "21 and partly cloudy")
+    monkeypatch.setattr(voice.cards, "for_tool", lambda name, args, city: {
+        "type": "card", "kind": "weather", "city": "Sunbury", "temp": 21, "desc": "Sunny", "day": True, "days": []})
+
+    class WeatherCloud(ConversationCloud):
+        async def receive(self):
+            await self.ends.get()
+            yield NS(data=None, tool_call=NS(function_calls=[NS(id="w1", name="weather", args={})]), server_content=None)
+            await asyncio.sleep(0.05)
+            yield NS(data=bytes(960), tool_call=None, server_content=None)
+            yield NS(data=None, tool_call=None, server_content=NS(
+                input_transcription=NS(text="What's the weather"),
+                output_transcription=NS(text="Sunny"), turn_complete=True))
+        async def send_tool_response(self, **kwargs):
+            pass
+
+    async def run():
+        ws = Socket(); cloud = WeatherCloud(ws)
+        original_send = ws.send_json
+        async def send(message):
+            await original_send(message)
+            if message["type"] == "done":
+                await ws.queue.put({"type": "websocket.receive", "text": '{"type":"cancel"}'})
+        ws.send_json = send
+        await voice.serve(ws, row, lambda row: None, client_factory=lambda **kwargs: cloud, continuous=True)
+        cards_sent = [m for m in ws.messages if isinstance(m, dict) and m["type"] == "card"]
+        assert cards_sent and cards_sent[0]["kind"] == "weather" and cards_sent[0]["temp"] == 21
+        assert [m["type"] for m in ws.messages if isinstance(m, dict)][-1] == "done"
+    asyncio.run(run())

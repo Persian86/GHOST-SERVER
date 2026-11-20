@@ -12,7 +12,7 @@ import time
 import numpy as np
 from fastapi import WebSocketDisconnect
 
-from . import access, prompt, store, tools
+from . import access, cards, prompt, store, tools
 
 MAX_INPUT_SECONDS = 20
 MAX_SESSION_SECONDS = 100
@@ -197,6 +197,19 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                             else:
                                 raise ValueError("unexpected control frame")
 
+                card_tasks = []
+
+                async def send_card(name, args):
+                    """Best effort: a card never delays or breaks the spoken answer."""
+                    try:
+                        card = await asyncio.wait_for(asyncio.to_thread(
+                            cards.for_tool, name, args, store.get("city")), 8)
+                        if card:
+                            async with send_lock:
+                                await asyncio.wait_for(ws.send_json(card), 5)
+                    except Exception as exc:
+                        print(f"[room-voice] card for {name} skipped: {type(exc).__name__}", flush=True)
+
                 async def output_audio():
                     nonlocal phase, waiting_since, resampler
                     speaking = False
@@ -229,6 +242,8 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                     current()
                                     responses.append(types.FunctionResponse(id=fc.id, name=fc.name,
                                         response={"result": result}))
+                                    if continuous:   # only screens that speak the newer protocol get cards
+                                        card_tasks.append(asyncio.create_task(send_card(fc.name, dict(fc.args or {}))))
                                 await session.send_tool_response(function_responses=responses)
                             if msg.data:
                                 if phase != "reply":
@@ -278,9 +293,9 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
 
                 tasks = [asyncio.create_task(fn()) for fn in (input_audio, output_audio, watch_access)]
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
+                for task in [*pending, *card_tasks]:
                     task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+                await asyncio.gather(*pending, *card_tasks, return_exceptions=True)
                 for task in done:
                     task.result()
     except WebSocketDisconnect:
