@@ -507,7 +507,7 @@ static void voice_task(void *arg)
                             int64_t now=esp_timer_get_time();
                             // A cough, a door or the tail of Ghost's own voice is a few
                             // loud frames; real speech is sustained. Only count speech
-                            // once ~240 ms of voiced audio has been heard, so room
+                            // once ~160 ms of voiced audio has been heard, so room
                             // noise can't keep a follow-up open forever.
                             if(rms>fmaxf(120,noise_floor*2.5f)) {
                                 if(voiced_frames<GHOST_SPEECH_MIN_FRAMES) voiced_frames++;
