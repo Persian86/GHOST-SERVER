@@ -18,6 +18,26 @@ MAX_INPUT_SECONDS = 20
 MAX_SESSION_SECONDS = 100
 MAX_CONVERSATION_SECONDS = 300
 MAX_CONVERSATION_TURNS = 12
+
+# Short replies that mean "I'm done" — after one of these (or after a turn in
+# which nothing was actually said) the room screen stops listening.
+_CLOSERS = {
+    "thanks", "thank you", "thanks ghost", "thank you ghost", "cheers", "ta",
+    "thats all", "thats it", "that is all", "thats all thanks", "thats it thanks",
+    "bye", "goodbye", "bye ghost", "good bye", "see ya", "see you", "good night", "goodnight",
+    "no", "nope", "no thanks", "no thank you", "nothing", "nothing else", "no thats all",
+    "no thats it", "stop", "cancel", "never mind", "nevermind", "all good", "im good",
+    "im done", "done", "ok thanks", "okay thanks", "ok thank you", "okay thank you", "great thanks",
+}
+
+
+def conversation_over(heard: str) -> bool:
+    """True when the user's last turn means the conversation should end:
+    nothing was transcribed (room noise, not speech) or it was a closer."""
+    words = "".join(c for c in (heard or "").lower() if c.isalnum() or c.isspace()).split()
+    if not words:
+        return True
+    return len(words) <= 6 and " ".join(words) in _CLOSERS
 _active: set[str] = set()
 
 
@@ -211,7 +231,8 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                 for role, parts in (("user", heard), ("assistant", said)):
                                     if parts:
                                         store.add_turn(did, role, "".join(parts))
-                                if not continuous or turns >= MAX_CONVERSATION_TURNS:
+                                if (not continuous or turns >= MAX_CONVERSATION_TURNS
+                                        or conversation_over("".join(heard))):
                                     await event("done", **({"follow_up": False} if continuous else {}))
                                     return
                                 # Wait for the device to finish playback and explicitly

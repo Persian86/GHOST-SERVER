@@ -462,6 +462,7 @@ static void voice_task(void *arg)
         unsigned frames=0;
         size_t buffered=0;
         int64_t last_speech=0;
+        unsigned voiced_frames=0;
         bool sent_stop=false;
         while(!abort_turn) {
             while(xQueueReceive(commands,&command,0)==pdTRUE) {
@@ -504,7 +505,14 @@ static void voice_task(void *arg)
                         unsigned rms=(unsigned)sqrtf((float)energy/320.0f);
                         if(auto_finish) {
                             int64_t now=esp_timer_get_time();
-                            if(rms>fmaxf(120,noise_floor*2.5f)) last_speech=now;
+                            // A cough, a door or the tail of Ghost's own voice is a few
+                            // loud frames; real speech is sustained. Only count speech
+                            // once ~240 ms of voiced audio has been heard, so room
+                            // noise can't keep a follow-up open forever.
+                            if(rms>fmaxf(120,noise_floor*2.5f)) {
+                                if(voiced_frames<GHOST_SPEECH_MIN_FRAMES) voiced_frames++;
+                                if(voiced_frames>=GHOST_SPEECH_MIN_FRAMES) last_speech=now;
+                            }
                             if(last_speech && now-last_speech>1300000) finish_turn=true;
                             if(!last_speech && now-record_started>(follow_up?10000000:6000000)) {
                                 if(follow_up) {ESP_LOGW("ghost_voice","Conversation ended after quiet");abort_turn=true;}
@@ -543,7 +551,7 @@ static void voice_task(void *arg)
                             fail("Microphone read failed. Restart Ghost.");
                     }
                     if(abort_turn) break;
-                    record_started=0;last_speech=0;next_frame_at=0;frames=0;buffered=0;
+                    record_started=0;last_speech=0;voiced_frames=0;next_frame_at=0;frames=0;buffered=0;
                     finish_turn=false;remote_done=false;remote_follow_up=false;
                     follow_up=true;auto_finish=true;state=CONNECTING;connecting_started=esp_timer_get_time();
                     static const char start[]="{\"type\":\"start\"}";

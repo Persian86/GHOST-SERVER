@@ -24,3 +24,6 @@ bool ghost_pair_code_ok(const char *code);
 #include <stdint.h>
 #define GHOST_CONTROLS_HIDE_MS 8000
 bool ghost_controls_visible(bool busy, int64_t ms_since_touch, int64_t ms_since_busy, int64_t hide_ms);
+
+// Voiced 20 ms frames needed before the listener treats sound as speech.
+#define GHOST_SPEECH_MIN_FRAMES 12
