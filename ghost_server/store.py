@@ -141,6 +141,10 @@ DEFAULTS: dict[str, Any] = {
     "quiet_words": "",                                      # empty = the built-in emergency words
     "quiet_android_sync": True,                             # mirror into the phone's own Do Not Disturb
     "safety_alerts": True,                                  # smoke / CO / gas / leak / alarm → every device, always
+    "fire_alerts": True,                                    # VicEmergency warnings and fires near home (firewatch.py)
+    "fire_radius_km": 20,                                   # how far from home counts as "near"
+    "fire_home": "",                                        # "lat, lon" of home; empty = the household city
+    "fire_seen": {},                                        # announced warnings/fires (internal)
     "ha_url": "http://192.168.80.244:8123",
     "ha_token": "",
     "marquee_url": "http://192.168.80.45:8420",

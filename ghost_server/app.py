@@ -75,7 +75,7 @@ async def _lifespan(_app):
     tools.load()
     from . import camera_media
     camera_media.recover()
-    from . import routines, breakin, checkins, testcalls
+    from . import routines, breakin, checkins, testcalls, firewatch
     routines.recover()
     breakin.recover()
     checkins.recover()
@@ -85,7 +85,8 @@ async def _lifespan(_app):
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
           asyncio.create_task(theme.theme_loop()), asyncio.create_task(breakin.deadline_loop()),
-          asyncio.create_task(checkins.scheduler_loop()), asyncio.create_task(testcalls.safety_loop())]
+          asyncio.create_task(checkins.scheduler_loop()), asyncio.create_task(testcalls.safety_loop()),
+          asyncio.create_task(firewatch.fire_loop())]
     yield
     await camera_media.shutdown()
     for t in bg:

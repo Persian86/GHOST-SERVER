@@ -72,6 +72,7 @@ ghost_server/
   live.py         Gemini ephemeral session tokens
   chat.py         Claude text chat with tools
   claude.py       Claude client (prompt caching, routing)
+  firewatch.py    bushfire & emergency alerts from VicEmergency (fires_near_me tool, background alerts)
   tools/          memory, brain, home, marquee, web, documents, devices, tasks
   static/admin.html
 sdk/python/       ghost_agent.py + examples

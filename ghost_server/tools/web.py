@@ -90,6 +90,44 @@ def weather(args: dict, ctx: Ctx) -> str:
     return weather_text(str(args.get("city") or store.get("city") or "Melbourne"))
 
 
+@tool("fires_near_me", """Bushfires, grass fires and official emergency warnings (Advice, Watch and Act,
+      Emergency Warning — fire, flood, storm) near home, live from VicEmergency. Use for "any fires near me?",
+      "is there a bushfire warning?", "what's that smoke?". Read the most serious items first, with distance
+      and direction. In a real Watch and Act or Emergency Warning, tell them to follow the official warning
+      and call 000 if they're in danger.""",
+      {"type": "OBJECT", "properties": {
+          "radius_km": {"type": "NUMBER", "description": "How far from home to look (default: the house setting, 20 km)"},
+          "fires_only": {"type": "BOOLEAN", "description": "Only fires, not flood or storm warnings"}}})
+def fires_near_me(args: dict, ctx: Ctx) -> str:
+    from .. import firewatch
+    try:
+        km = float(args.get("radius_km") or firewatch.radius())
+    except (TypeError, ValueError):
+        km = firewatch.radius()
+    if not firewatch.home():
+        return "I don't know where home is. Set the household city or the home location for fire alerts in Ghost's settings."
+    return firewatch.summary(max(1.0, min(200.0, km)), fires_only=bool(args.get("fires_only")))
+
+
+@tool("fire_alerts", """Turn the automatic bushfire and emergency alerts on or off, or change how far from home
+      counts as near. Without arguments, says how they're set.""",
+      {"type": "OBJECT", "properties": {"on": {"type": "BOOLEAN"},
+                                        "radius_km": {"type": "NUMBER", "description": "2 to 100 km"}}})
+def fire_alerts(args: dict, ctx: Ctx) -> str:
+    from .. import firewatch
+    if args.get("on") is not None:
+        store.put("fire_alerts", bool(args["on"]))
+    if args.get("radius_km") is not None:
+        try:
+            store.put("fire_radius_km", max(2.0, min(100.0, float(args["radius_km"]))))
+        except (TypeError, ValueError):
+            return "That distance didn't make sense. Say a number of kilometres, 2 to 100."
+    on = bool(store.get("fire_alerts"))
+    return (f"Bushfire and emergency alerts are {'on' if on else 'off'}"
+            + (f": I'll tell the house about Watch and Act or Emergency Warnings within {firewatch.radius():.0f} km "
+               f"and fires within {min(firewatch.FIRE_ALERT_KM, firewatch.radius()):.0f} km." if on else "."))
+
+
 # ── calendar ─────────────────────────────────────────────────────────────────
 def _parse_dt(value: str, params: str):
     value = value.strip()
