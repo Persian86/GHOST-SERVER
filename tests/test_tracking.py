@@ -140,3 +140,36 @@ def test_children_can_ask_guests_cannot(ha, monkeypatch):
     assert not access.tool_allowed("visitor", "where_is")
     assert access.tool_allowed("mum", "where_is")
     assert not access.tool_allowed("kid", "fire_alerts")        # settings stay with adults
+
+
+def test_phone_app_endpoints(ha, monkeypatch):
+    from fastapi.testclient import TestClient
+    from ghost_server import firewatch, security
+    from ghost_server.app import app
+    security.reset_all(); store.put("approve_new_devices", False)
+    did, key = store.redeem_pair_code(store.new_pair_code(), "Adam's phone", "phone")
+    h = {"Authorization": "Bearer " + key}
+    c = TestClient(app)
+    ppl = c.get("/api/v1/people", headers=h)
+    assert ppl.status_code == 200
+    names = {p["name"]: p for p in ppl.json()["people"]}
+    assert names["Hayley"]["text"].startswith("Hayley is at home") and names["Adam"]["eta_min"] == 14
+    tr = c.post("/api/v1/people/track", json={"person": "Adam"}, headers=h)
+    assert tr.status_code == 200 and tr.json()["path"].startswith("/track/") and tr.json()["title"] == "Adam · live"
+    assert c.get(tr.json()["path"] + "/live").json()["name"] == "Adam"
+    assert c.post("/api/v1/people/track", json={"person": "Bob"}, headers=h).status_code == 404
+    monkeypatch.setattr(firewatch, "home", lambda: HOME)
+    monkeypatch.setattr(firewatch, "fetch", lambda max_age=120: [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [144.68, -37.53]},
+         "properties": {"feedType": "incident", "id": 1, "category1": "Fire", "category2": "Grass Fire", "location": "Diggers Rest"}}])
+    f = c.get("/api/v1/fires", headers=h).json()
+    assert f["items"][0]["text"].startswith("Grass Fire at Diggers Rest") and f["alerts_on"]
+    # guests can see fires but not family locations; children can see both
+    store.put("household_access", True); access.schema()
+    store.x("INSERT OR REPLACE INTO device_access VALUES (?,?)", (did, "guest"))
+    assert c.get("/api/v1/people", headers=h).status_code == 403
+    assert c.get("/api/v1/fires", headers=h).status_code == 200
+    store.x("INSERT OR REPLACE INTO device_access VALUES (?,?)", (did, "child"))
+    assert c.get("/api/v1/people", headers=h).status_code == 200
+    store.put("tracking_enabled", False)
+    assert c.get("/api/v1/people", headers=h).status_code == 403
