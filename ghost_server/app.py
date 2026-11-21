@@ -841,6 +841,73 @@ from .camera_media import router as camera_media_router
 app.include_router(camera_media_router)
 
 
+# ── family locations & fire warnings for the phone app's Tools screen ───────
+def _may_track(dev: dict) -> None:
+    if not access.tool_allowed(dev["id"], "where_is"):
+        raise HTTPException(403, "This device's household access profile does not allow family locations")
+    if not store.get("tracking_enabled"):
+        raise HTTPException(403, "Family locations are turned off in Ghost's settings")
+
+
+@app.get("/api/v1/people")
+async def people_list(dev: dict = Depends(device_auth)):
+    """Everyone with a Home Assistant person entity: where they are, moving, distance and drive time home."""
+    _may_track(dev)
+    from . import tracking
+
+    def load():
+        states = tracking._ha("GET", "/api/states").json()
+        return [tracking.snapshot(p, states) | {"text": None} for p in tracking.people(states)]
+    try:
+        people = await asyncio.to_thread(load)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(503, "Home Assistant didn't answer")
+    for p in people:
+        p["text"] = tracking.describe(p)
+    return {"people": people}
+
+
+@app.post("/api/v1/people/track")
+async def people_track(body: dict, dev: dict = Depends(device_auth)):
+    """A live map link (/track/<token>) for one person; the phone opens it like a camera view."""
+    _may_track(dev)
+    from . import tracking
+
+    def make():
+        states = tracking._ha("GET", "/api/states").json()
+        p = tracking.find_person(str(body.get("person") or ""), states) or next(
+            (s for s in states if s.get("entity_id") == body.get("person")), None)
+        if not p:
+            return None
+        tracking.ping(p, every=0)
+        name = str(p["attributes"].get("friendly_name") or p["entity_id"])
+        store.add_event(dev["id"], "location_viewed", {"person": name, "by": dev["name"]})
+        return {"path": "/track/" + tracking.issue(p["entity_id"], dev["name"]), "title": f"{name} · live"}
+    try:
+        out = await asyncio.to_thread(make)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(503, "Home Assistant didn't answer")
+    if out is None:
+        raise HTTPException(404, "No one by that name in Home Assistant")
+    return out
+
+
+@app.get("/api/v1/fires")
+async def fires_list(radius_km: float | None = None, dev: dict = Depends(device_auth)):
+    """VicEmergency warnings and fires near home, most serious first."""
+    from . import firewatch
+    km = max(1.0, min(200.0, float(radius_km or firewatch.radius())))
+    try:
+        home = await asyncio.to_thread(firewatch.home)
+        items = await asyncio.to_thread(firewatch.items_near, km) if home else []
+    except Exception:  # noqa: BLE001
+        raise HTTPException(503, "VicEmergency didn't answer")
+    for i in items:
+        i["text"] = firewatch.describe(i)
+    return {"radius_km": km, "alerts_on": bool(store.get("fire_alerts")), "home_known": bool(home), "items": items,
+            "alert_km": firewatch.FIRE_ALERT_KM}
+
+
 @app.post("/api/v1/cameras/view")
 async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
     """A short-lived link (/cam/<token>) that shows one camera, or 'all' as a grid."""
