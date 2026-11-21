@@ -851,6 +851,29 @@ async def cameras_view(body: dict, dev: dict = Depends(device_auth)):
             "count": len(cams)}
 
 
+@app.get("/track/{tok}", response_class=HTMLResponse)
+async def track_page(tok: str):
+    from . import tracking
+    if tracking.link(tok) is None:
+        return HTMLResponse("<body style='background:#0f1216;color:#9aa4b2;font-family:sans-serif;padding:40px'>"
+                            "This live location link has ended. Ask Ghost again to see where they are.</body>", 410)
+    return HTMLResponse(tracking.page(tok), headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.get("/track/{tok}/live")
+async def track_live(tok: str):
+    from . import tracking
+    if tracking.link(tok) is None:
+        raise HTTPException(410, "expired")
+    try:
+        data = await asyncio.to_thread(tracking.live, tok)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(503, "Home Assistant didn't answer")
+    if data is None:
+        raise HTTPException(410, "expired")
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/cam/{tok}", response_class=HTMLResponse)
 async def cam_page(tok: str):
     cams = cameras.view(tok)

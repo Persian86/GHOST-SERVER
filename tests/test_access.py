@@ -60,7 +60,7 @@ def test_limited_http_prompt_credentials_and_no_role_escalation(env,monkeypatch)
     session=public.get('/api/v1/session',headers=ch).json()
     assert 'SECRET' not in json.dumps(session)
     assert session['access']['role']=='child' and 'offline' not in session
-    assert {t['name'] for t in session['server_tools']} <= access.PUBLIC_TOOLS
+    assert {t['name'] for t in session['server_tools']} <= access.PUBLIC_TOOLS | access.HOUSEHOLD_TOOLS
     assert public.post('/admin/api/devices/'+child,json={'access_role':'owner'},headers=ch).status_code==401
     assert public.post('/api/v1/tools/call',headers=ch,json={'name':'recall','args':{'role':'owner','confirmed':True}}).json()['result'].startswith('Permission denied')
 

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Live location · Ghost</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<style>
+:root{--bg:#0f1216;--panel:rgba(20,24,30,.92);--text:#f2f4f7;--dim:#9aa4b2;--accent:#2f7df6;--ok:#38c172}
+@media (prefers-color-scheme: light){:root{--bg:#eef1f5;--panel:rgba(255,255,255,.94);--text:#14181d;--dim:#5b6573}}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:15px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif}
+#map{position:absolute;inset:0}
+[hidden]{display:none!important}
+.card{position:absolute;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top));z-index:500;max-width:520px;margin:0 auto;
+  background:var(--panel);border-radius:16px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.25);backdrop-filter:blur(10px)}
+.top{display:flex;align-items:center;gap:10px}
+.av{width:40px;height:40px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:18px;flex:none;background-size:cover;background-position:center}
+.name{font-weight:700;font-size:17px}.where{color:var(--dim);font-size:14px}
+.stats{display:flex;gap:14px;margin-top:8px;flex-wrap:wrap;font-size:13px}.stats b{font-size:16px;display:block}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ok);font-weight:600;margin-left:auto}
+.live i{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:p 1.4s infinite}
+@keyframes p{50%{opacity:.25}}
+.live.stale{color:var(--dim)}.live.stale i{background:var(--dim);animation:none}
+.btns{position:absolute;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:500;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.btns a,.btns button{border:0;border-radius:12px;padding:11px 14px;font:600 14px system-ui,sans-serif;background:var(--panel);color:var(--text);text-decoration:none;box-shadow:0 4px 16px rgba(0,0,0,.2);cursor:pointer}
+.btns .primary{background:var(--accent);color:#fff}
+.msg{position:absolute;inset:0;display:grid;place-items:center;z-index:600;background:var(--bg);color:var(--dim);text-align:center;padding:30px}
+.me{width:22px;height:22px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 0 0 6px rgba(47,125,246,.25)}
+.homeic{font-size:22px;line-height:22px;text-align:center}
+</style></head>
+<body>
+<div id="map"></div>
+<div class="card" hidden>
+  <div class="top"><div class="av"></div><div><div class="name"></div><div class="where"></div></div><span class="live"><i></i><span>Live</span></span></div>
+  <div class="stats"></div>
+</div>
+<div class="btns" hidden>
+  <a class="primary" id="gmaps" target="_blank" rel="noopener">Open in Google Maps</a>
+  <a id="gdir" target="_blank" rel="noopener">Directions</a>
+  <button id="follow">Following</button>
+</div>
+<div class="msg">Finding them…</div>
+<script>
+const TOKEN = "__TOKEN__";
+const $ = s => document.querySelector(s);
+let map, dot, ring, line, homeMk, follow = true, first = true, lastSeen = 0;
+function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function ago(t){const s=Math.max(0,Date.now()/1000-t);return s<60?"just now":s<3600?Math.floor(s/60)+" min ago":Math.floor(s/3600)+" h ago"}
+function setup(){
+  map = L.map("map",{zoomControl:false}).setView([-37.8,144.9],12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+  map.on("dragstart",()=>{follow=false;$("#follow").textContent="Follow"});
+  $("#follow").onclick=()=>{follow=true;$("#follow").textContent="Following";if(dot)map.panTo(dot.getLatLng())};
+}
+async function tick(){
+  let d;
+  try{const r=await fetch(`/track/${TOKEN}/live`,{cache:"no-store"});
+    if(r.status===410||r.status===404){$(".msg").hidden=false;$(".msg").textContent="This live location link has ended. Ask Ghost again to see where they are.";return}
+    d=await r.json();}catch(e){setTimeout(tick,8000);return}
+  $(".msg").hidden=true;$(".card").hidden=false;
+  const av=$(".av");av.textContent=(d.name||"?")[0];if(d.picture){av.style.backgroundImage=`url(${d.picture})`;av.textContent=""}
+  $(".name").textContent=d.name;
+  $(".where").textContent=d.at_home?"At home":(d.zone?`At ${d.zone}`:(d.place||"Out"))+` · ${ago(d.updated)}`;
+  const st=[];
+  if(!d.at_home&&d.kmh!=null)st.push(`<div><b>${d.moving?d.kmh+" km/h":"Stopped"}</b>speed</div>`);
+  if(d.km!=null)st.push(`<div><b>${d.km<1?Math.round(d.km*1000)+" m":d.km.toFixed(1)+" km"}</b>from home</div>`);
+  if(d.eta_min)st.push(`<div><b>~${d.eta_min} min</b>drive home</div>`);
+  if(d.acc)st.push(`<div><b>±${Math.round(d.acc)} m</b>accuracy</div>`);
+  $(".stats").innerHTML=st.join("");
+  const lv=$(".live");const fresh=Date.now()/1000-d.updated<180;lv.classList.toggle("stale",!fresh);lv.querySelector("span").textContent=fresh?"Live":"Waiting for phone";
+  if(d.lat!=null){
+    const p=[d.lat,d.lon];
+    if(!dot){dot=L.marker(p,{icon:L.divIcon({className:"",html:'<div class="me"></div>',iconSize:[22,22],iconAnchor:[11,11]})}).addTo(map);
+      ring=L.circle(p,{radius:d.acc||30,color:"#2f7df6",weight:1,fillOpacity:.1}).addTo(map);}
+    dot.setLatLng(p);ring.setLatLng(p);ring.setRadius(d.acc||30);
+    const tr=(d.trail||[]).concat([p]);
+    if(!line)line=L.polyline(tr,{color:"#2f7df6",weight:4,opacity:.6}).addTo(map);else line.setLatLngs(tr);
+    if(d.home&&!homeMk)homeMk=L.marker(d.home,{icon:L.divIcon({className:"homeic",html:"🏠",iconSize:[24,24],iconAnchor:[12,12]})}).addTo(map);
+    if(first){first=false;const b=L.latLngBounds([p]);if(d.home&&!d.at_home&&d.km<60)b.extend(d.home);map.fitBounds(b.pad(.35),{maxZoom:16})}
+    else if(follow&&d.updated!==lastSeen)map.panTo(p);
+    lastSeen=d.updated;
+    $("#gmaps").href=`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lon}`;
+    $("#gdir").href=`https://www.google.com/maps/dir/?api=1&destination=${d.lat},${d.lon}`;
+    $(".btns").hidden=false;
+  }
+  document.title=`${d.name} · live location`;
+  setTimeout(tick,5000);
+}
+if(window.L){setup();tick()}else{$(".msg").textContent="The map couldn't load. Check the internet connection."}
+</script>
+</body></html>
