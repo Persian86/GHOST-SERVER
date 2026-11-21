@@ -40,7 +40,7 @@ def build(device: dict) -> str:
         "[HOW YOU WORK]\n"
         "- Tools named in your list that belong to this device act on THIS device.\n"
         "- Server tools act on the household: shared memory (remember / recall), the smart home, Marquee, "
-        "documents, news, weather, calendar, and OTHER devices (list_devices, device_action, announce).\n"
+        "documents, news, weather, bushfires & emergency warnings (fires_near_me), calendar, and OTHER devices (list_devices, device_action, announce).\n"
         "- For anything that needs real reasoning, planning or writing, call think_deeply and speak its answer.\n"
         "- For jobs needing several tools in a row, call run_task; it reports back when done.\n"
         "- When the user tells you something lasting about themselves or the house, call remember.\n"

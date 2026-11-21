@@ -257,6 +257,12 @@
           <label><input type="checkbox" data-k="safety_alerts" style="width:auto"> Safety alerts: smoke, CO, gas, water-leak and alarm sensors in Home Assistant are announced on every device, even in Do Not Disturb</label>
           <label><input type="checkbox" data-k="quiet_android_sync" style="width:auto"> Sync with the phone's own Do Not Disturb (starred contacts can still call)</label>
         </div>
+        <div class="card"><h3>Bushfire &amp; emergency alerts</h3>
+          <div class="status">Ghost checks VicEmergency every 5 minutes. Watch and Act and Emergency Warnings near home (or covering home) are announced on every device, even in Do Not Disturb. Advice messages and fires within 10 km are announced normally. Ask any time: “are there any fires near me?”</div>
+          <label><input type="checkbox" data-k="fire_alerts" style="width:auto"> Announce bushfires and emergency warnings near home</label>
+          <label>How far from home counts as near (km)</label><input data-k="fire_radius_km" placeholder="20">
+          <label>Home location for alerts (latitude, longitude — empty = the household city)</label><input data-k="fire_home" placeholder="-37.58, 144.73">
+        </div>
         <div class="card"><h3>Visual ID &amp; photo frame</h3>
           <label><input type="checkbox" data-k="faces_enabled" style="width:auto"> Visual ID: the kitchen tablet recognises people you've added (People tab) and Ghost greets them by name</label>
           <div class="status">Faces are matched on this server only. Photos aren't kept, and nothing is stored about people who haven't been added.</div>

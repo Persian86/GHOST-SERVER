@@ -11,7 +11,7 @@ import time
 from . import store
 
 ROLES = ("owner", "adult", "child", "guest")
-PUBLIC_TOOLS = {"weather", "news", "think_deeply"}
+PUBLIC_TOOLS = {"weather", "news", "think_deeply", "fires_near_me"}
 PUBLIC_ROUTES = {("GET", "/api/v1/session"), ("GET", "/api/v1/key"),
                  ("POST", "/api/v1/key/rotate"),
                  ("POST", "/api/v1/tools/call"), ("POST", "/api/v1/chat"),
