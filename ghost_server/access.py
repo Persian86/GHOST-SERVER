@@ -12,6 +12,7 @@ from . import store
 
 ROLES = ("owner", "adult", "child", "guest")
 PUBLIC_TOOLS = {"weather", "news", "think_deeply", "fires_near_me"}
+HOUSEHOLD_TOOLS = {"where_is"}          # every household member (children too), never guests
 PUBLIC_ROUTES = {("GET", "/api/v1/session"), ("GET", "/api/v1/key"),
                  ("POST", "/api/v1/key/rotate"),
                  ("POST", "/api/v1/tools/call"), ("POST", "/api/v1/chat"),
@@ -59,6 +60,8 @@ def invalidate():
     # Old camera links must not become a route around a newly restricted profile.
     from . import cameras
     with cameras._vlock: cameras._views.clear()
+    from . import tracking
+    with tracking._links_lock: tracking._links.clear()
 
 
 def check_route(did, method, path):
@@ -70,7 +73,7 @@ def tool_allowed(did, name):
     if enabled() and did:
         row = store.device(parent(did))
         if row is None or row["revoked"] or not row["approved"]: return False
-    return not limited(did) or name in PUBLIC_TOOLS
+    return not limited(did) or name in PUBLIC_TOOLS or (name in HOUSEHOLD_TOOLS and role(did) == "child")
 
 
 def outgoing_allowed(did, message):

@@ -263,6 +263,10 @@
           <label>How far from home counts as near (km)</label><input data-k="fire_radius_km" placeholder="20">
           <label>Home location for alerts (latitude, longitude — empty = the household city)</label><input data-k="fire_home" placeholder="-37.58, 144.73">
         </div>
+        <div class="card"><h3>Family locations</h3>
+          <div class="status">“Where's Adam?” — Ghost reads each person's location from the Home Assistant app on their phone (Android or iPhone) and opens a live map that moves in real time, with an Open in Google Maps button. Links end after an hour, or once the person gets home. Every look is recorded in Events. Guests' devices can't use it.</div>
+          <label><input type="checkbox" data-k="tracking_enabled" style="width:auto"> Let household devices ask where family members are</label>
+        </div>
         <div class="card"><h3>Visual ID &amp; photo frame</h3>
           <label><input type="checkbox" data-k="faces_enabled" style="width:auto"> Visual ID: the kitchen tablet recognises people you've added (People tab) and Ghost greets them by name</label>
           <div class="status">Faces are matched on this server only. Photos aren't kept, and nothing is stored about people who haven't been added.</div>
