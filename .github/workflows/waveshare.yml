@@ -36,9 +36,11 @@ jobs:
         with:
           name: ghost-waveshare-4b-application
           path: firmware-artifact/
+          retention-days: 14         # keep GitHub's artifact storage from filling up
       - uses: actions/upload-artifact@v4
         with:
           name: ghost-waveshare-4b-debug
+          retention-days: 3
           path: |
             firmware/waveshare-4b/build/ghost_room_4b.elf
             firmware/waveshare-4b/build/ghost_room_4b.map
