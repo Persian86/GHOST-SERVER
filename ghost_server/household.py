@@ -32,17 +32,22 @@ CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, from_name TEXT DEFAULT '', to_name TEXT DEFAULT '',
     at REAL, done INTEGER DEFAULT 0);
 """
+NOTE_COLOURS = ("yellow", "pink", "blue", "green", "orange", "purple")
 RING_FOR = 10 * 60          # a ringing timer stops by itself after 10 minutes
 ROOM_REPEAT = 45            # room speakers re-announce every 45 s, three times
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-_ready = False
+_ready: bool | str = False
 
 
 def _schema() -> None:
     global _ready
-    if not _ready:
+    if _ready != str(store._db_path):         # once per database (tests and restores switch databases)
         store._con().executescript(SCHEMA)
-        _ready = True
+        cols = {r["name"] for r in store.q("PRAGMA table_info(notes)")}
+        for col in ("ink", "color"):        # handwritten notes (ink.py) and sticky-note colour
+            if col not in cols:
+                store.x(f"ALTER TABLE notes ADD COLUMN {col} TEXT DEFAULT ''")
+        _ready = str(store._db_path)
 
 
 def _push(msg: dict) -> None:
@@ -296,8 +301,13 @@ def _list_name(s: str) -> str:
 def lists() -> dict[str, list[dict]]:
     _schema()
     out: dict[str, list[dict]] = {"shopping": [], "to do": []}
+    from . import ink
     for r in store.q("SELECT * FROM list_items ORDER BY done, id"):
-        out.setdefault(r["list"], []).append(dict(r))
+        row = dict(r)
+        if row["list"] == "shopping":          # aisle and picture for the tablet's shopping page
+            row["category"] = ink.category_of(row["text"])
+            row["emoji"] = ink.emoji_of(row["text"])
+        out.setdefault(r["list"], []).append(row)
     return out
 
 
@@ -370,19 +380,23 @@ def notes_snapshot() -> dict:
     return {"type": "notes", "items": notes()}
 
 
-def leave_note(text: str, to_name: str = "", from_name: str = "") -> dict:
+def leave_note(text: str, to_name: str = "", from_name: str = "", ink_name: str = "", color: str = "") -> dict:
     _schema()
     to = "" if str(to_name or "").lower() in ("", "everyone", "all", "everybody", "the family", "family") \
         else " ".join(str(to_name).split())[:40]
-    nid = store.x("INSERT INTO notes (text, from_name, to_name, at) VALUES (?,?,?,?)",
-                  (" ".join(str(text).split())[:400], str(from_name or "")[:40], to, time.time()))
+    colour = color if color in NOTE_COLOURS else ""
+    nid = store.x("INSERT INTO notes (text, from_name, to_name, at, ink, color) VALUES (?,?,?,?,?,?)",
+                  (" ".join(str(text).split())[:400], str(from_name or "")[:40], to, time.time(), ink_name, colour))
     _push(notes_snapshot())
     return {"id": nid, "to": to or "everyone"}
 
 
 def done_note(note_id: int) -> bool:
     _schema()
-    found = store.q("SELECT id FROM notes WHERE id=?", (note_id,))
+    found = store.q("SELECT id, ink FROM notes WHERE id=?", (note_id,))
+    if found and found[0]["ink"]:
+        from . import ink
+        ink.delete_ink(found[0]["ink"])     # the drawing goes once it's read; its words stay in history
     store.x("UPDATE notes SET done=1 WHERE id=?", (note_id,))
     _push(notes_snapshot())
     return bool(found)
