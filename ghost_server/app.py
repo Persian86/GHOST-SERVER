@@ -463,10 +463,63 @@ async def notes_get(dev: dict = Depends(device_auth), who: str = ""):
 
 @app.post("/api/v1/notes")
 async def notes_add(body: dict, dev: dict = Depends(device_auth)):
-    if not str(body.get("text") or "").strip():
+    """A note: typed or dictated text, and/or a handwritten drawing (base64 PNG in "ink")."""
+    from . import ink
+    text = str(body.get("text") or "").strip()
+    ink_name = ""
+    if body.get("ink"):
+        try:
+            png = ink.decode_png(str(body["ink"]))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        ink_name = await asyncio.to_thread(ink.save_ink, png)
+        if not text:          # Ghost reads the handwriting once so it can say what the note says
+            text = await asyncio.to_thread(ink.read_handwriting, png, "note") or "Handwritten note"
+    if not text:
         raise HTTPException(400, "the note is empty")
-    return await asyncio.to_thread(household.leave_note, str(body["text"]), str(body.get("to") or ""),
-                                   str(body.get("from") or ""))
+    return await asyncio.to_thread(household.leave_note, text, str(body.get("to") or ""),
+                                   str(body.get("from") or ""), ink_name, str(body.get("color") or ""))
+
+
+@app.get("/api/v1/notes/ink/{name}")
+async def notes_ink(name: str, dev: dict = Depends(device_auth)):
+    from . import ink
+    p = ink.ink_path(name)
+    if not p:
+        raise HTTPException(404, "no such drawing")
+    return FileResponse(p, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.post("/api/v1/handwriting")
+async def handwriting(body: dict, dev: dict = Depends(device_auth)):
+    """Read handwriting from the tablet: {"png": base64, "mode": "list"|"note"} → text (+ items for a list)."""
+    from . import ink
+    try:
+        png = ink.decode_png(str(body.get("png") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    mode = "list" if body.get("mode") == "list" else "note"
+    text = await asyncio.to_thread(ink.read_handwriting, png, mode)
+    if not text:
+        raise HTTPException(503, "Couldn't read the handwriting just now — try again, or type it")
+    return {"text": text, "items": ink.list_items(text) if mode == "list" else []}
+
+
+@app.get("/api/v1/pantry")
+async def pantry_get(dev: dict = Depends(device_auth)):
+    from . import ink
+    return await asyncio.to_thread(ink.pantry)
+
+
+@app.post("/api/v1/pantry")
+async def pantry_add(body: dict, dev: dict = Depends(device_auth)):
+    """Add your own item to the pantry picker: {name, category, emoji}."""
+    from . import ink
+    try:
+        return await asyncio.to_thread(ink.add_custom, str(body.get("name") or ""), str(body.get("category") or ""),
+                                       str(body.get("emoji") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/v1/notes/{nid}")
