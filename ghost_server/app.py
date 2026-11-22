@@ -505,6 +505,19 @@ async def handwriting(body: dict, dev: dict = Depends(device_auth)):
     return {"text": text, "items": ink.list_items(text) if mode == "list" else []}
 
 
+@app.get("/api/v1/calendar")
+async def calendar_range(start: str = "", days: int = 7, dev: dict = Depends(device_auth)):
+    """The family calendar for the tablet: each day's events with who they belong to and their colour."""
+    import datetime as dt
+    from . import family_calendar
+    from .tools.web import today
+    try:
+        first = dt.date.fromisoformat(start) if start else today()
+    except ValueError:
+        raise HTTPException(400, "start must be YYYY-MM-DD")
+    return await asyncio.to_thread(family_calendar.days, first, days)
+
+
 @app.get("/api/v1/pantry")
 async def pantry_get(dev: dict = Depends(device_auth)):
     from . import ink

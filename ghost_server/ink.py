@@ -95,43 +95,103 @@ def list_items(text: str) -> list[str]:
 
 
 # ── pantry ───────────────────────────────────────────────────────────────────
-PANTRY: dict[str, list[tuple[str, str]]] = {
-    "Fruit": [("Apples", "🍎"), ("Bananas", "🍌"), ("Oranges", "🍊"), ("Mandarins", "🍊"), ("Lemons", "🍋"),
-              ("Limes", "🍋"), ("Grapes", "🍇"), ("Strawberries", "🍓"), ("Blueberries", "🫐"), ("Watermelon", "🍉"),
-              ("Rockmelon", "🍈"), ("Pineapple", "🍍"), ("Mango", "🥭"), ("Pears", "🍐"), ("Peaches", "🍑"),
-              ("Cherries", "🍒"), ("Kiwi fruit", "🥝"), ("Avocado", "🥑"), ("Coconut", "🥥")],
-    "Vegetables": [("Potatoes", "🥔"), ("Sweet potato", "🍠"), ("Carrots", "🥕"), ("Onions", "🧅"), ("Garlic", "🧄"),
-                   ("Tomatoes", "🍅"), ("Lettuce", "🥬"), ("Spinach", "🥬"), ("Broccoli", "🥦"), ("Cucumber", "🥒"),
-                   ("Capsicum", "🫑"), ("Chilli", "🌶"), ("Corn", "🌽"), ("Mushrooms", "🍄"), ("Zucchini", "🥒"),
-                   ("Eggplant", "🍆"), ("Pumpkin", "🎃"), ("Peas", "🫛"), ("Ginger", "🫚"), ("Fresh herbs", "🌿")],
-    "Dairy & eggs": [("Milk", "🥛"), ("Eggs", "🥚"), ("Butter", "🧈"), ("Cheese", "🧀"), ("Yoghurt", "🥛"),
-                     ("Cream", "🥛"), ("Sour cream", "🥛"), ("Cream cheese", "🧀"), ("Parmesan", "🧀"),
-                     ("Plant milk", "🥛")],
-    "Meat & seafood": [("Chicken", "🍗"), ("Chicken breast", "🍗"), ("Mince", "🥩"), ("Steak", "🥩"),
-                       ("Lamb", "🍖"), ("Pork", "🥓"), ("Bacon", "🥓"), ("Sausages", "🌭"), ("Ham", "🍖"),
-                       ("Fish", "🐟"), ("Salmon", "🍣"), ("Prawns", "🍤"), ("Tuna", "🐟")],
-    "Bakery": [("Bread", "🍞"), ("Wraps", "🫓"), ("Bread rolls", "🥖"), ("Croissants", "🥐"), ("Bagels", "🥯"),
-               ("Muffins", "🧁"), ("Cake", "🍰"), ("Crumpets", "🥞")],
-    "Pantry": [("Pasta", "🍝"), ("Rice", "🍚"), ("Noodles", "🍜"), ("Flour", "🌾"), ("Sugar", "🍬"),
-               ("Cereal", "🥣"), ("Oats", "🥣"), ("Peanut butter", "🥜"), ("Honey", "🍯"), ("Jam", "🍓"),
-               ("Vegemite", "🫙"), ("Olive oil", "🫒"), ("Pasta sauce", "🍅"), ("Tinned tomatoes", "🥫"),
-               ("Baked beans", "🥫"), ("Soup", "🍲"), ("Stock", "🥣"), ("Salt", "🧂"), ("Spices", "🧂"),
-               ("Tomato sauce", "🍅"), ("Mayonnaise", "🥚"), ("Coffee", "☕"), ("Tea", "🍵"), ("Milo", "🍫")],
-    "Frozen": [("Frozen peas", "🫛"), ("Frozen veg", "🥦"), ("Chips", "🍟"), ("Ice cream", "🍨"), ("Pizza", "🍕"),
-               ("Fish fingers", "🐟"), ("Frozen berries", "🫐"), ("Ice", "🧊"), ("Dumplings", "🥟")],
-    "Drinks": [("Water", "💧"), ("Juice", "🧃"), ("Soft drink", "🥤"), ("Sparkling water", "🫧"),
-               ("Cordial", "🧃"), ("Beer", "🍺"), ("Wine", "🍷"), ("Kombucha", "🍾")],
-    "Snacks": [("Chips (crisps)", "🥔"), ("Biscuits", "🍪"), ("Chocolate", "🍫"), ("Lollies", "🍬"), ("Popcorn", "🍿"),
-               ("Crackers", "🍘"), ("Muesli bars", "🥜"), ("Nuts", "🥜"), ("Pretzels", "🥨")],
-    "Household": [("Toilet paper", "🧻"), ("Paper towel", "🧻"), ("Dishwashing liquid", "🧽"),
-                  ("Dishwasher tablets", "🫧"), ("Laundry liquid", "🧺"), ("Bin bags", "🗑"), ("Cling wrap", "📦"),
-                  ("Foil", "📦"), ("Sponges", "🧽"), ("Batteries", "🔋"), ("Light globes", "💡")],
-    "Personal care": [("Toothpaste", "🪥"), ("Toothbrush", "🪥"), ("Shampoo", "🧴"), ("Conditioner", "🧴"),
-                      ("Soap", "🧼"), ("Body wash", "🧴"), ("Deodorant", "🧴"), ("Tissues", "🤧"),
-                      ("Sunscreen", "🧴"), ("Band-aids", "🩹"), ("Panadol", "💊")],
-    "Kids & pets": [("Nappies", "👶"), ("Wipes", "🧻"), ("Lunchbox snacks", "🍱"), ("Dog food", "🐕"),
-                    ("Cat food", "🐈"), ("Kitty litter", "🐈")],
+# Aisle → (emoji used when an item has none of its own, "Item|emoji; Item; …")
+_AISLES: dict[str, tuple[str, str]] = {
+    "Fruit": ("🍎", "Apples|🍎; Green apples|🍏; Bananas|🍌; Oranges|🍊; Mandarins|🍊; Lemons|🍋; Limes|🍋; Grapes|🍇; "
+              "Strawberries|🍓; Blueberries|🫐; Raspberries; Blackberries; Watermelon|🍉; Rockmelon|🍈; Honeydew|🍈; "
+              "Pineapple|🍍; Mango|🥭; Pears|🍐; Peaches|🍑; Nectarines|🍑; Apricots|🍑; Plums; Cherries|🍒; "
+              "Kiwi fruit|🥝; Avocado|🥑; Coconut|🥥; Passionfruit; Papaya; Pomegranate; Dates; Figs; Grapefruit|🍊"),
+    "Vegetables": ("🥕", "Potatoes|🥔; Sweet potato|🍠; Carrots|🥕; Onions|🧅; Red onion|🧅; Spring onions|🧅; Garlic|🧄; "
+                   "Tomatoes|🍅; Cherry tomatoes|🍅; Lettuce|🥬; Cos lettuce|🥬; Baby spinach|🥬; Kale|🥬; Rocket|🥬; "
+                   "Salad mix|🥗; Broccoli|🥦; Broccolini|🥦; Cauliflower|🥦; Cabbage|🥬; Cucumber|🥒; Capsicum|🫑; "
+                   "Chilli|🌶; Corn|🌽; Mushrooms|🍄; Zucchini|🥒; Eggplant|🍆; Pumpkin|🎃; Butternut pumpkin|🎃; "
+                   "Peas|🫛; Snow peas|🫛; Green beans|🫛; Asparagus; Celery; Leek; Beetroot; Ginger|🫚; Bok choy|🥬; "
+                   "Bean sprouts; Fresh herbs|🌿; Basil|🌿; Parsley|🌿; Coriander|🌿; Mint|🌿"),
+    "Bakery": ("🍞", "Bread|🍞; Wholemeal bread|🍞; Sourdough|🍞; Raisin bread|🍞; Bread rolls|🥖; Baguette|🥖; "
+               "Wraps|🫓; Pita bread|🫓; Naan|🫓; Croissants|🥐; Bagels|🥯; English muffins|🧁; Crumpets|🥞; "
+               "Hot cross buns; Muffins|🧁; Donuts|🍩; Cake|🍰; Cupcakes|🧁; Pizza bases|🍕; Burger buns|🍔; Hot dog rolls|🌭"),
+    "Dairy & eggs": ("🥛", "Milk|🥛; Lite milk|🥛; Lactose-free milk|🥛; Almond milk|🥛; Oat milk|🥛; Soy milk|🥛; "
+                     "Eggs|🥚; Butter|🧈; Margarine|🧈; Yoghurt|🥛; Greek yoghurt|🥛; Kids yoghurt pouches; Cream|🥛; "
+                     "Thickened cream|🥛; Sour cream|🥛; Custard; Dips"),
+    "Cheese": ("🧀", "Cheese|🧀; Tasty cheese|🧀; Grated cheese|🧀; Cheese slices|🧀; Mozzarella|🧀; Parmesan|🧀; "
+               "Feta|🧀; Cream cheese|🧀; Haloumi|🧀; Brie|🧀; Camembert|🧀; Ricotta|🧀; Cheese sticks|🧀; Cottage cheese|🧀"),
+    "Meat": ("🥩", "Chicken breast|🍗; Chicken thighs|🍗; Chicken drumsticks|🍗; Whole chicken|🍗; Chicken wings|🍗; "
+             "Beef mince|🥩; Steak|🥩; Roast beef|🥩; Stir-fry beef|🥩; Lamb chops|🍖; Lamb roast|🍖; Pork chops|🥓; "
+             "Pork belly|🥓; Bacon|🥓; Sausages|🌭; Chicken sausages|🌭; Meatballs; Burger patties|🍔; Schnitzels|🍗; "
+             "Rissoles; Chicken mince|🍗; Pork mince|🥩"),
+    "Seafood": ("🐟", "Salmon|🍣; Fish fillets|🐟; Barramundi|🐟; Prawns|🍤; Calamari|🦑; Mussels; Smoked salmon|🍣; "
+                "Crumbed fish|🐟; Tuna steaks|🐟"),
+    "Deli": ("🥓", "Ham|🍖; Shaved ham|🍖; Salami; Chicken (cooked)|🍗; Roast chicken|🍗; Turkey slices; Olives|🫒; "
+             "Hummus; Antipasto; Kabana; Pâté"),
+    "Breakfast": ("🥣", "Cereal|🥣; Weet-Bix|🥣; Cornflakes|🥣; Rice Bubbles|🥣; Muesli|🥣; Granola|🥣; Oats|🥣; "
+                  "Porridge sachets|🥣; Pancake mix|🥞; Maple syrup|🍁; Honey|🍯; Jam|🍓; Peanut butter|🥜; Nutella|🍫; "
+                  "Vegemite|🫙; Spreads|🫙"),
+    "Pasta, rice & grains": ("🍝", "Pasta|🍝; Spaghetti|🍝; Penne|🍝; Fettuccine|🍝; Lasagne sheets|🍝; Rice|🍚; "
+                             "Basmati rice|🍚; Jasmine rice|🍚; Brown rice|🍚; Microwave rice|🍚; Noodles|🍜; "
+                             "Instant noodles|🍜; Rice noodles|🍜; Couscous; Quinoa; Gnocchi"),
+    "Tins & jars": ("🥫", "Tinned tomatoes|🥫; Tomato paste|🥫; Pasta sauce|🍅; Baked beans|🥫; Chickpeas|🥫; "
+                    "Kidney beans|🥫; Lentils|🥫; Tuna|🐟; Salmon (tinned)|🐟; Sweet corn|🌽; Coconut milk|🥥; "
+                    "Soup|🍲; Stock|🥣; Tinned fruit|🍑; Beetroot (tinned)|🥫; Pickles|🥒; Sun-dried tomatoes|🍅"),
+    "Sauces & condiments": ("🧴", "Tomato sauce|🍅; BBQ sauce; Mayonnaise|🥚; Mustard; Soy sauce; Sweet chilli sauce|🌶; "
+                            "Hot sauce|🌶; Worcestershire sauce; Oyster sauce; Salad dressing|🥗; Gravy; Vinegar; "
+                            "Balsamic vinegar; Pesto|🌿; Curry paste|🍛; Taco seasoning|🌮; Relish"),
+    "Baking": ("🧁", "Flour|🌾; Self-raising flour|🌾; Sugar|🍬; Brown sugar|🍬; Icing sugar|🍬; Baking powder; "
+               "Bicarb soda; Vanilla essence; Cocoa|🍫; Choc chips|🍫; Yeast; Cake mix|🎂; Sprinkles; Food colouring; "
+               "Desiccated coconut|🥥; Golden syrup|🍯; Condensed milk|🥛; Gelatine"),
+    "Oils, herbs & spices": ("🧂", "Olive oil|🫒; Vegetable oil; Canola spray; Coconut oil|🥥; Sesame oil; Salt|🧂; "
+                             "Pepper|🧂; Garlic powder|🧄; Paprika|🌶; Cumin; Cinnamon; Mixed herbs|🌿; Oregano|🌿; "
+                             "Curry powder|🍛; Chilli flakes|🌶; Stock cubes"),
+    "International": ("🌏", "Taco kit|🌮; Tortillas|🫓; Salsa|🍅; Corn chips|🌽; Sushi rice|🍣; Nori|🍙; "
+                      "Rice paper; Teriyaki sauce; Fish sauce; Coconut cream|🥥; Pappadums; Dumplings|🥟; Kimchi"),
+    "Snacks": ("🍿", "Chips|🥔; Corn chips|🌽; Popcorn|🍿; Crackers|🍘; Rice crackers|🍘; Pretzels|🥨; Nuts|🥜; "
+               "Trail mix|🥜; Muesli bars|🥜; Protein bars; Fruit snacks|🍓; Sultanas|🍇; Dried fruit; Seaweed snacks; "
+               "Biscuits|🍪; Tim Tams|🍫; Shapes|🍘; Kids lunchbox snacks|🍱"),
+    "Sweets": ("🍫", "Chocolate|🍫; Block chocolate|🍫; Lollies|🍬; Gum; Mints; Ice blocks|🍧; Marshmallows; "
+               "Jelly|🍮; Lollipops|🍭"),
+    "Frozen": ("🧊", "Frozen peas|🫛; Frozen veg|🥦; Frozen corn|🌽; Hot chips|🍟; Wedges|🍟; Hash browns; "
+               "Ice cream|🍨; Ice blocks|🍧; Frozen pizza|🍕; Fish fingers|🐟; Chicken nuggets|🍗; Frozen berries|🫐; "
+               "Frozen mango|🥭; Dumplings|🥟; Spring rolls; Pies|🥧; Sausage rolls; Frozen meals|🍱; Ice|🧊; "
+               "Puff pastry|🥐; Garlic bread|🥖"),
+    "Drinks": ("🥤", "Water|💧; Sparkling water|🫧; Juice|🧃; Orange juice|🍊; Apple juice|🍎; Kids juice boxes|🧃; "
+               "Soft drink|🥤; Cola|🥤; Lemonade|🍋; Cordial|🧃; Iced tea|🍹; Sports drinks; Energy drinks; "
+               "Kombucha|🍾; Coconut water|🥥; Flavoured milk|🥛"),
+    "Coffee & tea": ("☕", "Coffee|☕; Coffee beans|☕; Coffee pods|☕; Instant coffee|☕; Tea|🍵; Green tea|🍵; "
+                     "Herbal tea|🍵; Chai|🍵; Milo|🍫; Hot chocolate|☕"),
+    "Alcohol": ("🍷", "Beer|🍺; Wine|🍷; Red wine|🍷; White wine|🥂; Sparkling wine|🍾; Cider|🍏; Spirits|🥃; "
+                "Pre-mixed drinks|🍹"),
+    "Cleaning": ("🧽", "Dishwashing liquid|🧽; Dishwasher tablets|🫧; Rinse aid; Spray & wipe|🧴; Bathroom cleaner|🧴; "
+                 "Toilet cleaner|🚽; Bleach; Glass cleaner|🪟; Floor cleaner; Disinfectant; Sponges|🧽; "
+                 "Scrubbers|🧽; Cloths; Rubber gloves|🧤; Air freshener"),
+    "Laundry": ("🧺", "Laundry liquid|🧺; Laundry powder|🧺; Fabric softener|🧺; Stain remover; Laundry pods|🧺; Pegs"),
+    "Paper & wraps": ("🧻", "Toilet paper|🧻; Paper towel|🧻; Tissues|🤧; Serviettes; Cling wrap|📦; Foil|📦; "
+                      "Baking paper; Zip-lock bags|📦; Sandwich bags; Bin bags|🗑; Freezer bags|🧊"),
+    "Personal care": ("🧴", "Toothpaste|🪥; Toothbrush|🪥; Floss; Mouthwash; Shampoo|🧴; Conditioner|🧴; Soap|🧼; "
+                      "Body wash|🧴; Hand wash|🧼; Deodorant; Moisturiser|🧴; Sunscreen|🧴; Razors|🪒; Shaving cream; "
+                      "Cotton pads; Cotton buds; Hair ties; Lip balm; Feminine care"),
+    "Health": ("💊", "Panadol|💊; Nurofen|💊; Vitamins|💊; Band-aids|🩹; Antiseptic|🧴; Cold & flu tablets|💊; "
+               "Hayfever tablets|💊; Thermometer|🌡; Hand sanitiser|🧴; Insect repellent; Antihistamine|💊"),
+    "Baby & kids": ("👶", "Nappies|👶; Wipes|🧻; Baby food|🍼; Formula|🍼; Nappy cream; Baby wash|🛁; "
+                    "Kids toothpaste|🪥; Kids vitamins|💊"),
+    "Pets": ("🐾", "Dog food|🐕; Dog treats|🦴; Cat food|🐈; Cat treats|🐈; Kitty litter|🐈; Poo bags|🐕; Bird seed|🐦; Fish food|🐠"),
+    "Household": ("🏠", "Batteries|🔋; Light globes|💡; Candles|🕯; Matches; Lighters; Garbage bags|🗑; "
+                  "Storage containers; Plastic cups|🥤; Paper plates|🍽; Party supplies|🎉; Gift wrap|🎁; Birthday candles|🎂"),
 }
+
+
+def _parse_aisles() -> dict[str, list[tuple[str, str]]]:
+    out: dict[str, list[tuple[str, str]]] = {}
+    for aisle, (icon, items) in _AISLES.items():
+        rows = []
+        for part in items.split(";"):
+            name, _, emo = part.strip().partition("|")
+            if name.strip():
+                rows.append((name.strip(), emo.strip() or icon))
+        out[aisle] = rows
+    return out
+
+
+PANTRY: dict[str, list[tuple[str, str]]] = _parse_aisles()
+AISLE_ICONS = {aisle: icon for aisle, (icon, _) in _AISLES.items()}
 
 
 def _schema() -> None:
@@ -172,7 +232,8 @@ def pantry() -> dict:
     recent = [{"name": r["text"], "emoji": emoji_of(r["text"]) or "🛒", "count": r["n"]} for r in store.q(
         "SELECT text, COUNT(*) AS n FROM list_items WHERE list='shopping' GROUP BY lower(text) "
         "ORDER BY n DESC, MAX(at) DESC LIMIT 24")]
-    return {"categories": [{"name": c, "items": i} for c, i in cats.items()], "often": recent}
+    return {"categories": [{"name": c, "icon": AISLE_ICONS.get(c, "🛒"), "items": i} for c, i in cats.items()],
+            "often": recent}
 
 
 def add_custom(name: str, category: str = "", emoji: str = "") -> dict:
