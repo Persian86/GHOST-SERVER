@@ -132,3 +132,34 @@ def test_tools(env):
     assert "off" in off and store.get("fire_alerts") is False
     on = TOOLS["fire_alerts"].handler({"on": True, "radius_km": 30}, Ctx())
     assert "30 km" in on and store.get("fire_radius_km") == 30
+
+
+CFA_SAMPLE = """<?xml version="1.0"?><rss><channel>
+<item><title>Tuesday, 24 November 2026</title><description>&lt;p&gt;Today, Tue, 24 Nov 2026 is not currently a day of Total Fire Ban.&lt;br&gt;Mallee: NO - RESTRICTIONS MAY APPLY&lt;br&gt;Central: NO - RESTRICTIONS MAY APPLY&lt;br&gt;North Central: YES - TOTAL FIRE BAN IN FORCE&lt;/p&gt;&lt;p&gt;Fire Danger Ratings&lt;br&gt;Bureau of Meteorology forecast issued at: Monday, 23 November 2026 16:02 PM.&lt;br&gt;Mallee: HIGH&lt;br&gt;Central: MODERATE&lt;br&gt;North Central: EXTREME&lt;br&gt;West and South Gippsland: NO RATING&lt;/p&gt;</description></item>
+<item><title>Wednesday, 25 November 2026</title><description>&lt;p&gt;Central: NO - RESTRICTIONS MAY APPLY&lt;/p&gt;&lt;p&gt;Fire Danger Ratings&lt;br&gt;Central: HIGH&lt;/p&gt;</description></item>
+</channel></rss>"""
+
+
+def test_cfa_rating_and_ban_for_a_district_today():
+    import datetime as dt
+    r = firewatch.parse_fdr(CFA_SAMPLE, "Central", dt.date(2026, 11, 24))
+    assert r["rating"] == "Moderate" and r["total_fire_ban"] is False and r["district"] == "Central"
+    r = firewatch.parse_fdr(CFA_SAMPLE, "north central", dt.date(2026, 11, 24))
+    assert r["rating"] == "Extreme" and r["total_fire_ban"] is True and r["district"] == "North Central"
+
+
+def test_cfa_picks_the_matching_day_and_handles_no_rating():
+    import datetime as dt
+    assert firewatch.parse_fdr(CFA_SAMPLE, "Central", dt.date(2026, 11, 25))["rating"] == "High"
+    assert firewatch.parse_fdr(CFA_SAMPLE, "West and South Gippsland", dt.date(2026, 11, 24))["rating"] == ""
+    assert firewatch.parse_fdr(CFA_SAMPLE, "Atlantis", dt.date(2026, 11, 24)) is None
+
+
+def test_home_status_survives_feeds_being_down(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("offline")
+    monkeypatch.setattr(firewatch, "fetch_fdr", boom)
+    monkeypatch.setattr(firewatch, "home", lambda: (-37.58, 144.73))
+    monkeypatch.setattr(firewatch, "items_near", boom)
+    out = firewatch.home_status()
+    assert out["rating"] == "" and out["total_fire_ban"] is False and "near" not in out

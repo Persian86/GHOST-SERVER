@@ -298,3 +298,88 @@ async def fire_loop(every: float = CHECK_EVERY) -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[Ghost Server] fire check skipped: {e}")
         await asyncio.sleep(every)
+
+
+# ── fire danger rating and total fire ban (CFA) ──────────────────────────────
+# CFA publishes the Bureau of Meteorology's Fire Danger Ratings and Total Fire Ban
+# declarations for each Victorian fire district as one public RSS feed (no key).
+CFA_FDR_FEED = "https://www.cfa.vic.gov.au/cfa/rssfeed/tfbfdrforecast_rss.xml"
+DISTRICTS = ["Mallee", "Wimmera", "South West", "Northern Country", "North Central", "Central",
+             "North East", "East Gippsland", "West and South Gippsland"]
+_fdr_cache: tuple[float, str] = (0.0, "")
+
+
+def fetch_fdr(max_age: float = 1800) -> str:
+    global _fdr_cache
+    if time.time() - _fdr_cache[0] < max_age and _fdr_cache[1]:
+        return _fdr_cache[1]
+    r = httpx.get(CFA_FDR_FEED, timeout=15, headers={"User-Agent": "GhostServer/1.0 (home assistant)"})
+    r.raise_for_status()
+    _fdr_cache = (time.time(), r.text)
+    return r.text
+
+
+def _plain(html_text: str) -> str:
+    import html as _html
+    import re
+    t = re.sub(r"(?i)<br\s*/?>|</p>|<p[^>]*>", "\n", html_text or "")
+    return _html.unescape(re.sub(r"<[^>]+>", "", t))
+
+
+def _district_lines(text: str) -> dict[str, str]:
+    import re
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"\s*([A-Za-z][A-Za-z &]+?)\s*:\s*(.+?)\s*$", line)
+        if m and m.group(1).strip().lower() in {d.lower() for d in DISTRICTS}:
+            out[m.group(1).strip().lower()] = m.group(2).strip()
+    return out
+
+
+def parse_fdr(xml_text: str, district: str, today=None) -> dict | None:
+    """Today's rating and fire ban for one district from the CFA feed, or None if it isn't listed."""
+    import datetime as dt
+    import xml.etree.ElementTree as ET
+    today = today or dt.date.today()
+    items = ET.fromstring(xml_text).findall(".//item")
+    if not items:
+        return None
+    pick = items[0]
+    for it in items:
+        try:
+            if dt.datetime.strptime((it.findtext("title") or "").strip(), "%A, %d %B %Y").date() == today:
+                pick = it
+                break
+        except ValueError:
+            continue
+    text = _plain(pick.findtext("description") or "")
+    head, _, ratings = text.partition("Fire Danger Ratings")
+    want = district.strip().lower()
+    rating = _district_lines(ratings).get(want)
+    ban = _district_lines(head).get(want, "")
+    if rating is None and not ban:
+        return None
+    rating = (rating or "").strip()
+    return {"district": next((d for d in DISTRICTS if d.lower() == want), district), "day": (pick.findtext("title") or "").strip(),
+            "rating": rating.capitalize() if rating and rating.upper() != "NO RATING" else "",
+            "total_fire_ban": ban.upper().startswith("YES")}
+
+
+def home_status() -> dict:
+    """What the tablet's Home weather panel shows: today's danger rating, any fire ban, and warnings near home."""
+    district = str(store.get("fire_district") or "Central")
+    out: dict = {"district": district, "rating": "", "total_fire_ban": False}
+    try:
+        out.update(parse_fdr(fetch_fdr(), district) or {})
+    except Exception:  # noqa: BLE001 — the panel just leaves the rating out
+        pass
+    try:
+        km = radius()
+        items = items_near(km) if home() else []
+        out.update({"home_known": bool(home()), "radius_km": km, "near": len(items),
+                    "top": describe(items[0]) if items else "",
+                    "top_level": items[0]["level"] if items else 0,
+                    "covers_home": bool(items and items[0]["covers_home"])})
+    except Exception:  # noqa: BLE001
+        pass
+    return out

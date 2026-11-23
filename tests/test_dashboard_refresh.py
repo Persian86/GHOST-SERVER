@@ -18,6 +18,7 @@ def test_slow_news_does_not_hold_up_fresh_weather(monkeypatch):
     monkeypatch.setattr(dashboard, "weather_data", lambda city: {"temp": 15, "code": 61, "desc": "Rain"})
     monkeypatch.setattr(dashboard, "calendar_data", lambda: {"connected": False})
     monkeypatch.setattr(dashboard, "home_tiles", lambda: {"connected": False, "tiles": []})
+    monkeypatch.setattr(dashboard, "fire_data", lambda: {"rating": ""})
     release = threading.Event()
     calls = []
     def news():
@@ -110,3 +111,32 @@ def test_partial_query_is_opt_in_for_existing_clients(monkeypatch):
             assert (await client.get("/api/v1/dashboard")).json() == {"partial": False}
             assert (await client.get("/api/v1/dashboard?partial=true")).json() == {"partial": True}
     asyncio.run(run())
+
+
+def test_weather_details_for_the_tablet_panel(monkeypatch):
+    def get(url, **kwargs):
+        if "geocoding" in url:
+            return httpx.Response(200, request=httpx.Request("GET",url), json={"results": [{"name": "Sunbury", "latitude": -37.58, "longitude": 144.73}]})
+        p = kwargs["params"]
+        assert p["forecast_days"] == 7 and "apparent_temperature" in p["current"] and "sunset" in p["daily"]
+        return httpx.Response(200, json={"current": {"temperature_2m": 24, "weather_code": 0, "is_day": 1,
+            "apparent_temperature": 25.4, "relative_humidity_2m": 32, "wind_speed_10m": 18.2, "wind_direction_10m": 350},
+            "daily": {"time": ["2026-11-24", "2026-11-25"], "weather_code": [0, 3], "temperature_2m_min": [14, 15],
+                      "temperature_2m_max": [31, 27], "precipitation_probability_max": [5, 40], "uv_index_max": [11.2],
+                      "sunrise": ["2026-11-24T05:58"], "sunset": ["2026-11-24T20:21"]}})
+    monkeypatch.setattr(httpx, "get", get)
+    w = dashboard.weather_data("Sunbury")
+    assert (w["feels"], w["humidity"], w["wind_kmh"], w["wind_dir"], w["uv_max"]) == (25, 32, 18, "N", 11)
+    assert w["sunrise"] == "05:58" and w["sunset"] == "20:21" and len(w["days"]) == 2
+
+
+def test_weather_days_skip_incomplete_entries(monkeypatch):
+    def get(url, **kwargs):
+        if "geocoding" in url:
+            return httpx.Response(200, request=httpx.Request("GET",url), json={"results": [{"name": "Sunbury", "latitude": -37.58, "longitude": 144.73}]})
+        return httpx.Response(200, json={"current": {"temperature_2m": 20, "weather_code": 1},
+            "daily": {"time": ["2026-11-24", "2026-11-25"], "weather_code": [1], "temperature_2m_min": [10],
+                      "temperature_2m_max": [20]}})
+    monkeypatch.setattr(httpx, "get", get)
+    w = dashboard.weather_data("Sunbury")
+    assert len(w["days"]) == 1 and "feels" not in w and "sunset" not in w
