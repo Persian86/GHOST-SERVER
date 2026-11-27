@@ -65,6 +65,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .edit .small{height:38px;font-size:14px;color:#c8c8d0}
 .edit .ctl .mode{height:40px;padding:0 12px;font-size:14px}
 .hint{color:#a8a8b3;font-size:14px;margin:-4px 4px 14px}
+.grid.editing{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 `;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -307,7 +308,7 @@ class GhostRoomsCard extends HTMLElement {
   }
   _editGrid(rooms) {
     return this._editTop("Edit rooms", "Rename a room or give it an icon (e.g. mdi:sofa). Arrows reorder; the eye hides a room. Leave a name empty to use Home Assistant's. Open a room to rename or hide its devices.") +
-      `<div class="grid">${rooms.map((r, i) => `<div class="room edit ${r.hidden ? "hid" : ""}">
+      `<div class="grid editing">${rooms.map((r, i) => `<div class="room edit ${r.hidden ? "hid" : ""}">
         <span class="row"><span class="badge"><ha-icon icon="${esc(r.icon)}"></ha-icon></span>
           <span class="ctl"><button class="mode" data-move="${esc(r.id)}|-1" aria-label="Move ${esc(r.name)} earlier" ${i === 0 ? "disabled" : ""}>◀</button>
           <button class="mode" data-move="${esc(r.id)}|1" aria-label="Move ${esc(r.name)} later" ${i === rooms.length - 1 ? "disabled" : ""}>▶</button>
