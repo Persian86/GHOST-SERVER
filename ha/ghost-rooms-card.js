@@ -20,7 +20,7 @@
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "2.1.0";
+const GRC_VERSION = "2.1.1";
 
 const CSS = `
 :host{display:block}
@@ -203,7 +203,8 @@ class GhostRoomsCard extends HTMLElement {
     });
     const order = cfg.order || [], rank = (r) => { const i = order.indexOf(r.id); return i < 0 ? 1e6 : i; };
     Object.values(rooms).forEach((r) => { const seen = new Set();
-      r.items = r.items.filter((s) => { const k = s.entity_id.split(".")[0] + "|" + (s.attributes.friendly_name || s.entity_id);
+      r.items = r.items.filter((s) => { if (!s.entity_id.startsWith("vacuum.")) return true;   // one robot, two integrations
+        const k = s.attributes.friendly_name || s.entity_id;
         if (seen.has(k)) return false; seen.add(k); return true; }); });
     const controls = (r) => r.items.some((s) => !["binary_sensor", "sensor"].includes(s.entity_id.split(".")[0]));
     return Object.values(rooms).filter((r) => controls(r) && (this._edit || !r.hidden))
@@ -218,6 +219,8 @@ class GhostRoomsCard extends HTMLElement {
   }
   _haName(st, room) {
     let n = st.attributes.friendly_name || st.entity_id;
+    // Multi-gang wall switches often come through as "Channel 1 Switch": the entity id (laundry_switch_1) says more.
+    if (/^channel \d/i.test(n)) { const id = st.entity_id.split(".")[1].replace(/_/g, " "); n = id.charAt(0).toUpperCase() + id.slice(1); }
     if (room && n.toLowerCase().startsWith(room.haName.toLowerCase() + " ")) n = n.slice(room.haName.length + 1);
     return n;
   }
