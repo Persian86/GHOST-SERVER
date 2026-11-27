@@ -20,7 +20,7 @@
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "2.0.0";
+const GRC_VERSION = "2.0.1";
 
 const CSS = `
 :host{display:block}
@@ -99,9 +99,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 .hero h2{margin:0;font-size:34px;font-weight:600;flex:1}.hero .meta{font-size:15px;color:#e0d6ca;margin-top:6px;font-weight:400}
 .glass{height:46px;padding:0 18px;border-radius:23px;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:15px;font-weight:500;display:inline-flex;align-items:center;gap:8px}
 .glass.round{width:46px;padding:0;justify-content:center}
+.hero .mark{position:absolute;right:28px;bottom:-24px;--mdc-icon-size:190px;color:rgba(255,179,71,.10);pointer-events:none}
 .hero .scenes{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap}
 .hero .scenes button{height:40px;padding:0 16px;border-radius:20px;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:14px;font-weight:500}
-.label{font-size:13px;color:#a8a8b3;letter-spacing:.06em;text-transform:uppercase;padding-left:4px}
+.lbl{font-size:13px;color:#a8a8b3;letter-spacing:.06em;text-transform:uppercase;padding-left:4px}
 .bars{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
 .bar{position:relative;height:70px;border-radius:18px;background:#17171c;overflow:hidden;touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:pointer}
 .bar:focus-visible{outline:2px solid #ffb347}
@@ -194,6 +195,9 @@ class GhostRoomsCard extends HTMLElement {
       });
     });
     const order = cfg.order || [], rank = (r) => { const i = order.indexOf(r.id); return i < 0 ? 1e6 : i; };
+    Object.values(rooms).forEach((r) => { const seen = new Set();
+      r.items = r.items.filter((s) => { const k = s.entity_id.split(".")[0] + "|" + (s.attributes.friendly_name || s.entity_id);
+        if (seen.has(k)) return false; seen.add(k); return true; }); });
     const controls = (r) => r.items.some((s) => !["binary_sensor", "camera", "sensor"].includes(s.entity_id.split(".")[0]));
     return Object.values(rooms).filter((r) => controls(r) && (this._edit || !r.hidden))
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
@@ -305,18 +309,18 @@ class GhostRoomsCard extends HTMLElement {
     const cards = [
       ...this._of(room, "media_player").map((s) => this._mediaCard(s, room)),
       ...this._of(room, "climate").map((s) => this._climateTile(s, room).replace('class="tile wide climate"', 'class="card climate"')),
-      ...this._of(room, "camera").slice(0, 1).map((s) => `<div class="card cam"><img data-cam="${esc(s.entity_id)}" alt="${esc(this._name(s, room))}, latest snapshot"><span>${esc(this._name(s, room))}</span></div>`),
+      ...this._of(room, "camera").filter((s) => s.state !== "unavailable" && !/map/i.test(s.entity_id + " " + (s.attributes.friendly_name || ""))).slice(0, 1).map((s) => `<div class="card cam"><img data-cam="${esc(s.entity_id)}" alt="${esc(this._name(s, room))}, latest snapshot"><span>${esc(this._name(s, room))}</span></div>`),
       ...["cover", "lock", "vacuum"].flatMap((d) => this._of(room, d)).map((s) => this._simpleTile(s, room)),
     ];
     return `
-      <section class="hero" style="${bg}" aria-label="${esc(room.name)}"><div class="in">
+      <section class="hero" style="${bg}" aria-label="${esc(room.name)}">${area.picture ? "" : `<ha-icon class="mark" icon="${esc(room.icon)}" aria-hidden="true"></ha-icon>`}<div class="in">
         <div class="row1"><h2>${esc(room.name)}${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</h2>
           ${anyOn ? `<button class="glass" data-act="room-off">Lights off</button>` : ""}
           ${this._canEdit() ? `<button class="glass round" data-act="edit-room" aria-label="Edit ${esc(room.name)}"><ha-icon icon="mdi:pencil"></ha-icon></button>` : ""}</div>
         ${scenes.length ? `<div class="scenes">${scenes.map((s) => `<button data-scene="${esc(s.entity_id)}">${esc(this._name(s, room))}</button>`).join("")}</div>` : ""}
       </div></section>
-      ${lights.length ? `<div class="label">Lights · tap to switch, drag across to dim</div><div class="bars">${lights.map((s) => this._lightBar(s, room)).join("")}</div>` : ""}
-      ${toggles.length ? `<div class="label">Switches</div><div class="bars">${toggles.map((s) => this._toggleBar(s, room)).join("")}</div>` : ""}
+      ${lights.length ? `<div class="lbl">Lights · tap to switch, drag across to dim</div><div class="bars">${lights.map((s) => this._lightBar(s, room)).join("")}</div>` : ""}
+      ${toggles.length ? `<div class="lbl">Switches</div><div class="bars">${toggles.map((s) => this._toggleBar(s, room)).join("")}</div>` : ""}
       ${cards.length ? `<div class="cards">${cards.join("")}</div>` : ""}
       ${!lights.length && !toggles.length && !cards.length ? `<div class="empty">Nothing to control in this room yet.</div>` : ""}`;
   }
@@ -398,6 +402,7 @@ class GhostRoomsCard extends HTMLElement {
     const cams = [...root.querySelectorAll("[data-cam]")];
     const load = () => cams.forEach((img) => { const st = this._hass.states[img.dataset.cam]; const u = st && st.attributes.entity_picture;
       if (u) img.src = u + (u.includes("?") ? "&" : "?") + "t=" + Date.now(); });
+    cams.forEach((img) => (img.onerror = () => { const card = img.closest(".cam"); if (card) card.style.display = "none"; }));
     if (cams.length) { load(); this._camTimer = setInterval(() => { if (this.isConnected && !document.hidden) load(); }, 10000); }
   }
 
@@ -465,7 +470,9 @@ class GhostRoomsCard extends HTMLElement {
       button: "mdi:gesture-tap-button", input_boolean: on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline", automation: "mdi:robot" }[d] || "mdi:gesture-tap";
     const word = { locked: "Locked", unlocked: "Unlocked", open: "Open", closed: "Closed", cleaning: "Cleaning", docked: "Docked", returning: "Returning",
       on: "On", off: "Off", unavailable: "Unavailable" }[s.state] || s.state;
-    const extra = d === "cover" ? `<span class="ctl">
+    const extra = d === "vacuum" ? `<span class="ctl">
+        <button class="mode" data-svc="vacuum.start|${esc(s.entity_id)}">Clean</button>
+        <button class="mode" data-svc="vacuum.return_to_base|${esc(s.entity_id)}">Dock</button></span>` : d === "cover" ? `<span class="ctl">
         <button class="mode" data-svc="cover.open_cover|${esc(s.entity_id)}">Open</button>
         <button class="mode" data-svc="cover.stop_cover|${esc(s.entity_id)}">Stop</button>
         <button class="mode" data-svc="cover.close_cover|${esc(s.entity_id)}">Close</button></span>` : "";
