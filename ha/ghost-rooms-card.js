@@ -383,7 +383,9 @@ class GhostRoomsCard extends HTMLElement {
         this._query = box.value;
         const q = box.value.trim().toLowerCase(), have = new Set(room.items.map((s) => s.entity_id));
         if (q.length < 2) { out.innerHTML = q ? "" : `<small style="color:#8e8e99">Type at least two letters.</small>`; return; }
-        const hits = Object.values(this._hass.states).filter((s) => ADDABLE.includes(s.entity_id.split(".")[0]) && !have.has(s.entity_id) &&
+        const useful = (s) => { const d = s.entity_id.split(".")[0];
+          return ADDABLE.includes(d) && (d !== "sensor" || ["temperature", "humidity"].includes(s.attributes.device_class)); };
+        const hits = Object.values(this._hass.states).filter((s) => useful(s) && !have.has(s.entity_id) &&
           ((s.attributes.friendly_name || "").toLowerCase().includes(q) || s.entity_id.includes(q))).slice(0, 12);
         out.innerHTML = hits.length ? hits.map((s) => `<button data-add="${esc(s.entity_id)}">${esc(s.attributes.friendly_name || s.entity_id)}<small>${esc(s.entity_id)}</small></button>`).join("")
           : `<small style="color:#8e8e99">Nothing matches “${esc(box.value.trim())}”.</small>`;
