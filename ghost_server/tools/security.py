@@ -122,6 +122,39 @@ def watch_camera(args: dict, ctx: Ctx) -> str:
             + f". Alerts go to {who}{extra}. Say 'stop watching' to end it.")
 
 
+@tool("guard_mode", """Security Guard mode: Ghost watches every camera and reports anyone who isn't family,
+following the same person from camera to camera. 'guard mode on', 'turn on the security guard', 'stand guard',
+'guard mode off', 'is guard mode on?', 'who have you seen?'. It also turns on by itself when everyone leaves home
+(Home Assistant locations) and off again when someone comes back.""",
+      {"type": "OBJECT", "properties": {
+          "action": {"type": "STRING", "description": "on | off | status"},
+          "auto_away": {"type": "BOOLEAN", "description": "Optional: turn the 'on when everyone leaves' rule on or off"}},
+       "required": ["action"]})
+def guard_mode(args: dict, ctx: Ctx) -> str:
+    from .. import guard
+    if "auto_away" in args and args["auto_away"] is not None:
+        guard.save_settings({"auto_away": bool(args["auto_away"])})
+    act = str(args.get("action") or "status").lower()
+    who = (store.device(ctx.device_id)["name"] if ctx.device_id and store.device(ctx.device_id) else "voice")
+    if act in ("on", "start", "enable"):
+        if not cameras.all_cameras():
+            return "There are no cameras set up for Guard mode yet."
+        st = guard.start(who)
+        return (f"Guard mode is on, watching {', '.join(st['cameras']) or 'no cameras'}. "
+                "I'll report anyone I don't recognise and follow them across the cameras.")
+    if act in ("off", "stop", "disable"):
+        guard.stop(who)
+        return "Guard mode is off."
+    st = guard.state()
+    auto = "on" if guard.settings()["auto_away"] else "off"
+    if not st["on"]:
+        return f"Guard mode is off. (Turning on by itself when everyone leaves: {auto}.)"
+    since = time.strftime("%I:%M %p", time.localtime(st["since"])).lstrip("0")
+    seen = "; ".join(f"{p['description'] or 'someone unrecognised'} — " + " then ".join(p["route"]) for p in st["people"])
+    return (f"Guard mode has been on since {since}" + (" (everyone left)" if st["auto"] else "") +
+            f", watching {len(st['cameras'])} cameras. " + (f"Seen: {seen}." if seen else "Nobody unrecognised so far."))
+
+
 @tool("stop_watching", "Stop watching a camera (or 'all').",
       {"type": "OBJECT", "properties": {"camera": {"type": "STRING", "description": "Camera name, or empty/'all'"}}})
 def stop_watching(args: dict, ctx: Ctx) -> str:

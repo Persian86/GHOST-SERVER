@@ -81,6 +81,8 @@ async def _lifespan(_app):
     checkins.recover()
     testcalls.recover()
     hub.loop = asyncio.get_running_loop()
+    from . import guard
+    guard.boot()                        # back on if it was on; on by itself when everyone leaves
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
@@ -286,6 +288,39 @@ async def pair(body: dict, request: Request):
                                  "device_kind": str(body.get("kind") or "")[:30], "ip": ip})
     return {"device_id": did, "device_key": key, "assistant_name": store.get("assistant_name"),
             "approved": approved, **({} if approved else {"message": WAITING})}
+
+
+# ── Security Guard mode ─────────────────────────────────────────────────────
+@app.get("/api/v1/guard")
+async def guard_get(dev: dict = Depends(device_auth)):
+    from . import guard
+    return {**guard.state(), "settings": guard.settings()}
+
+
+@app.post("/api/v1/guard")
+async def guard_set(body: dict, dev: dict = Depends(device_auth)):
+    """{on: true|false} from a phone/tablet Guard button."""
+    from . import guard
+    if body.get("on"):
+        return await asyncio.to_thread(guard.start, dev["name"])
+    return await asyncio.to_thread(guard.stop, dev["name"])
+
+
+@app.get("/admin/api/guard")
+def admin_guard_get(_: bool = Depends(admin_auth)):
+    from . import guard
+    return {**guard.state(), "settings": guard.settings()}
+
+
+@app.post("/admin/api/guard")
+def admin_guard_set(body: dict, _: bool = Depends(admin_auth)):
+    """{on?: bool, settings?: {auto_away, cameras, describe, ha_notify}}"""
+    from . import guard
+    if isinstance(body.get("settings"), dict):
+        guard.save_settings(body["settings"])
+    if "on" in body:
+        guard.start("Admin page") if body["on"] else guard.stop("Admin page")
+    return {**guard.state(), "settings": guard.settings()}
 
 
 @app.get("/api/v1/key")
