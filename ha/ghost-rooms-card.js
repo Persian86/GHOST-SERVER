@@ -20,7 +20,7 @@
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "2.2.1";
+const GRC_VERSION = "2.2.2";
 
 const CSS = `
 :host{display:block}
@@ -387,7 +387,7 @@ class GhostRoomsCard extends HTMLElement {
         <input type="text" data-search placeholder="Search lights, TV, camera, temperature…" aria-label="Search for a device to add to favourites" value="${esc(this._query || "")}">
         <div class="results" data-results></div>
       </div>
-      ${favs.map((id, i) => { const s = this._hass.states[id], nm = s ? (s.attributes.friendly_name || id) : id;
+      ${favs.map((id, i) => { const s = this._hass.states[id], nm = s ? this._haName(s, null) : id;
         return `<div class="tile edit">
         <span class="row"><span class="state">${esc(id.split(".")[0].replace("_", " "))}${s ? "" : " · missing"}</span>
           <span class="ctl"><button class="mode" data-fmove="${i}|-1" aria-label="Move ${esc(nm)} earlier" ${i === 0 ? "disabled" : ""}>◀</button>
@@ -408,8 +408,9 @@ class GhostRoomsCard extends HTMLElement {
       const q = box.value.trim().toLowerCase(), have = new Set(f);
       if (q.length < 2) { out.innerHTML = q ? "" : `<small style="color:#8e8e99">Type at least two letters.</small>`; return; }
       const hits = Object.values(this._hass.states).filter((s) => FAV_DOMAINS.includes(s.entity_id.split(".")[0]) && !have.has(s.entity_id) &&
-        ((s.attributes.friendly_name || "").toLowerCase().includes(q) || s.entity_id.includes(q))).slice(0, 12);
-      out.innerHTML = hits.length ? hits.map((s) => `<button data-add="${esc(s.entity_id)}">${esc(s.attributes.friendly_name || s.entity_id)}<small>${esc(s.entity_id)}</small></button>`).join("")
+        ((s.attributes.friendly_name || "").toLowerCase().includes(q) || s.entity_id.includes(q)))
+        .sort((a, b) => FAV_DOMAINS.indexOf(a.entity_id.split(".")[0]) - FAV_DOMAINS.indexOf(b.entity_id.split(".")[0])).slice(0, 12);
+      out.innerHTML = hits.length ? hits.map((s) => `<button data-add="${esc(s.entity_id)}">${esc(this._haName(s, null))}<small>${esc(s.entity_id)}</small></button>`).join("")
         : `<small style="color:#8e8e99">Nothing matches “${esc(box.value.trim())}”.</small>`;
       out.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => { f.push(b.dataset.add); this._query = ""; redraw(); }));
     };
