@@ -183,3 +183,9 @@ def test_real_encoder_saves_playable_mp4(setup, monkeypatch, tmp_path):
             assert b"ftyp" in video.read_bytes()[:32]
             subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"], check=True, timeout=10)
     asyncio.run(run())
+
+
+def test_viewer_has_a_picture_only_mode_for_the_hub_doorbell(setup):
+    _, tok, cams, _ = setup
+    page = cameras.page(tok, cams)
+    assert "has('bare')" in page and "body.bare header" in page and "body.bare figcaption" in page
