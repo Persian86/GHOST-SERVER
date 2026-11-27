@@ -41,6 +41,11 @@ def _cached(key: str, ttl: float, fn):
     return val
 
 
+def fire_data() -> dict | None:
+    from . import firewatch
+    return firewatch.home_status()
+
+
 # ── weather ──────────────────────────────────────────────────────────────────
 def weather_data(city: str) -> dict | None:
     import httpx
@@ -50,15 +55,24 @@ def weather_data(city: str) -> dict | None:
     if loc is None:
         return None
     f = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=6, params={
-        "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": "auto", "forecast_days": 4,
-        "current": "temperature_2m,weather_code,is_day,precipitation,rain,showers,snowfall",
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"}).json()
+        "latitude": loc["latitude"], "longitude": loc["longitude"], "timezone": "auto", "forecast_days": 7,
+        "current": "temperature_2m,weather_code,is_day,precipitation,rain,showers,snowfall,"
+                   "apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
+                 "uv_index_max,sunrise,sunset"}).json()
     cur, day = f.get("current", {}), f.get("daily", {})
+
+    def at(key, i):
+        vals = day.get(key) or []
+        return vals[i] if i < len(vals) else None
     days = []
-    for i, date in enumerate(day.get("time", [])[:4]):
-        days.append({"date": date, "code": day["weather_code"][i], "desc": _WMO.get(day["weather_code"][i], "mixed"),
-                     "min": round(day["temperature_2m_min"][i]), "max": round(day["temperature_2m_max"][i]),
-                     "rain": (day.get("precipitation_probability_max") or [None] * 4)[i]})
+    for i, date in enumerate(day.get("time", [])[:7]):
+        code_i, lo, hi = at("weather_code", i), at("temperature_2m_min", i), at("temperature_2m_max", i)
+        if code_i is None or lo is None or hi is None:
+            continue
+        days.append({"date": date, "code": code_i, "desc": _WMO.get(code_i, "mixed"),
+                     "min": round(lo), "max": round(hi), "rain": at("precipitation_probability_max", i)})
+    details = _details(cur, day)
     code = effective_weather_code(cur)
     observed = None
     try:
@@ -74,7 +88,38 @@ def weather_data(city: str) -> dict | None:
             "desc": desc, "is_day": bool(cur.get("is_day", 1)), "days": days,
             "observed_at": observed, "precipitation": cur.get("precipitation", 0),
             "region": loc.get("admin1", ""), "country": loc.get("country", ""),
-            "latitude": loc["latitude"], "longitude": loc["longitude"]}
+            "latitude": loc["latitude"], "longitude": loc["longitude"], **details}
+
+
+_COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+
+def _details(cur: dict, day: dict) -> dict:
+    """Extra figures for the tablet's weather panel. Each is left out when Open-Meteo doesn't send it."""
+    out: dict = {}
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    feels, humid, wind, wdir = (num(cur.get(k)) for k in
+                                ("apparent_temperature", "relative_humidity_2m", "wind_speed_10m", "wind_direction_10m"))
+    if feels is not None:
+        out["feels"] = round(feels)
+    if humid is not None:
+        out["humidity"] = round(humid)
+    if wind is not None:
+        out["wind_kmh"] = round(wind)
+        if wdir is not None:
+            out["wind_dir"] = _COMPASS[int((wdir % 360) / 45 + .5) % 8]
+    uv = num((day.get("uv_index_max") or [None])[0])
+    if uv is not None:
+        out["uv_max"] = round(uv)
+    for key in ("sunrise", "sunset"):
+        raw = (day.get(key) or [None])[0]
+        if isinstance(raw, str) and "T" in raw:
+            out[key] = raw.split("T", 1)[1][:5]          # local "HH:MM"
+    return out
 
 
 def effective_weather_code(current):
@@ -255,6 +300,7 @@ def build(partial: bool = False) -> dict:
         "calendar": ("calendar", 600, calendar_data),
         "home": ("home", 5, home_tiles),
         "headlines": ("headlines", 1800, headlines),
+        "fire": ("fire", 600, fire_data),
     }
     jobs = [_panels.start(key, ttl, load) for key, ttl, load in loaders.values()]
     wait_briefly(jobs)
@@ -268,6 +314,7 @@ def build(partial: bool = False) -> dict:
         "calendar": snapshots["calendar"][0] or {"connected": False, "today": [], "tomorrow": []},
         "home": snapshots["home"][0] or {"connected": False, "tiles": []},
         "headlines": snapshots["headlines"][0] or [],
+        "fire": snapshots["fire"][0],
         "panel_status": {name: value[1] for name, value in snapshots.items()},
         "features": {"faces": bool(store.get("faces_enabled")), "photo_frame_after": _int(store.get("photo_frame_after"), 5)},
         "theme": _theme(),
