@@ -94,7 +94,9 @@ def test_alerts_are_announced_once_and_again_when_escalated(env, monkeypatch):
     msgs = firewatch.check_once(now=1000)
     urgent = [m for m in msgs if m["urgent"]]
     calm = [m for m in msgs if not m["urgent"]]
-    assert len(urgent) == 1 and "Watch and Act" in urgent[0]["text"] and urgent[0]["safety"]
+    assert len(urgent) == 1 and "Watch and Act" in urgent[0]["text"]
+    assert all(m["type"] == "notify" and "safety" not in m for m in msgs)  # notifications only, never read out
+    assert urgent[0]["title"].startswith("⚠ VicEmergency")
     assert len(calm) == 1 and "Diggers Rest" in calm[0]["text"]          # the nearby grass fire, not urgent
     assert not any("Jacksons Hill" in m["text"] for m in msgs)            # planned burns are never announced
     assert firewatch.check_once(now=1300) == []                           # nothing new → silence
