@@ -1,7 +1,7 @@
 // Exercise touch zoom/pan and the async controls without real household feeds.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 class Element {
- constructor(tag='div'){this.tagName=tag;this.children=[];this.style={};this.dataset={};this.hidden=false;this.disabled=false;this.textContent='';this.clientWidth=1000;this.clientHeight=600;this.naturalWidth=1000;this.naturalHeight=600}
+ constructor(tag='div'){this.tagName=tag;this.children=[];this.style={};this.dataset={};this.hidden=false;this.disabled=false;this.textContent='';this.clientWidth=1000;this.clientHeight=600;this.naturalWidth=1000;this.naturalHeight=600;const c=new Set();this.classList={add:x=>c.add(x),remove:x=>c.delete(x),contains:x=>c.has(x),toggle:(x,on)=>{(on??!c.has(x))?c.add(x):c.delete(x)}}}
  append(...items){this.children.push(...items)}
  setAttribute(){} setPointerCapture(){}
  querySelector(name){return this.children.find(x=>x.tagName===name)}
@@ -9,8 +9,8 @@ class Element {
 }
 const ids=new Map(),calls=[];
 const $=id=>{if(!ids.has(id))ids.set(id,new Element());return ids.get(id)};
-const ctx={document:{getElementById:$,createElement:tag=>new Element(tag)},window:{addEventListener(){}},
- setTimeout(){},setInterval(){return 1},clearInterval(){},console,
+const ctx={document:{getElementById:$,createElement:tag=>new Element(tag),body:new Element('body')},window:{addEventListener(){}},
+ setTimeout(){},setInterval(){return 1},clearInterval(){},console,URLSearchParams,location:{search:''},innerWidth:1280,
  fetch:async(url,options)=>{calls.push([url,options]);return{ok:true,json:async()=>url.endsWith('/recordings/0')?{id:'clip',name:'Front'}:url.endsWith('/media')?[]:{state:'saved'}}}};
 vm.createContext(ctx);
 const html=fs.readFileSync('ghost_server/camera_viewer.html','utf8');
