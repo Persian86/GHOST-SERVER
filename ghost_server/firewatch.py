@@ -9,9 +9,10 @@ emergency.vic.gov.au). It needs no key. It lists:
 What Ghost does with it:
   * "any fires near me?" → the `fires_near_me` tool reads out what's within range
   * every few minutes the server checks for new or escalated items near home and
-    tells every device: Watch and Act / Emergency Warning (or home inside a warning
-    area) are urgent and get through Do Not Disturb; Advice and nearby fires don't.
-Each item is announced once, and again only if its warning level goes up.
+    sends every phone and tablet a notification. Ghost doesn't say them out loud
+    (by request, Nov 2026): Watch and Act / Emergency Warning (or home inside a
+    warning area) are marked urgent; Advice and nearby fires are grouped into one.
+Each item is sent once, and again only if its warning level goes up.
 """
 from __future__ import annotations
 
@@ -275,14 +276,13 @@ def check_once(now: float | None = None) -> list[dict]:
         if not urgent:
             calm.append(item)
             continue
-        text = ("Fire alert. " if item["fire"] else "Emergency alert. ") + describe(item) + \
-            " Check VicEmergency now and follow the warning."
-        msgs.append({"type": "say", "from": "VicEmergency", "text": text, "urgent": True, "safety": True,
-                     "fire": True, "at": now})
+        text = describe(item) + " Check VicEmergency now and follow the warning."
+        msgs.append({"type": "notify", "title": "⚠ VicEmergency " + ("fire warning" if item["fire"] else "warning"),
+                     "text": text, "level": "fire", "urgent": True, "fire": True, "at": now})
     if calm:                       # everything that isn't urgent goes out as one message
         head = "Fire nearby. " if len(calm) == 1 else f"{len(calm)} new fire and emergency reports near home. "
         text = head + " ".join(describe(i) for i in calm[:4]) + (" And more on VicEmergency." if len(calm) > 4 else "")
-        msgs.append({"type": "say", "from": "VicEmergency", "text": text, "urgent": False, "fire": True, "at": now})
+        msgs.append({"type": "notify", "title": "VicEmergency", "text": text, "level": "fire", "urgent": False, "fire": True, "at": now})
     return msgs
 
 

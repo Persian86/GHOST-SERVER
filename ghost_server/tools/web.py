@@ -124,7 +124,7 @@ def fire_alerts(args: dict, ctx: Ctx) -> str:
             return "That distance didn't make sense. Say a number of kilometres, 2 to 100."
     on = bool(store.get("fire_alerts"))
     return (f"Bushfire and emergency alerts are {'on' if on else 'off'}"
-            + (f": I'll tell the house about Watch and Act or Emergency Warnings within {firewatch.radius():.0f} km "
+            + (f": phones and the tablet get a notification (not read out) for warnings within {firewatch.radius():.0f} km "
                f"and fires within {min(firewatch.FIRE_ALERT_KM, firewatch.radius()):.0f} km." if on else "."))
 
 
