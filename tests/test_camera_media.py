@@ -189,3 +189,11 @@ def test_viewer_has_a_picture_only_mode_for_the_hub_doorbell(setup):
     _, tok, cams, _ = setup
     page = cameras.page(tok, cams)
     assert "has('bare')" in page and "body.bare header" in page and "body.bare figcaption" in page
+
+
+def test_viewer_keeps_names_off_the_picture(setup):
+    _, tok, cams, _ = setup
+    page = cameras.page(tok, cams)
+    assert "figcaption{position:absolute;left:0;right:0;bottom:0;height:2.2em" in page
+    assert "height:calc(100% - 2.2em)" in page and "im.alt=''" in page
+    assert "innerWidth<700?2" in page and "main.wall figure{aspect-ratio:16/10}" in page
