@@ -9,12 +9,13 @@
  *   icons:  {living_room: mdi:sofa}
  *   hidden: [office, switch.y]
  *   order:  [kitchen, living_room]
+ *   extra:  {garden: [switch.pump, script.water]}  # devices added to a room in edit mode
  *
  * Rooms come from Home Assistant Areas (entity area, or its device's area), so there's
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "1.1.0";
+const GRC_VERSION = "1.2.0";
 
 const CSS = `
 :host{display:block}
@@ -65,18 +66,25 @@ button{font:inherit;color:inherit;cursor:pointer}
 .edit .small{height:38px;font-size:14px;color:#c8c8d0}
 .edit .ctl .mode{height:40px;padding:0 12px;font-size:14px}
 .hint{color:#a8a8b3;font-size:14px;margin:-4px 4px 14px}
+.results{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
+.results button{all:unset;cursor:pointer;padding:10px 12px;border-radius:12px;background:#17171c;font-size:15px}
+.results button small{display:block;color:#8e8e99;font-size:12px}
+.results button:focus-visible,.results button:hover{outline:2px solid #ffb347}
+.add{grid-column:span 2}
 .grid.editing{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 `;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const DOMAINS = ["light", "switch", "fan", "climate", "cover", "media_player", "lock", "vacuum", "scene", "sensor"];
+// Anything that can be added to a room by hand in edit mode.
+const ADDABLE = ["light", "switch", "fan", "climate", "cover", "media_player", "lock", "vacuum", "scene", "script", "button", "input_boolean", "automation", "sensor"];
 const ON = new Set(["on", "open", "opening", "playing", "cleaning", "heat", "cool", "heat_cool", "auto", "dry", "fan_only", "unlocked"]);
 const MODES = ["off", "cool", "heat", "heat_cool", "auto", "dry", "fan_only"];
 const MODE_WORD = { off: "Off", cool: "Cool", heat: "Heat", heat_cool: "Auto", auto: "Auto", dry: "Dry", fan_only: "Fan" };
 
 class GhostRoomsCard extends HTMLElement {
   setConfig(config) {
-    this._config = { title: "Rooms", exclude_areas: [], names: {}, icons: {}, hidden: [], order: [], ...config };
+    this._config = { title: "Rooms", exclude_areas: [], names: {}, icons: {}, hidden: [], order: [], extra: {}, ...config };
     // Keep the open room when the dashboard reloads after a save.
     this._room = this._room || null;
     this._sig = null;
@@ -119,6 +127,15 @@ class GhostRoomsCard extends HTMLElement {
       if (domain === "sensor" && !["temperature", "humidity"].includes(st.attributes.device_class)) return;
       if (hidden.has(e.entity_id) && !this._edit) return;
       rooms[area].items.push(st);
+    });
+    // Devices added to a room by hand (any room can borrow any device).
+    Object.entries(cfg.extra || {}).forEach(([area, ids]) => {
+      const r = rooms[area]; if (!r) return;
+      (ids || []).forEach((id) => {
+        const st = h.states[id];
+        if (!st || r.items.some((x) => x.entity_id === id) || (hidden.has(id) && !this._edit)) return;
+        r.items.push(st);
+      });
     });
     const order = cfg.order || [], rank = (r) => { const i = order.indexOf(r.id); return i < 0 ? 1e6 : i; };
     return Object.values(rooms).filter((r) => r.items.length && (this._edit || !r.hidden))
@@ -171,6 +188,8 @@ class GhostRoomsCard extends HTMLElement {
     if (d === "cover") return this._call("cover", "toggle", { entity_id: id });
     if (d === "vacuum") return this._call("vacuum", st.state === "cleaning" ? "return_to_base" : "start", { entity_id: id });
     if (d === "media_player") return this._call("media_player", "media_play_pause", { entity_id: id });
+    if (d === "script") return this._call("script", "turn_on", { entity_id: id });
+    if (d === "button") return this._call("button", "press", { entity_id: id });
     return this._call(d, "toggle", { entity_id: id });
   }
 
@@ -214,7 +233,7 @@ class GhostRoomsCard extends HTMLElement {
     lights.forEach((s) => tiles.push(this._lightTile(s, room)));
     this._of(room, "climate").forEach((s) => tiles.push(this._climateTile(s, room)));
     this._of(room, "media_player").forEach((s) => tiles.push(this._mediaTile(s, room)));
-    ["switch", "fan", "cover", "lock", "vacuum"].forEach((d) => this._of(room, d).forEach((s) => tiles.push(this._simpleTile(s, room))));
+    ["switch", "input_boolean", "fan", "cover", "lock", "vacuum", "script", "button", "automation"].forEach((d) => this._of(room, d).forEach((s) => tiles.push(this._simpleTile(s, room))));
     const scenes = this._of(room, "scene");
     return `
       <div class="top">
@@ -245,7 +264,8 @@ class GhostRoomsCard extends HTMLElement {
   _simpleTile(s, room) {
     const d = s.entity_id.split(".")[0], on = ON.has(s.state);
     const icon = s.attributes.icon || { switch: on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline", fan: "mdi:fan", cover: on ? "mdi:blinds-open" : "mdi:blinds",
-      lock: s.state === "locked" ? "mdi:lock" : "mdi:lock-open-variant", vacuum: "mdi:robot-vacuum" }[d];
+      lock: s.state === "locked" ? "mdi:lock" : "mdi:lock-open-variant", vacuum: "mdi:robot-vacuum", script: "mdi:play-circle-outline",
+      button: "mdi:gesture-tap-button", input_boolean: on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline", automation: "mdi:robot" }[d] || "mdi:gesture-tap";
     const word = { locked: "Locked", unlocked: "Unlocked", open: "Open", closed: "Closed", cleaning: "Cleaning", docked: "Docked", returning: "Returning",
       on: "On", off: "Off", unavailable: "Unavailable" }[s.state] || s.state;
     const extra = d === "cover" ? `<span class="ctl">
@@ -290,13 +310,14 @@ class GhostRoomsCard extends HTMLElement {
   _canEdit() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
   _startEdit() {
     const c = this._config;
-    this._draft = { names: { ...(c.names || {}) }, icons: { ...(c.icons || {}) }, hidden: [...(c.hidden || [])], order: [...(c.order || [])] };
+    const extra = {}; Object.entries(c.extra || {}).forEach(([k, v]) => (extra[k] = [...(v || [])]));
+    this._draft = { names: { ...(c.names || {}) }, icons: { ...(c.icons || {}) }, hidden: [...(c.hidden || [])], order: [...(c.order || [])], extra };
     this._saved = this._config;
     this._config = { ...c, ...this._draft };
     this._edit = true; this._sig = null; this._render();
   }
   _stopEdit() {
-    this._edit = false; this._config = this._saved || this._config; this._sig = null; this._pending = false; this._render();
+    this._edit = false; this._query = ""; this._config = this._saved || this._config; this._sig = null; this._pending = false; this._render();
   }
   _editTop(title, hint) {
     return `<div class="top">
@@ -320,11 +341,18 @@ class GhostRoomsCard extends HTMLElement {
   }
   _editRoom(room) {
     const hidden = new Set(this._draft.hidden);
-    const items = room.items.filter((s) => s.entity_id.split(".")[0] !== "sensor");
-    return this._editTop(`Edit ${room.name}`, "Rename a device or hide it from this room. Leave a name empty to use Home Assistant's.") +
-      `<div class="tiles">${items.map((s) => `<div class="tile edit ${hidden.has(s.entity_id) ? "hid" : ""}">
-        <span class="row"><span class="state">${esc(s.entity_id.split(".")[0].replace("_", " "))}</span>
-          <button class="mode" data-hide="${esc(s.entity_id)}" aria-label="${hidden.has(s.entity_id) ? "Show" : "Hide"} ${esc(this._haName(s, room))}"><ha-icon icon="${hidden.has(s.entity_id) ? "mdi:eye-off" : "mdi:eye"}"></ha-icon></button></span>
+    const added = new Set((this._draft.extra || {})[room.id] || []);
+    const items = room.items.filter((s) => s.entity_id.split(".")[0] !== "sensor" || added.has(s.entity_id));
+    return this._editTop(`Edit ${room.name}`, "Rename a device or hide it from this room. Leave a name empty to use Home Assistant's. Add any other device with the search box.") +
+      `<div class="tiles">
+      <div class="tile edit add">
+        <span class="label"><ha-icon icon="mdi:plus-circle-outline"></ha-icon> Add a device</span>
+        <input type="text" data-search placeholder="Search lights, switches, scripts…" aria-label="Search for a device to add to ${esc(room.name)}" value="${esc(this._query || "")}">
+        <div class="results" data-results></div>
+      </div>
+      ${items.map((s) => `<div class="tile edit ${hidden.has(s.entity_id) ? "hid" : ""}">
+        <span class="row"><span class="state">${esc(s.entity_id.split(".")[0].replace("_", " "))}${added.has(s.entity_id) ? " · added" : ""}</span>
+          ${added.has(s.entity_id) ? `<button class="mode" data-remove="${esc(s.entity_id)}" aria-label="Remove ${esc(this._haName(s, room))} from ${esc(room.name)}">Remove</button>` : `<button class="mode" data-hide="${esc(s.entity_id)}" aria-label="${hidden.has(s.entity_id) ? "Show" : "Hide"} ${esc(this._haName(s, room))}"><ha-icon icon="${hidden.has(s.entity_id) ? "mdi:eye-off" : "mdi:eye"}"></ha-icon></button>`}</span>
         <input type="text" data-name="${esc(s.entity_id)}" value="${esc((this._draft.names || {})[s.entity_id] || "")}" placeholder="${esc(this._haName(s, room))}" aria-label="Name for ${esc(this._haName(s, room))}">
       </div>`).join("")}</div>`;
   }
@@ -349,6 +377,29 @@ class GhostRoomsCard extends HTMLElement {
       this._draft.order = ids;
       redraw();
     }));
+    if (room) {
+      const box = root.querySelector("[data-search]"), out = root.querySelector("[data-results]");
+      const show = () => {
+        this._query = box.value;
+        const q = box.value.trim().toLowerCase(), have = new Set(room.items.map((s) => s.entity_id));
+        if (q.length < 2) { out.innerHTML = q ? "" : `<small style="color:#8e8e99">Type at least two letters.</small>`; return; }
+        const hits = Object.values(this._hass.states).filter((s) => ADDABLE.includes(s.entity_id.split(".")[0]) && !have.has(s.entity_id) &&
+          ((s.attributes.friendly_name || "").toLowerCase().includes(q) || s.entity_id.includes(q))).slice(0, 12);
+        out.innerHTML = hits.length ? hits.map((s) => `<button data-add="${esc(s.entity_id)}">${esc(s.attributes.friendly_name || s.entity_id)}<small>${esc(s.entity_id)}</small></button>`).join("")
+          : `<small style="color:#8e8e99">Nothing matches “${esc(box.value.trim())}”.</small>`;
+        out.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
+          const ex = this._draft.extra; (ex[room.id] = ex[room.id] || []).push(b.dataset.add);
+          const hi = this._draft.hidden.indexOf(b.dataset.add); if (hi >= 0) this._draft.hidden.splice(hi, 1);
+          this._query = ""; redraw();
+        }));
+      };
+      box.addEventListener("input", show); show();
+      root.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => {
+        const list = this._draft.extra[room.id] || []; const i = list.indexOf(b.dataset.remove);
+        if (i >= 0) list.splice(i, 1); if (!list.length) delete this._draft.extra[room.id];
+        redraw();
+      }));
+    }
     root.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => { this._readInputs(); this._room = b.dataset.open; this._sig = null; this._render(); }));
     root.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", async () => {
       const act = b.dataset.edit;
@@ -373,7 +424,8 @@ class GhostRoomsCard extends HTMLElement {
       if (node.type === "custom:ghost-rooms-card") {
         found++;
         node.names = clean(d.names); node.icons = clean(d.icons); node.hidden = [...new Set(d.hidden)]; node.order = d.order;
-        ["names", "icons"].forEach((k) => { if (!Object.keys(node[k]).length) delete node[k]; });
+        node.extra = Object.fromEntries(Object.entries(d.extra || {}).filter(([, v]) => v && v.length).map(([k, v]) => [k, [...new Set(v)]]));
+        ["names", "icons", "extra"].forEach((k) => { if (!Object.keys(node[k]).length) delete node[k]; });
         ["hidden", "order"].forEach((k) => { if (!node[k].length) delete node[k]; });
       }
       Object.values(node).forEach(visit);
