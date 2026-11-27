@@ -1,5 +1,4 @@
 """Explicit, short-lived context offers between owner-assigned personal devices."""
-import json
 import secrets
 import threading
 import time
