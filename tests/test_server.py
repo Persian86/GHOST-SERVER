@@ -1384,3 +1384,20 @@ def test_marquee_launch_is_paired_and_never_returns_the_assistant_key(server, ad
         assert 'fixture-assistant-secret' not in response.text and 'marquee_key' not in response.text
     finally:
         admin.put('/admin/api/settings', json=saved)
+
+
+def test_household_modes_switches(server, admin, tmp_path):
+    from ghost_server import guard
+    phone = _agent(server, admin, "Modes Phone", "phone", tmp_path)
+    H = {"Authorization": "Bearer " + phone.key}
+    m = httpx.get(server + "/api/v1/modes", headers=H).json()
+    assert m["guard"] is False and m["unplugged"] is False
+    assert httpx.post(server + "/api/v1/modes", headers=H, json={"unplugged": "yes"}).status_code == 400
+    m = httpx.post(server + "/api/v1/modes", headers=H, json={"unplugged": True, "guard_auto": False}).json()
+    assert m["unplugged"] is True and m["guard_auto"] is False
+    s = httpx.get(server + "/api/v1/session", headers=H).json()
+    assert s["unplugged"] is True and "token" not in s["gemini"] and "offline" not in s
+    m = httpx.post(server + "/api/v1/modes", headers=H, json={"unplugged": False, "guard": True}).json()
+    assert m["guard"] is True and m["unplugged"] is False
+    assert httpx.post(server + "/api/v1/modes", headers=H, json={"guard": False}).json()["guard"] is False
+    guard.save_settings({"auto_away": True})

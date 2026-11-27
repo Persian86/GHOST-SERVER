@@ -306,6 +306,35 @@ async def guard_set(body: dict, dev: dict = Depends(device_auth)):
     return await asyncio.to_thread(guard.stop, dev["name"])
 
 
+@app.get("/api/v1/modes")
+async def modes_get(dev: dict = Depends(device_auth)):
+    """The two household modes, for the switches on phones and tablets."""
+    from . import guard
+    st = guard.state()
+    return {"guard": st["on"], "guard_auto": guard.settings()["auto_away"], "guard_since": st["since"],
+            "guard_people": len(st["people"]), "unplugged": bool(store.get("unplugged"))}
+
+
+@app.post("/api/v1/modes")
+async def modes_set(body: dict, dev: dict = Depends(device_auth)):
+    """{guard?: bool, guard_auto?: bool, unplugged?: bool} — whole-household switches, not for restricted devices."""
+    from . import guard
+    if access.limited(dev["id"]):
+        raise HTTPException(403, "This device can't change household modes")
+    for k in ("guard", "guard_auto", "unplugged"):
+        if k in body and type(body[k]) is not bool:
+            raise HTTPException(400, f"{k} must be true or false")
+    if "unplugged" in body:
+        if body["unplugged"] and not str(store.get("local_llm_url") or "").strip():
+            raise HTTPException(400, "Set the local model's address on the admin page first")
+        store.put("unplugged", body["unplugged"])
+    if "guard_auto" in body:
+        guard.save_settings({"auto_away": body["guard_auto"]})
+    if "guard" in body:
+        await asyncio.to_thread(guard.start if body["guard"] else guard.stop, dev["name"])
+    return await modes_get(dev)
+
+
 @app.get("/admin/api/guard")
 def admin_guard_get(_: bool = Depends(admin_auth)):
     from . import guard
