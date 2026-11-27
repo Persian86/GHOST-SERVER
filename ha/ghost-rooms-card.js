@@ -10,7 +10,7 @@
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "1.0.0";
+const GRC_VERSION = "1.0.1";
 
 const CSS = `
 :host{display:block}
@@ -37,6 +37,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .chips{display:flex;flex-wrap:wrap;gap:10px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
 .tile{min-height:132px;border-radius:24px;border:1px solid #1f1f25;background:#0e0e11;padding:16px;display:flex;flex-direction:column;justify-content:space-between;text-align:left;gap:10px}
+.tile.off-line{opacity:.45}
 .tile.on{background:linear-gradient(160deg,#ffc77a,#ffb347);border-color:#ffb347;color:#2a1b00}
 .tile .row{display:flex;justify-content:space-between;align-items:center;width:100%}
 .tile .label{font-size:17px;font-weight:600;line-height:1.25}
@@ -85,12 +86,15 @@ class GhostRoomsCard extends HTMLElement {
     const h = this._hass, skip = new Set(this._config.exclude_areas || []);
     const devArea = {};
     Object.values(h.devices || {}).forEach((d) => (devArea[d.id] = d.area_id));
+    // Speakers and TVs bring helper switches (shuffle, repeat, do not disturb): those stay with the player.
+    const players = new Set(Object.values(h.entities || {}).filter((e) => e.entity_id.startsWith("media_player.") && e.device_id).map((e) => e.device_id));
     const rooms = {};
     Object.values(h.areas || {}).forEach((a) => { if (!skip.has(a.area_id)) rooms[a.area_id] = { id: a.area_id, name: a.name, icon: a.icon || "mdi:home", items: [] }; });
     Object.values(h.entities || {}).forEach((e) => {
       if (e.hidden || e.entity_category || e.disabled_by) return;
       const domain = e.entity_id.split(".")[0];
       if (!DOMAINS.includes(domain)) return;
+      if (domain === "switch" && e.device_id && players.has(e.device_id)) return;
       const area = e.area_id || devArea[e.device_id];
       const st = h.states[e.entity_id];
       if (!area || !rooms[area] || !st) return;
@@ -203,12 +207,13 @@ class GhostRoomsCard extends HTMLElement {
   _lightTile(s, room) {
     const on = s.state === "on", pct = on && s.attributes.brightness != null ? Math.round(s.attributes.brightness / 2.55) : null;
     const dims = (s.attributes.supported_color_modes || []).some((m) => m !== "onoff");
-    return `<div class="tile ${on ? "on" : ""}">
+    const gone = s.state === "unavailable";
+    return `<div class="tile ${on ? "on" : ""} ${gone ? "off-line" : ""}">
       <button class="row" style="all:unset;display:flex;justify-content:space-between;align-items:center;width:100%;cursor:pointer" data-toggle="${esc(s.entity_id)}" aria-label="${esc(this._name(s, room))}, ${on ? "on" : "off"}. Tap to switch ${on ? "off" : "on"}.">
         <ha-icon icon="${esc(s.attributes.icon || (on ? "mdi:lightbulb-on" : "mdi:lightbulb-outline"))}"></ha-icon>
         <span class="state">${s.state === "unavailable" ? "Unavailable" : on ? (pct != null ? pct + "%" : "On") : "Off"}</span></button>
       <span class="label">${esc(this._name(s, room))}</span>
-      ${dims ? `<input type="range" min="1" max="100" value="${pct ?? 0}" data-bright="${esc(s.entity_id)}" aria-label="${esc(this._name(s, room))} brightness">` : ""}
+      ${dims && on ? `<input type="range" min="1" max="100" value="${pct ?? 0}" data-bright="${esc(s.entity_id)}" aria-label="${esc(this._name(s, room))} brightness">` : ""}
     </div>`;
   }
 
@@ -222,7 +227,7 @@ class GhostRoomsCard extends HTMLElement {
         <button class="mode" data-svc="cover.open_cover|${esc(s.entity_id)}">Open</button>
         <button class="mode" data-svc="cover.stop_cover|${esc(s.entity_id)}">Stop</button>
         <button class="mode" data-svc="cover.close_cover|${esc(s.entity_id)}">Close</button></span>` : "";
-    return `<div class="tile ${on && d !== "lock" ? "on" : ""}">
+    return `<div class="tile ${on && d !== "lock" ? "on" : ""} ${s.state === "unavailable" ? "off-line" : ""}">
       <button style="all:unset;display:flex;flex-direction:column;gap:10px;cursor:pointer;width:100%" data-toggle="${esc(s.entity_id)}" aria-label="${esc(this._name(s, room))}, ${esc(word)}">
         <span class="row"><ha-icon icon="${esc(icon)}"></ha-icon><span class="state">${esc(word)}</span></span>
         <span class="label">${esc(this._name(s, room))}</span></button>${extra}</div>`;
