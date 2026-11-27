@@ -20,7 +20,7 @@
  * nothing to list by hand. Lights, switches, fans, climate, covers, media, locks,
  * vacuums and scenes in a room get controls; temperature/humidity sensors fill the header.
  */
-const GRC_VERSION = "2.2.0";
+const GRC_VERSION = "2.2.1";
 
 const CSS = `
 :host{display:block}
@@ -106,8 +106,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 .sep{height:1px;background:#1f1f25;margin:6px 10px}
 .ovh{background:radial-gradient(90% 140% at 80% 0%,#5a3a1f 0%,#2b1e0c 40%,#0b0a09 100%)}
 .hero .chips{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap}.hero .chips span{height:36px;padding:0 14px;border-radius:18px;background:rgba(0,0,0,.5);display:inline-flex;align-items:center;font-size:14px;color:#ffe2bd}
-.readout{flex-direction:row;align-items:center;gap:16px}.readout ha-icon{--mdc-icon-size:34px;color:#ffb347}.readout .big{font-size:30px;font-weight:600;line-height:1.1}.readout small{color:#a8a8b3;font-size:13px}
-.favempty{flex-direction:row;align-items:center;gap:16px}.favempty>ha-icon{--mdc-icon-size:34px;color:#ffb347}.favempty>div{flex:1}.favempty b{display:block;font-size:16px}.favempty small{color:#a8a8b3}
+.card.readout{flex-direction:row;align-items:center;gap:16px}.readout ha-icon{--mdc-icon-size:34px;color:#ffb347}.readout .big{font-size:30px;font-weight:600;line-height:1.1}.readout small{color:#a8a8b3;font-size:13px}
+.card.favempty{flex-direction:row;align-items:center;gap:16px}.favempty>ha-icon{--mdc-icon-size:34px;color:#ffb347}.favempty>div{flex:1}.favempty b{display:block;font-size:16px}.favempty small{color:#a8a8b3}
 .lbl{font-size:13px;color:#a8a8b3;letter-spacing:.06em;text-transform:uppercase;padding-left:4px}
 .bars{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
 .bar{position:relative;height:70px;border-radius:18px;background:#17171c;overflow:hidden;touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:pointer}
@@ -370,7 +370,7 @@ class GhostRoomsCard extends HTMLElement {
   }
   _readout(s, room) {
     const d = s.entity_id.split(".")[0], a = s.attributes, name = this._name(s, room);
-    let big = s.state, small = name, icon = a.icon || "mdi:gauge";
+    let big = { unavailable: "Offline", unknown: "—" }[s.state] || s.state, small = name, icon = a.icon || "mdi:gauge";
     if (d === "weather") { big = a.temperature != null ? `${Math.round(a.temperature)}°` : "—"; small = `${name} · ${(s.state || "").replace(/-/g, " ")}`; icon = "mdi:weather-partly-cloudy"; }
     else if (d === "binary_sensor") { const dc = a.device_class; big = s.state === "on" ? ({ door: "Open", window: "Open", garage_door: "Open", motion: "Movement", occupancy: "Occupied", moisture: "Wet", smoke: "Smoke!" }[dc] || "On") : ({ door: "Closed", window: "Closed", garage_door: "Closed", motion: "Clear", occupancy: "Clear", moisture: "Dry", smoke: "Clear" }[dc] || "Off");
       icon = a.icon || ({ door: "mdi:door", window: "mdi:window-closed-variant", motion: "mdi:motion-sensor", garage_door: "mdi:garage" }[dc] || "mdi:checkbox-blank-circle-outline"); }
