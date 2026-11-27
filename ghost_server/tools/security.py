@@ -109,7 +109,7 @@ def watch_camera(args: dict, ctx: Ctx) -> str:
     cams = cameras.find(str(args.get("camera") or ""), all_cams)
     if not cams:
         return f"No camera matches '{args.get('camera')}'. Cameras: {_names(all_cams)}."
-    if not store.get("anthropic_api_key"):
+    if not store.get("anthropic_api_key") and not store.get("unplugged"):
         return "Watching needs Claude to look at the pictures — add the Anthropic key on the admin page first."
     mins = watcher.minutes_from(args)
     notify = _notify_list(str(args.get("notify") or "me"), ctx)

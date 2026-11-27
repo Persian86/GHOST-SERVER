@@ -12,6 +12,11 @@ from . import store
 def credentials() -> dict:
     key = str(store.get("gemini_api_key") or "").strip()
     out = {"model": store.get("gemini_live_model"), "voice": store.get("gemini_voice"), "api_version": "v1alpha"}
+    if store.get("unplugged"):
+        # Ghost Unplugged: no Gemini at all. Apps talk through the server's own voice instead.
+        out.update(error="Ghost is unplugged — voice runs on the AI PC.", unplugged=True,
+                   voice_ws="/api/v1/room-voice")
+        return out
     if not key:
         out["error"] = "No Gemini key on the server — add it on the admin page."
         return out

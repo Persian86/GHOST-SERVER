@@ -129,6 +129,14 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
         policy(row)
         original_role = access.role(did)
         original_access = bool(store.get("household_access"))
+        from . import local_voice
+        if local_voice.on():
+            # Ghost Unplugged: Whisper → the local model → Piper, all on the AI PC.
+            async with asyncio.timeout(MAX_CONVERSATION_SECONDS if continuous else MAX_SESSION_SECONDS):
+                await local_voice.serve(ws, row, current, event, send_lock, continuous=continuous,
+                                        limits={"max_input": MAX_INPUT_SECONDS, "max_turns": MAX_CONVERSATION_TURNS,
+                                                "between": BETWEEN_TURNS_WAIT_SECONDS})
+            return
         key = str(store.get("gemini_api_key") or "").strip()
         model = str(store.get("gemini_live_model") or "").strip()
         if not key or not model:

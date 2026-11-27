@@ -396,7 +396,9 @@ async def session(dev: dict = Depends(device_auth)):
     # Away mode: phones and tablets keep a copy of the Gemini key so they can still
     # talk (with their own tools + web search) when they can't reach the server.
     key = str(store.get("gemini_api_key") or "").strip()
-    if not access.limited(d["id"]) and store.get("away_mode") and key and d.get("kind") in ("phone", "tablet"):
+    out["unplugged"] = bool(store.get("unplugged"))
+    if not out["unplugged"] and not access.limited(d["id"]) and store.get("away_mode") and key \
+            and d.get("kind") in ("phone", "tablet"):
         out["offline"] = {"api_key": key, "model": store.get("gemini_live_model"),
                           "voice": store.get("gemini_voice")}
     return out
@@ -1434,6 +1436,8 @@ def _check_settings(body: dict) -> None:
         raise HTTPException(400, "Direct camera playback must be on or off")
     if "local_llm_mode" in body and body["local_llm_mode"] not in ("off", "fallback", "only"):
         raise HTTPException(400, "Local AI mode must be off, fallback or only")
+    if "unplugged" in body and type(body["unplugged"]) is not bool:
+        raise HTTPException(400, "Unplugged must be on or off")
 
 
 def _apply_settings(body: dict, request: Request, how: str = "Settings changed") -> list[str]:
@@ -1593,6 +1597,12 @@ async def test(what: str, _: bool = Depends(admin_auth)):
                 from .local_llm import OllamaLLM, DEFAULT_MODEL
                 return OllamaLLM({"url": store.get("local_llm_url"),
                                   "model": store.get("local_llm_model") or DEFAULT_MODEL}).probe()
+            if what == "speech":
+                from . import local_voice
+                r = asyncio.run(local_voice.probe())
+                ok = r.get("stt") == "ok" and r.get("tts") == "ok"
+                return ok, ("Whisper and Piper both answered." if ok else
+                            f"Hearing (Whisper): {r.get('stt')}. Speaking (Piper): {r.get('tts')}.")
             if what == "gemini":
                 c = live.credentials()
                 return ("error" not in c), c.get("error") or ("Ephemeral token OK" if c.get("token") else c.get("note"))

@@ -309,7 +309,7 @@ class ResilientLLM:
 
 
 def local_from_settings(store) -> OllamaLLM | None:
-    if (store.get("local_llm_mode") or "fallback") == "off":
+    if (store.get("local_llm_mode") or "fallback") == "off" and not store.get("unplugged"):
         return None
     url = (store.get("local_llm_url") or "").strip()
     if not url:
