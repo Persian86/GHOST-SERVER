@@ -236,9 +236,9 @@ def summary(radius_km: float, fires_only: bool = False) -> str:
 # ── background alerts ────────────────────────────────────────────────────────
 def radius() -> float:
     try:
-        return max(2.0, min(100.0, float(store.get("fire_radius_km") or 20)))
+        return max(2.0, min(100.0, float(store.get("fire_radius_km") or 5)))
     except (TypeError, ValueError):
-        return 20.0
+        return 5.0
 
 
 def to_announce(items: list[dict], seen: dict, now: float) -> list[tuple[dict, bool]]:

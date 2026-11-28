@@ -122,7 +122,7 @@ def test_routes(ha):
     client = TestClient(app)
     tok = tracking.issue("person.adam")
     page = client.get(f"/track/{tok}")
-    assert page.status_code == 200 and tok in page.text and "leaflet" in page.text
+    assert page.status_code == 200 and tok in page.text and "maps.google.com" in page.text
     assert page.headers["cache-control"] == "no-store"
     live = client.get(f"/track/{tok}/live")
     assert live.status_code == 200 and live.json()["name"] == "Adam"
@@ -146,6 +146,7 @@ def test_phone_app_endpoints(ha, monkeypatch):
     from fastapi.testclient import TestClient
     from ghost_server import firewatch, security
     from ghost_server.app import app
+    store.put("fire_radius_km", 20)                 # the sample fires are further than the 5 km default
     security.reset_all(); store.put("approve_new_devices", False)
     did, key = store.redeem_pair_code(store.new_pair_code(), "Adam's phone", "phone")
     h = {"Authorization": "Bearer " + key}

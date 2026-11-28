@@ -118,6 +118,7 @@ DEFAULTS: dict[str, Any] = {
     "local_llm_think": False,              # let the local model reason first (slower)
     # Ghost Unplugged (local_voice.py): no Claude, no Gemini — local brain + Whisper + Piper on the AI PC
     "unplugged": False,
+    "google_maps_key": "",                 # Maps JavaScript API key for the live family map (optional)
     "wyoming_stt": "",                     # "host:10300"; empty = the Ollama host
     "wyoming_tts": "",                     # "host:10200"; empty = the Ollama host
     "piper_voice": "",                     # e.g. en_GB-alan-medium; empty = Piper's default
@@ -148,7 +149,7 @@ DEFAULTS: dict[str, Any] = {
     "safety_alerts": True,                                  # smoke / CO / gas / leak / alarm → every device, always
     "tracking_enabled": True,                               # "where's Adam?" + live map from Home Assistant (tracking.py)
     "fire_alerts": True,                                    # VicEmergency warnings and fires near home (firewatch.py)
-    "fire_radius_km": 20,                                   # how far from home counts as "near"
+    "fire_radius_km": 5,                                   # how far from home counts as "near"
     "fire_home": "",                                        # "lat, lon" of home; empty = the household city
     "fire_district": "Central",                             # CFA fire district for the danger rating on the tablet
     "fire_seen": {},                                        # announced warnings/fires (internal)

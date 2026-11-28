@@ -212,6 +212,10 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('ha', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Google Maps — family live map</h3>
+          <div class="status">"Where's Hayley?" opens a Google map. With a <b>Maps JavaScript API</b> key it's fully live (moving dot, trail, home); without one it's Google's plain map, re-centred as they move. In Google Cloud, restrict the key to the Maps JavaScript API (not to websites — the map page sends no referrer).</div>
+          <label>Google Maps key</label><input data-k="google_maps_key" placeholder="optional">
+        </div>
         <div class="card"><h3>Security cameras</h3>
           <div class="status">Cameras already in Home Assistant appear automatically. Add any others (NVR channels, Reolink, Hikvision, Tapo…) below, one per line:</div>
           <textarea data-k="rtsp_cameras" rows="4" placeholder="Front gate = paste the camera stream URL here&#10;Backyard = paste another camera stream URL"></textarea>
@@ -275,7 +279,7 @@
         <div class="card"><h3>Bushfire &amp; emergency alerts</h3>
           <div class="status">Ghost checks VicEmergency every 5 minutes. Watch and Act and Emergency Warnings near home (or covering home) are announced on every device, even in Do Not Disturb. Advice messages and fires within 10 km are announced normally. Ask any time: “are there any fires near me?”</div>
           <label><input type="checkbox" data-k="fire_alerts" style="width:auto"> Announce bushfires and emergency warnings near home</label>
-          <label>How far from home counts as near (km)</label><input data-k="fire_radius_km" placeholder="20">
+          <label>How far from home counts as near (km)</label><input data-k="fire_radius_km" placeholder="5">
           <label>Home location for alerts (latitude, longitude — empty = the household city)</label><input data-k="fire_home" placeholder="-37.58, 144.73">
           <label>Fire district for the danger rating (CFA)</label><select data-k="fire_district"><option>Mallee</option><option>Wimmera</option><option>South West</option><option>Northern Country</option><option>North Central</option><option>Central</option><option>North East</option><option>East Gippsland</option><option>West and South Gippsland</option></select>
         </div>
