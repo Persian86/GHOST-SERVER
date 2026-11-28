@@ -182,6 +182,20 @@
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('local', this)">Test</button></div>
           <div class="status"></div>
         </div>
+        <div class="card"><h3>Ghost Unplugged — no cloud at all</h3>
+          <div class="status">Thinking with the local model above, hearing with Whisper and speaking with Piper — all on the AI PC. Nothing goes to Claude or Gemini while this is on. Room screens keep talking; phones and tablets need their Unplugged update for voice (typed chat works now). Say "Ghost, go unplugged" or tick it here.</div>
+          <label><input type="checkbox" data-k="unplugged" style="width:auto"> Unplugged</label>
+          <label>Whisper (speech-to-text) address</label><input data-k="wyoming_stt" placeholder="empty = Ollama's PC, port 10300">
+          <label>Piper (text-to-speech) address</label><input data-k="wyoming_tts" placeholder="empty = Ollama's PC, port 10200">
+          <label>Piper voice</label><input data-k="piper_voice" placeholder="e.g. en_GB-alan-medium (empty = Piper's default)">
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('speech', this)">Test</button></div>
+          <div class="status"></div>
+        </div>
+        <div class="card"><h3>Security Guard mode</h3>
+          <div class="status" id="guardState">Ghost watches every camera and reports anyone who isn't family, following them from camera to camera.</div>
+          <label><input type="checkbox" id="guardAuto" style="width:auto" onchange="guard({settings:{auto_away:this.checked}})"> Turn on by itself when everyone leaves home (Home Assistant locations)</label>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="guard({on:true})">Guard on</button> <button class="b" onclick="guard({on:false})">Guard off</button></div>
+        </div>
         <div class="card"><h3>Gemini Live — device voices</h3>
           <label>Gemini API key (stays on the server)</label><input data-k="gemini_api_key" type="password">
           <label>Live model</label><input data-k="gemini_live_model">
@@ -478,7 +492,7 @@ async function boot() {
   }
   lockMinutes = Number(s.lock_minutes || 0);
   lastUse = Date.now();
-  show("app"); drawTabs(); await refresh();
+  show("app"); drawTabs(); await refresh(); guard().catch(() => {});
   if (!refreshTimer) refreshTimer = setInterval(() => refresh(true), 8000);
 }
 
@@ -735,6 +749,15 @@ async function saveSettings() {
   } catch (e) {
     $("#saveStatus").innerHTML = `<span class="bad">Not saved: ${esc(e.message)}</span>`;
   }
+}
+async function guard(change) {
+  const r = await api("/admin/api/guard", change ? {method: "POST", body: JSON.stringify(change)} : {});
+  if (!r || r.on === undefined) return;
+  $("#guardAuto").checked = !!(r.settings && r.settings.auto_away);
+  const seen = (r.people || []).map(p => (p.description || "someone unrecognised") + " — " + p.route.join(" → ")).join("; ");
+  $("#guardState").textContent = r.on
+    ? "On" + (r.auto ? " (everyone left)" : "") + " — watching " + r.cameras.length + " cameras. " + (seen ? "Seen: " + seen : "Nobody unrecognised so far.")
+    : "Off. Ghost watches every camera and reports anyone who isn't family, following them from camera to camera.";
 }
 async function test(what, btn) {
   const st = btn.closest(".card").querySelector(".status");

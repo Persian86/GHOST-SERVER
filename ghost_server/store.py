@@ -116,6 +116,11 @@ DEFAULTS: dict[str, Any] = {
     "local_llm_url": "http://127.0.0.1:11434",
     "local_llm_model": "qwen3.5:9b",
     "local_llm_think": False,              # let the local model reason first (slower)
+    # Ghost Unplugged (local_voice.py): no Claude, no Gemini — local brain + Whisper + Piper on the AI PC
+    "unplugged": False,
+    "wyoming_stt": "",                     # "host:10300"; empty = the Ollama host
+    "wyoming_tts": "",                     # "host:10200"; empty = the Ollama host
+    "piper_voice": "",                     # e.g. en_GB-alan-medium; empty = Piper's default
     "gemini_api_key": "",
     "gemini_live_model": "gemini-3.1-flash-live-preview",
     "gemini_voice": "Fenrir",

@@ -33,7 +33,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
-from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
+from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, modes, photos,
                prompt, quiet, security, store, theme, tools, voices)
 from . import news_feed  # registers the server-only, masked GNews setting
 from .hub import AgentConn, hub
@@ -81,6 +81,8 @@ async def _lifespan(_app):
     checkins.recover()
     testcalls.recover()
     hub.loop = asyncio.get_running_loop()
+    from . import guard
+    guard.boot()                        # back on if it was on; on by itself when everyone leaves
     print(f"[Ghost Server] v{__version__} — data in {config.DATA_DIR}")
     bg = [asyncio.create_task(quiet.quiet_loop()), asyncio.create_task(quiet.safety_loop()),
           asyncio.create_task(household.timer_loop()), asyncio.create_task(door.door_loop()),
@@ -288,6 +290,69 @@ async def pair(body: dict, request: Request):
             "approved": approved, **({} if approved else {"message": WAITING})}
 
 
+# ── Security Guard mode ─────────────────────────────────────────────────────
+@app.get("/api/v1/guard")
+async def guard_get(dev: dict = Depends(device_auth)):
+    from . import guard
+    return {**guard.state(), "settings": guard.settings()}
+
+
+@app.post("/api/v1/guard")
+async def guard_set(body: dict, dev: dict = Depends(device_auth)):
+    """{on: true|false} from a phone/tablet Guard button."""
+    from . import guard
+    if body.get("on"):
+        return await asyncio.to_thread(guard.start, dev["name"])
+    return await asyncio.to_thread(guard.stop, dev["name"])
+
+
+@app.get("/api/v1/modes")
+async def modes_get(dev: dict = Depends(device_auth)):
+    """The two household modes, for the switches on phones and tablets."""
+    from . import guard
+    st = guard.state()
+    return {"guard": st["on"], "guard_auto": guard.settings()["auto_away"], "guard_since": st["since"],
+            "guard_people": len(st["people"]), "unplugged": bool(store.get("unplugged"))}
+
+
+@app.post("/api/v1/modes")
+async def modes_set(body: dict, dev: dict = Depends(device_auth)):
+    """{guard?: bool, guard_auto?: bool, unplugged?: bool} — whole-household switches, not for restricted devices."""
+    from . import guard
+    if access.limited(dev["id"]):
+        raise HTTPException(403, "This device can't change household modes")
+    for k in ("guard", "guard_auto", "unplugged"):
+        if k in body and type(body[k]) is not bool:
+            raise HTTPException(400, f"{k} must be true or false")
+    if "unplugged" in body:
+        if body["unplugged"] and not str(store.get("local_llm_url") or "").strip():
+            raise HTTPException(400, "Set the local model's address on the admin page first")
+        store.put("unplugged", body["unplugged"])
+        modes.broadcast()
+    if "guard_auto" in body:
+        guard.save_settings({"auto_away": body["guard_auto"]})
+    if "guard" in body:
+        await asyncio.to_thread(guard.start if body["guard"] else guard.stop, dev["name"])
+    return await modes_get(dev)
+
+
+@app.get("/admin/api/guard")
+def admin_guard_get(_: bool = Depends(admin_auth)):
+    from . import guard
+    return {**guard.state(), "settings": guard.settings()}
+
+
+@app.post("/admin/api/guard")
+def admin_guard_set(body: dict, _: bool = Depends(admin_auth)):
+    """{on?: bool, settings?: {auto_away, cameras, describe, ha_notify}}"""
+    from . import guard
+    if isinstance(body.get("settings"), dict):
+        guard.save_settings(body["settings"])
+    if "on" in body:
+        guard.start("Admin page") if body["on"] else guard.stop("Admin page")
+    return {**guard.state(), "settings": guard.settings()}
+
+
 @app.get("/api/v1/key")
 def key_info(dev: dict = Depends(device_auth)):
     """How old this device's key is, and how often the server wants it renewed."""
@@ -361,7 +426,9 @@ async def session(dev: dict = Depends(device_auth)):
     # Away mode: phones and tablets keep a copy of the Gemini key so they can still
     # talk (with their own tools + web search) when they can't reach the server.
     key = str(store.get("gemini_api_key") or "").strip()
-    if not access.limited(d["id"]) and store.get("away_mode") and key and d.get("kind") in ("phone", "tablet"):
+    out["unplugged"] = bool(store.get("unplugged"))
+    if not out["unplugged"] and not access.limited(d["id"]) and store.get("away_mode") and key \
+            and d.get("kind") in ("phone", "tablet"):
         out["offline"] = {"api_key": key, "model": store.get("gemini_live_model"),
                           "voice": store.get("gemini_voice")}
     return out
@@ -1182,7 +1249,7 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     if not access.limited(row["id"]):
         await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
     for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot,
-                 theme.current):
+                 theme.current, modes.snapshot):
         try:
             if access.limited(row["id"]): continue
             await ws.send_json(await asyncio.to_thread(snap))
@@ -1399,6 +1466,8 @@ def _check_settings(body: dict) -> None:
         raise HTTPException(400, "Direct camera playback must be on or off")
     if "local_llm_mode" in body and body["local_llm_mode"] not in ("off", "fallback", "only"):
         raise HTTPException(400, "Local AI mode must be off, fallback or only")
+    if "unplugged" in body and type(body["unplugged"]) is not bool:
+        raise HTTPException(400, "Unplugged must be on or off")
 
 
 def _apply_settings(body: dict, request: Request, how: str = "Settings changed") -> list[str]:
@@ -1421,6 +1490,8 @@ def _apply_settings(body: dict, request: Request, how: str = "Settings changed")
         handoff.clear()
     if any(k.startswith("theme_") for k in changed):
         theme.push_soon()                 # the new look on every screen now
+    if "unplugged" in body:
+        modes.broadcast()                 # Ghost changes hats
     if "household_access" in changed:
         access.invalidate()
         for conn in list(hub.conns.values()):
@@ -1558,6 +1629,12 @@ async def test(what: str, _: bool = Depends(admin_auth)):
                 from .local_llm import OllamaLLM, DEFAULT_MODEL
                 return OllamaLLM({"url": store.get("local_llm_url"),
                                   "model": store.get("local_llm_model") or DEFAULT_MODEL}).probe()
+            if what == "speech":
+                from . import local_voice
+                r = asyncio.run(local_voice.probe())
+                ok = r.get("stt") == "ok" and r.get("tts") == "ok"
+                return ok, ("Whisper and Piper both answered." if ok else
+                            f"Hearing (Whisper): {r.get('stt')}. Speaking (Piper): {r.get('tts')}.")
             if what == "gemini":
                 c = live.credentials()
                 return ("error" not in c), c.get("error") or ("Ephemeral token OK" if c.get("token") else c.get("note"))

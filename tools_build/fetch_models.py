@@ -1,4 +1,4 @@
-"""Download the Visual ID face models at image build time and check their SHA-256."""
+"""Download the Visual ID face models (and the Guard mode people models) at image build time and check their SHA-256."""
 import hashlib
 import os
 import sys
@@ -10,6 +10,11 @@ MODELS = [
      "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"),
     ("face_recognition_sface/", "face_recognition_sface_2021dec.onnx",
      "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"),
+    # Security Guard mode: people detection and person re-identification (guard.py)
+    ("object_detection_yolox/", "object_detection_yolox_2022nov.onnx",
+     "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063"),
+    ("person_reid_youtureid/", "person_reid_youtu_2021nov.onnx",
+     "0579683334d4b9440221606dcb461656dd0dc64143b18f48faedaced9b4f580d"),
 ]
 dest = sys.argv[1] if len(sys.argv) > 1 else "/app/models"
 os.makedirs(dest, exist_ok=True)

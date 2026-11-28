@@ -16,6 +16,8 @@ def claude(model: str | None = None, fast: bool = False):
     from ..local_llm import ResilientLLM, local_from_settings
     key = store.get("anthropic_api_key")
     mode = store.get("local_llm_mode") or "fallback"
+    if store.get("unplugged"):
+        mode = "only"                      # Ghost Unplugged: nothing goes to the cloud
     local = local_from_settings(store)
     if not key and local is None:
         raise RuntimeError("Claude isn't set up — add the Anthropic key on the Ghost Server admin page")
@@ -42,3 +44,29 @@ def think_deeply(args: dict, ctx: Ctx) -> str:
          {"role": "user", "content": q + (f"\n\nContext:\n{args['context']}" if args.get("context") else "")}],
         timeout=180, max_tokens=6000)
     return text.strip() or "Claude returned nothing."
+
+
+@tool("unplugged_mode", """Ghost Unplugged: switch Ghost off the cloud (no Claude, no Gemini) so it thinks with the local
+model and hears/speaks with Whisper and Piper on the AI PC — or back on again. 'go unplugged', 'unplugged mode on',
+'use only the local AI', 'plug back in', 'are you unplugged?'.""",
+      {"type": "OBJECT", "properties": {"action": {"type": "STRING", "description": "on | off | status"}},
+       "required": ["action"]})
+def unplugged_mode(args: dict, ctx: Ctx) -> str:
+    from .. import local_voice
+    act = str(args.get("action") or "status").lower()
+    if act in ("on", "start", "enable"):
+        if not (store.get("local_llm_url") or "").strip():
+            return "I can't go unplugged yet — the local model's address isn't set on the admin page."
+        store.put("unplugged", True)
+        from .. import modes
+        modes.broadcast()
+        return ("I'm unplugged now: thinking, hearing and speaking all stay on the AI PC. This conversation finishes "
+                "on the cloud voice; the next one uses the local voice. Say 'plug back in' to go back.")
+    if act in ("off", "stop", "disable"):
+        store.put("unplugged", False)
+        from .. import modes
+        modes.broadcast()
+        return "Plugged back in — Claude and Gemini are back from the next conversation."
+    st = local_voice.status()
+    return ("I'm unplugged — everything runs on the AI PC." if st["unplugged"]
+            else "I'm plugged in: Claude thinks and Gemini talks, with the local model as the backup.")
