@@ -17,6 +17,9 @@ def credentials() -> dict:
         out.update(error="Ghost is unplugged — voice runs on the AI PC.", unplugged=True,
                    voice_ws="/api/v1/room-voice")
         return out
+    if key:
+        from . import cloudlog
+        cloudlog.cloud("gemini", "voice session")
     if not key:
         out["error"] = "No Gemini key on the server — add it on the admin page."
         return out

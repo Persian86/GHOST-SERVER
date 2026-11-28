@@ -188,7 +188,8 @@
           <label>Whisper (speech-to-text) address</label><input data-k="wyoming_stt" placeholder="empty = Ollama's PC, port 10300">
           <label>Piper (text-to-speech) address</label><input data-k="wyoming_tts" placeholder="empty = Ollama's PC, port 10200">
           <label>Piper voice</label><input data-k="piper_voice" placeholder="e.g. en_GB-alan-medium (empty = Piper's default)">
-          <div class="row" style="margin-top:10px"><button class="b" onclick="test('speech', this)">Test</button></div>
+          <div class="status" id="brainProof" style="color:#ffc77a">Who's answering: …</div>
+          <div class="row" style="margin-top:10px"><button class="b" onclick="test('speech', this)">Test</button> <button class="b" onclick="brainProof()">Check who's answering</button></div>
           <div class="status"></div>
         </div>
         <div class="card"><h3>Security Guard mode</h3>
@@ -492,7 +493,7 @@ async function boot() {
   }
   lockMinutes = Number(s.lock_minutes || 0);
   lastUse = Date.now();
-  show("app"); drawTabs(); await refresh(); guard().catch(() => {});
+  show("app"); drawTabs(); await refresh(); guard().catch(() => {}); brainProof().catch(() => {});
   if (!refreshTimer) refreshTimer = setInterval(() => refresh(true), 8000);
 }
 
@@ -749,6 +750,10 @@ async function saveSettings() {
   } catch (e) {
     $("#saveStatus").innerHTML = `<span class="bad">Not saved: ${esc(e.message)}</span>`;
   }
+}
+async function brainProof() {
+  const r = await api("/admin/api/brain-status");
+  if (r && r.summary) $("#brainProof").textContent = (r.unplugged ? "🔌 " : "☁️ ") + r.summary;
 }
 async function guard(change) {
   const r = await api("/admin/api/guard", change ? {method: "POST", body: JSON.stringify(change)} : {});

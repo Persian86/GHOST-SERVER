@@ -138,6 +138,8 @@ async def serve(ws, row, reauthorize, *, client_factory=None, continuous=False):
                                                 "between": BETWEEN_TURNS_WAIT_SECONDS})
             return
         key = str(store.get("gemini_api_key") or "").strip()
+        from . import cloudlog
+        cloudlog.cloud("gemini", "room voice")
         model = str(store.get("gemini_live_model") or "").strip()
         if not key or not model:
             await event("error", message="Voice is not configured on Ghost Server.")
