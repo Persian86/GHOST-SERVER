@@ -28,6 +28,8 @@
 #include "cJSON.h"
 #include <ctype.h>
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "freertos/idf_additions.h"
 
 enum {IDLE, CONNECTING, LISTENING, THINKING, SPEAKING, ERROR_STATE, SETUP};
 static atomic_int state = SETUP;
@@ -252,6 +254,69 @@ static void show_card(const weather_card_t *w)
     ESP_LOGW("ghost_card","Weather card shown: %d days",w->days);
 }
 
+
+// ── Ghost's outfit for the household modes ─────────────────────────────────
+// Ghost Server's /api/v1/modes says whether Security Guard is on (a guard's
+// peaked cap) or Ghost is Unplugged (the household's chosen unplugged hat).
+// A small task asks every ~45 s while idle; the LVGL timer swaps the hat.
+enum {HAT_NONE,HAT_GUARD,HAT_PLUG,HAT_TINFOIL,HAT_BUCKET,HAT_MINER};
+static atomic_int want_hat=HAT_NONE;
+static int shown_hat=-1;
+static lv_obj_t *hat;
+#define HY(y) ((y)+60)        /* hat container starts 60 px above the body image */
+
+static void dot(lv_obj_t *p,int cx,int cy,int d,uint32_t color) {shape(p,cx-d/2,cy-d/2,d,d,color,LV_RADIUS_CIRCLE);}
+
+static void build_hat(int kind)
+{
+    if(hat) {lv_obj_delete(hat);hat=NULL;}
+    if(kind==HAT_NONE || !avatar) return;
+    hat=lv_obj_create(avatar);lv_obj_remove_style_all(hat);
+    lv_obj_set_pos(hat,0,-60);lv_obj_set_size(hat,ghost_art_body.header.w,100);
+    lv_obj_add_flag(hat,LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_remove_flag(hat,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
+    const int cx=GHOST_ART_CX;
+    switch(kind) {
+    case HAT_GUARD:                                    // navy peaked cap, chequered band, visor, badge
+        shape(hat,cx-72,HY(-24),144,42,0x16224a,18);
+        for(int i=0;i<12;i++) shape(hat,cx-68+i*11,HY(12),11,12,(i%2)?0xffffff:0x16224a,0);
+        shape(hat,cx-56,HY(22),112,10,0x09090f,5);
+        dot(hat,cx,HY(-4),22,0xe6b850);dot(hat,cx,HY(-4),8,0xffffff);
+        break;
+    case HAT_PLUG: {                                   // beanie with its power plug pulled out
+        shape(hat,cx-66,HY(-14),132,40,0x3a3a42,26);
+        shape(hat,cx-72,HY(14),144,14,0xffb347,7);
+        for(int i=0;i<=8;i++) {float t=i/8.0f;dot(hat,cx+(int)(t*78),HY(-14-(int)(sinf(t*3.14159f)*22)),6,0x8a8a96);}
+        shape(hat,cx+74,HY(-34),20,24,0xffffff,4);
+        shape(hat,cx+77,HY(-10),3,10,0xe6b850,1);shape(hat,cx+88,HY(-10),3,10,0xe6b850,1);
+        break;}
+    case HAT_TINFOIL:                                  // a stack of foil tiers making a cone
+        for(int i=0;i<7;i++) {int w=128-i*18;shape(hat,cx-w/2,HY(10-i*7),w,9,i%2?0xdde0e8:0xc4c8d2,3);}
+        shape(hat,cx-76,HY(16),152,8,0xc4c8d2,4);
+        break;
+    case HAT_BUCKET:                                   // off-grid bucket hat
+        shape(hat,cx-58,HY(-20),116,40,0xa89668,16);
+        shape(hat,cx-58,HY(6),116,8,0x36ac70,2);
+        shape(hat,cx-86,HY(16),172,14,0x82724c,7);
+        break;
+    case HAT_MINER:                                    // hard hat with a lamp
+        shape(hat,cx-68,HY(-20),136,46,0xf6c430,40);
+        shape(hat,cx-80,HY(18),160,10,0xf6c430,5);
+        dot(hat,cx,HY(0),28,0x241b35);dot(hat,cx,HY(0),18,0xfff4be);
+        break;
+    }
+}
+
+static int hat_named(const char *name)
+{
+    if(!name) return HAT_PLUG;
+    if(!strcmp(name,"none")) return HAT_NONE;
+    if(!strcmp(name,"tinfoil_hat")) return HAT_TINFOIL;
+    if(!strcmp(name,"bucket_hat")) return HAT_BUCKET;
+    if(!strcmp(name,"miner_helmet")) return HAT_MINER;
+    return HAT_PLUG;
+}
+
 static void animate(lv_timer_t *timer)
 {
     static int last=-1;
@@ -269,6 +334,8 @@ static void animate(lv_timer_t *timer)
         ESP_LOGW("ghost_motion","Frames=%u slow_over_80ms=%u max_interval_ms=%u",frame_count,slow_frames,max_frame_ms);
         report_at=now;frame_count=slow_frames=max_frame_ms=0;
     }
+    int wanted_hat=want_hat;
+    if(wanted_hat!=shown_hat) {shown_hat=wanted_hat;build_hat(wanted_hat);}
     if(card_ready) {
         weather_card_t w;
         taskENTER_CRITICAL(&card_mux);w=incoming;card_ready=false;taskEXIT_CRITICAL(&card_mux);
@@ -424,6 +491,7 @@ static void build_ui(void)
     avatar=lv_obj_create(screen);lv_obj_remove_style_all(avatar);
     lv_obj_set_size(avatar,ghost_art_body.header.w,ghost_art_body.header.h);lv_obj_set_pos(avatar,AVATAR_X,AVATAR_Y);
     lv_obj_remove_flag(avatar,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(avatar,LV_OBJ_FLAG_OVERFLOW_VISIBLE);       // hats sit above the body image
     lv_obj_t *body=lv_image_create(avatar);lv_image_set_src(body,&ghost_art_body);lv_obj_set_pos(body,0,0);
     arms[0]=lv_image_create(avatar);lv_image_set_src(arms[0],arm_left[GHOST_ART_ARM_REST]);
     lv_obj_set_pos(arms[0],GHOST_ART_ARM_L_X,GHOST_ART_ARM_L_Y);
@@ -459,6 +527,42 @@ static void build_ui(void)
     lv_obj_t *end_label=lv_label_create(end_button);lv_label_set_text(end_label,"End");lv_obj_center(end_label);
     lv_obj_add_flag(end_button,LV_OBJ_FLAG_HIDDEN);
     lv_timer_create(animate,33,NULL);
+}
+
+
+// Asks Ghost Server which household modes are on (see build_hat). Only while
+// idle, so it never competes with a conversation for memory or the network.
+static void modes_task(void *arg)
+{
+    static char pem[GHOST_PIN_MAX],body[2048],url[200],auth[180];
+    for(;;) {
+        vTaskDelay(pdMS_TO_TICKS(shown_hat<0?5000:45000));
+        if(state!=IDLE || !ghost_wifi_ready() || !config.key[0]) continue;
+        int port=0;bool secure=ghost_server_pin(pem,sizeof(pem),&port);
+        if(secure) {if(!ghost_https_url(config.server,port,"/api/v1/modes",url,sizeof(url))) continue;}
+        else snprintf(url,sizeof(url),"%.150s/api/v1/modes",config.server);
+        esp_http_client_config_t http={.url=url,.timeout_ms=8000,.disable_auto_redirect=true,
+            .cert_pem=secure?pem:NULL,.skip_cert_common_name_check=secure};
+        esp_http_client_handle_t client=esp_http_client_init(&http);
+        if(!client) continue;
+        snprintf(auth,sizeof(auth),"Bearer %.159s",config.key);
+        esp_http_client_set_header(client,"Authorization",auth);
+        int len=-1;
+        if(esp_http_client_open(client,0)==ESP_OK && esp_http_client_fetch_headers(client)>=0 &&
+            esp_http_client_get_status_code(client)==200)
+            len=esp_http_client_read_response(client,body,sizeof(body)-1);
+        esp_http_client_cleanup(client);
+        if(len<=0) continue;
+        body[len]=0;
+        cJSON *json=cJSON_Parse(body);
+        if(!json) continue;
+        const cJSON *guard=cJSON_GetObjectItemCaseSensitive(json,"guard");
+        const cJSON *unplugged=cJSON_GetObjectItemCaseSensitive(json,"unplugged");
+        const cJSON *choice=cJSON_GetObjectItemCaseSensitive(json,"unplugged_hat");
+        want_hat=cJSON_IsTrue(guard)?HAT_GUARD:cJSON_IsTrue(unplugged)?
+            hat_named(cJSON_IsString(choice)?choice->valuestring:NULL):HAT_NONE;
+        cJSON_Delete(json);
+    }
 }
 
 static void fail(const char *message)
@@ -932,5 +1036,8 @@ void app_main(void)
         // smooth animation but 8-15% wake audio loss (0.3.12, core 0 also
         // carries Wi-Fi and the RGB panel refresh).
         xTaskCreatePinnedToCore(voice_task,"ghost_voice",16384,NULL,5,NULL,1)!=pdPASS) {fail("Not enough memory for voice.");return;}
+    // Hats for Guard / Unplugged: stack in PSRAM, so internal RAM stays with audio and Wi-Fi.
+    if(xTaskCreatePinnedToCoreWithCaps(modes_task,"ghost_modes",8192,NULL,2,NULL,0,MALLOC_CAP_SPIRAM)!=pdPASS)
+        ESP_LOGW("ghost_modes","No memory for the modes task; hats stay off.");
     state=IDLE;
 }

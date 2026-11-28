@@ -118,7 +118,8 @@ DEFAULTS: dict[str, Any] = {
     "local_llm_think": False,              # let the local model reason first (slower)
     # Ghost Unplugged (local_voice.py): no Claude, no Gemini — local brain + Whisper + Piper on the AI PC
     "unplugged": False,
-    "google_maps_key": "",                 # Maps JavaScript API key for the live family map (optional)
+    "google_maps_key": "",
+    "unplugged_hat": "plug_beanie",        # room screens' hat while unplugged (apps choose their own)                 # Maps JavaScript API key for the live family map (optional)
     "wyoming_stt": "",                     # "host:10300"; empty = the Ollama host
     "wyoming_tts": "",                     # "host:10200"; empty = the Ollama host
     "piper_voice": "",                     # e.g. en_GB-alan-medium; empty = Piper's default
