@@ -1,20 +1,56 @@
-# Ghost Server on the Asustor NAS.
-# Data (database, documents) lives in /volume1/Docker/ghost-server — back that folder up.
+# Ghost Server on the AI PC (Pop!_OS, RTX 3060) — what runs in /opt/ghost.
+# A reference copy: the live file is /opt/ghost/docker-compose.yml (outside this repo), so pulling never changes it.
+# Whisper/Piper options and the Home Assistant mounts here are the usual ones — check them against the live file.
+#
+#   /opt/ghost/src            this repository (git pull here to update)
+#   /opt/ghost/ghost-server   Ghost's data: database, documents, models cache — back this up (backup.sh)
+#   /opt/ghost/photos         the tablet photo frame (read-only)
+#
+# Update:  cd /opt/ghost && sudo git -C src pull --rebase && docker compose up -d --build ghost-server
+# Ollama (the local brain) runs on the PC itself at 127.0.0.1:11434, not in a container.
+# Everything uses host networking: 8780/8781 Ghost, 8123 Home Assistant, 10300 Whisper, 10200 Piper.
 services:
   ghost-server:
-    image: ghcr.io/persian86/ghost-server:latest
-    # build: .
+    build: ./src
+    image: ghost-server:local
     container_name: ghost-server
     restart: unless-stopped
-    # Host networking: the container uses the NAS's own network. Asustor's default
-    # Docker bridge often has no route to the internet ("Network is unreachable").
-    # Ghost Server listens on port 8780 directly (8000/8001 = ADM, 8123 = Home Assistant).
     network_mode: host
     environment:
       - TZ=Australia/Melbourne
       - GHOST_DATA=/data
       - GHOST_PORT=8780
     volumes:
-      - /volume1/Docker/ghost-server:/data
-      # The tablet's photo frame: point this at your photos (read-only). Change the left side to your share.
-      - /volume1/Photos:/photos:ro
+      - ./ghost-server:/data
+      - ./photos:/photos:ro
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    environment:
+      - TZ=Australia/Melbourne
+    volumes:
+      - ./homeassistant:/config
+      - /run/dbus:/run/dbus:ro
+
+  # Ghost Unplugged (docs/UNPLUGGED.md) — also usable by Home Assistant Assist (Wyoming integration)
+  whisper:                                 # hearing: speech → text, port 10300
+    image: rhasspy/wyoming-whisper:latest
+    container_name: whisper
+    restart: unless-stopped
+    network_mode: host
+    command: --model small-int8 --language en
+    volumes:
+      - ./whisper:/data
+
+  piper:                                   # speaking: text → speech, port 10200
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
+    restart: unless-stopped
+    network_mode: host
+    command: --voice en_GB-alan-medium
+    volumes:
+      - ./piper:/data
