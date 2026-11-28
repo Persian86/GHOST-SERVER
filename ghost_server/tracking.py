@@ -338,4 +338,6 @@ def live(tok: str) -> dict | None:
 def page(tok: str) -> str:
     from pathlib import Path
     html = (Path(__file__).parent / "static" / "track.html").read_text(encoding="utf-8")
-    return html.replace("__TOKEN__", tok)
+    import re
+    key = re.sub(r"[^A-Za-z0-9_\-]", "", str(store.get("google_maps_key") or ""))[:80]   # only key characters reach the page
+    return html.replace("__TOKEN__", tok).replace("__GMAPS_KEY__", key)

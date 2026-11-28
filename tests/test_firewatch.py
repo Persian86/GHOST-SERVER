@@ -91,6 +91,7 @@ def test_summary_when_quiet(env, monkeypatch):
 
 
 def test_alerts_are_announced_once_and_again_when_escalated(env, monkeypatch):
+    store.put("fire_radius_km", 20)                 # the sample warnings are 5–20 km out
     msgs = firewatch.check_once(now=1000)
     urgent = [m for m in msgs if m["urgent"]]
     calm = [m for m in msgs if not m["urgent"]]

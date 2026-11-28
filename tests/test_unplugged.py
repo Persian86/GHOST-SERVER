@@ -155,3 +155,18 @@ def test_cloud_is_blocked_and_counted_while_unplugged(env):
     assert "1 answer from the local AI, 0 from the cloud" in cloudlog.summary() and "1 cloud request was blocked" in cloudlog.summary()
     load()
     assert "Unplugged:" in TOOLS["unplugged_mode"].handler({"action": "status"}, Ctx())
+
+
+def test_family_map_is_google_and_key_is_sanitised(env):
+    from ghost_server import tracking
+    page = tracking.page("tok123")
+    assert "maps.google.com/maps?q=" in page and "openstreetmap" not in page and 'GKEY = ""' in page
+    store.put("google_maps_key", 'AIza-abc_123"</script><x>')
+    page = tracking.page("tok123")
+    assert 'GKEY = "AIza-abc_123scriptx"' in page and "</script><x>" not in page
+    assert "maps.googleapis.com/maps/api/js" in page
+
+
+def test_fire_radius_default_is_5_km(env):
+    from ghost_server import firewatch
+    assert firewatch.radius() == 5.0

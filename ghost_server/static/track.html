@@ -3,13 +3,12 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <title>Live location · Ghost</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
-:root{--bg:#0f1216;--panel:rgba(20,24,30,.92);--text:#f2f4f7;--dim:#9aa4b2;--accent:#2f7df6;--ok:#38c172}
+:root{--bg:#0f1216;--panel:rgba(20,24,30,.92);--text:#f2f4f7;--dim:#9aa4b2;--accent:#FFB347;--ok:#38c172}
 @media (prefers-color-scheme: light){:root{--bg:#eef1f5;--panel:rgba(255,255,255,.94);--text:#14181d;--dim:#5b6573}}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:15px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif}
 #map{position:absolute;inset:0}
+#map iframe{border:0;width:100%;height:100%}
 [hidden]{display:none!important}
 .card{position:absolute;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top));z-index:500;max-width:520px;margin:0 auto;
   background:var(--panel);border-radius:16px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.25);backdrop-filter:blur(10px)}
@@ -23,7 +22,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:15px/
 .live.stale{color:var(--dim)}.live.stale i{background:var(--dim);animation:none}
 .btns{position:absolute;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:500;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 .btns a,.btns button{border:0;border-radius:12px;padding:11px 14px;font:600 14px system-ui,sans-serif;background:var(--panel);color:var(--text);text-decoration:none;box-shadow:0 4px 16px rgba(0,0,0,.2);cursor:pointer}
-.btns .primary{background:var(--accent);color:#fff}
+.btns .primary{background:var(--accent);color:#1a1205}
 .msg{position:absolute;inset:0;display:grid;place-items:center;z-index:600;background:var(--bg);color:var(--dim);text-align:center;padding:30px}
 .me{width:22px;height:22px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 0 0 6px rgba(47,125,246,.25)}
 .homeic{font-size:22px;line-height:22px;text-align:center}
@@ -46,12 +45,53 @@ const $ = s => document.querySelector(s);
 let map, dot, ring, line, homeMk, follow = true, first = true, lastSeen = 0;
 function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function ago(t){const s=Math.max(0,Date.now()/1000-t);return s<60?"just now":s<3600?Math.floor(s/60)+" min ago":Math.floor(s/3600)+" h ago"}
-function setup(){
-  map = L.map("map",{zoomControl:false}).setView([-37.8,144.9],12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
-  map.on("dragstart",()=>{follow=false;$("#follow").textContent="Follow"});
-  $("#follow").onclick=()=>{follow=true;$("#follow").textContent="Following";if(dot)map.panTo(dot.getLatLng())};
-}
+/* Google Maps. With a Maps JavaScript API key (admin page → Brain & keys → Google Maps key) the map
+   is fully live: moving dot, accuracy ring, trail and home. Without a key it's Google's plain embedded
+   map, re-centred whenever they move. */
+const GKEY = "__GMAPS_KEY__";
+const DARK = [{elementType:"geometry",stylers:[{color:"#1d1f24"}]},{elementType:"labels.text.fill",stylers:[{color:"#9aa4b2"}]},
+  {elementType:"labels.text.stroke",stylers:[{color:"#111317"}]},{featureType:"road",elementType:"geometry",stylers:[{color:"#2c3038"}]},
+  {featureType:"road.highway",elementType:"geometry",stylers:[{color:"#3d3424"}]},{featureType:"water",elementType:"geometry",stylers:[{color:"#0e1a24"}]},
+  {featureType:"poi",stylers:[{visibility:"off"}]},{featureType:"transit",stylers:[{visibility:"off"}]}];
+const engine = {
+  ready:false, embedAt:null,
+  setup(){
+    if(GKEY){
+      window.__gmReady=()=>{const dark=matchMedia("(prefers-color-scheme: dark)").matches;
+        map=new google.maps.Map($("#map"),{center:{lat:-37.58,lng:144.73},zoom:13,disableDefaultUI:true,zoomControl:true,
+          gestureHandling:"greedy",styles:dark?DARK:null,clickableIcons:false});
+        map.addListener("dragstart",()=>{follow=false;$("#follow").textContent="Follow"});
+        engine.ready=true;tick()};
+      const sc=document.createElement("script");
+      sc.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(GKEY)}&callback=__gmReady&loading=async`;
+      sc.async=true;sc.onerror=()=>{$(".msg").textContent="Google Maps couldn't load. Check the internet connection or the Google Maps key."};
+      document.head.appendChild(sc);
+    } else { engine.ready=true; tick(); }
+    $("#follow").onclick=()=>{follow=true;$("#follow").textContent="Following";if(dot&&map)map.panTo(dot.getPosition())};
+  },
+  show(d,p){
+    if(!GKEY){                                   // keyless: Google's embed, refreshed when they've moved ~30 m
+      $("#follow").hidden=true;
+      const moved=!engine.embedAt||Math.hypot((p[0]-engine.embedAt[0])*111000,(p[1]-engine.embedAt[1])*88000)>30;
+      if(moved){engine.embedAt=p;
+        $("#map").innerHTML=`<iframe title="Map" referrerpolicy="no-referrer" loading="eager" src="https://maps.google.com/maps?q=${p[0]},${p[1]}&z=${d.moving?14:16}&output=embed"></iframe>`}
+      return;
+    }
+    const ll={lat:p[0],lng:p[1]};
+    if(!dot){
+      dot=new google.maps.Marker({map,position:ll,icon:{path:google.maps.SymbolPath.CIRCLE,scale:9,fillColor:"#FFB347",fillOpacity:1,strokeColor:"#fff",strokeWeight:3}});
+      ring=new google.maps.Circle({map,center:ll,radius:d.acc||30,strokeColor:"#FFB347",strokeWeight:1,fillColor:"#FFB347",fillOpacity:.12});
+      line=new google.maps.Polyline({map,strokeColor:"#FFB347",strokeOpacity:.7,strokeWeight:4});
+    }
+    dot.setPosition(ll);ring.setCenter(ll);ring.setRadius(d.acc||30);
+    line.setPath((d.trail||[]).concat([p]).map(q=>({lat:q[0],lng:q[1]})));
+    if(d.home&&!homeMk)homeMk=new google.maps.Marker({map,position:{lat:d.home[0],lng:d.home[1]},label:{text:"🏠",fontSize:"20px"},
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:0}});
+    if(first){first=false;const b=new google.maps.LatLngBounds();b.extend(ll);if(d.home&&!d.at_home&&d.km<60)b.extend({lat:d.home[0],lng:d.home[1]});
+      if(b.getNorthEast().equals(b.getSouthWest()))map.setCenter(ll),map.setZoom(16);else map.fitBounds(b,80)}
+    else if(follow&&d.updated!==lastSeen)map.panTo(ll);
+  }
+};
 async function tick(){
   let d;
   try{const r=await fetch(`/track/${TOKEN}/live`,{cache:"no-store"});
@@ -70,14 +110,7 @@ async function tick(){
   const lv=$(".live");const fresh=Date.now()/1000-d.updated<180;lv.classList.toggle("stale",!fresh);lv.querySelector("span").textContent=fresh?"Live":"Waiting for phone";
   if(d.lat!=null){
     const p=[d.lat,d.lon];
-    if(!dot){dot=L.marker(p,{icon:L.divIcon({className:"",html:'<div class="me"></div>',iconSize:[22,22],iconAnchor:[11,11]})}).addTo(map);
-      ring=L.circle(p,{radius:d.acc||30,color:"#2f7df6",weight:1,fillOpacity:.1}).addTo(map);}
-    dot.setLatLng(p);ring.setLatLng(p);ring.setRadius(d.acc||30);
-    const tr=(d.trail||[]).concat([p]);
-    if(!line)line=L.polyline(tr,{color:"#2f7df6",weight:4,opacity:.6}).addTo(map);else line.setLatLngs(tr);
-    if(d.home&&!homeMk)homeMk=L.marker(d.home,{icon:L.divIcon({className:"homeic",html:"🏠",iconSize:[24,24],iconAnchor:[12,12]})}).addTo(map);
-    if(first){first=false;const b=L.latLngBounds([p]);if(d.home&&!d.at_home&&d.km<60)b.extend(d.home);map.fitBounds(b.pad(.35),{maxZoom:16})}
-    else if(follow&&d.updated!==lastSeen)map.panTo(p);
+    engine.show(d,p);
     lastSeen=d.updated;
     $("#gmaps").href=`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lon}`;
     $("#gdir").href=`https://www.google.com/maps/dir/?api=1&destination=${d.lat},${d.lon}`;
@@ -86,6 +119,6 @@ async function tick(){
   document.title=`${d.name} · live location`;
   setTimeout(tick,5000);
 }
-if(window.L){setup();tick()}else{$(".msg").textContent="The map couldn't load. Check the internet connection."}
+engine.setup();
 </script>
 </body></html>
