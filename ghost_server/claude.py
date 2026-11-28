@@ -319,6 +319,8 @@ class AnthropicLLM:
                  max_tokens: int | None = None) -> tuple[str, list[FunctionCall]]:
         if not self.key:
             raise RuntimeError("401 no Anthropic API key configured")
+        from . import cloudlog
+        cloudlog.cloud("claude", "complete")          # blocked (raises) while Ghost is unplugged
         with self._httpx.Client(timeout=timeout or self.timeout) as cl:
             r = cl.post(f"{self.base}/messages", headers=self._headers(),
                         json=self._body(messages, tools, False, temperature, max_tokens))
@@ -340,6 +342,8 @@ class AnthropicLLM:
                 self._turn_model = self.fast_model if choice == "fast" else self.model
             model = self._turn_model
         self.last_model = model
+        from . import cloudlog
+        cloudlog.cloud("claude", "chat")              # blocked (raises) while Ghost is unplugged
         body = self._body(messages, tools, stream, temperature, model=model)
         async with self._httpx.AsyncClient(timeout=self.timeout) as cl:
             if not stream:

@@ -135,3 +135,23 @@ def test_modes_snapshot_and_broadcast(env, monkeypatch):
     assert modes.snapshot() == {"type": "modes", "guard": False, "unplugged": True}
     modes.broadcast()
     assert sent == [("phone", {"type": "modes", "guard": False, "unplugged": True})]
+
+
+def test_cloud_is_blocked_and_counted_while_unplugged(env):
+    from ghost_server import cloudlog
+    from ghost_server.claude import AnthropicLLM
+    store.put("unplugged", False)
+    cloudlog.reset()
+    cloudlog.cloud("claude", "complete")
+    assert cloudlog.status()["last_answer_by"] == "claude"
+    store.put("unplugged", True)
+    cloudlog.reset()
+    llm = AnthropicLLM({"api_key": "sk-test", "model": "claude-x"})
+    with pytest.raises(cloudlog.Unplugged):
+        llm.complete([{"role": "user", "content": "hi"}])
+    cloudlog.local("qwen3.5")
+    s = cloudlog.status()
+    assert s["cloud_calls"] == 0 and s["blocked"] == 1 and s["local_answers"] == 1 and s["last_answer_by"] == "local"
+    assert "1 answer from the local AI, 0 from the cloud" in cloudlog.summary() and "1 cloud request was blocked" in cloudlog.summary()
+    load()
+    assert "Unplugged:" in TOOLS["unplugged_mode"].handler({"action": "status"}, Ctx())

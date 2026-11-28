@@ -33,7 +33,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
-from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, modes, photos,
+from . import (__version__, cameras, chat, cloudlog, config, dashboard, door, faces, household, live, meals, modes, photos,
                prompt, quiet, security, store, theme, tools, voices)
 from . import news_feed  # registers the server-only, masked GNews setting
 from .hub import AgentConn, hub
@@ -312,7 +312,8 @@ async def modes_get(dev: dict = Depends(device_auth)):
     from . import guard
     st = guard.state()
     return {"guard": st["on"], "guard_auto": guard.settings()["auto_away"], "guard_since": st["since"],
-            "guard_people": len(st["people"]), "unplugged": bool(store.get("unplugged"))}
+            "guard_people": len(st["people"]), "unplugged": bool(store.get("unplugged")),
+            "brain": cloudlog.status(), "brain_summary": cloudlog.summary()}
 
 
 @app.post("/api/v1/modes")
@@ -327,6 +328,8 @@ async def modes_set(body: dict, dev: dict = Depends(device_auth)):
     if "unplugged" in body:
         if body["unplugged"] and not str(store.get("local_llm_url") or "").strip():
             raise HTTPException(400, "Set the local model's address on the admin page first")
+        if body["unplugged"] and not store.get("unplugged"):
+            cloudlog.reset()
         store.put("unplugged", body["unplugged"])
         modes.broadcast()
     if "guard_auto" in body:
@@ -334,6 +337,12 @@ async def modes_set(body: dict, dev: dict = Depends(device_auth)):
     if "guard" in body:
         await asyncio.to_thread(guard.start if body["guard"] else guard.stop, dev["name"])
     return await modes_get(dev)
+
+
+@app.get("/admin/api/brain-status")
+def admin_brain_status(_: bool = Depends(admin_auth)):
+    """Proof of who's answering: local vs cloud counts, and blocked cloud attempts while unplugged."""
+    return {**cloudlog.status(), "summary": cloudlog.summary()}
 
 
 @app.get("/admin/api/guard")
@@ -1491,6 +1500,8 @@ def _apply_settings(body: dict, request: Request, how: str = "Settings changed")
     if any(k.startswith("theme_") for k in changed):
         theme.push_soon()                 # the new look on every screen now
     if "unplugged" in body:
+        if body["unplugged"]:
+            cloudlog.reset()
         modes.broadcast()                 # Ghost changes hats
     if "household_access" in changed:
         access.invalidate()

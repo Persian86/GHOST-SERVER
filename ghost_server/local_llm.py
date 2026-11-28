@@ -159,6 +159,8 @@ class OllamaLLM:
                  *, timeout: float | None = None,
                  temperature: float | None = None,
                  max_tokens: int | None = None) -> tuple[str, list[FunctionCall]]:
+        from . import cloudlog
+        cloudlog.local(getattr(self, "model", ""))
         body: dict[str, Any] = {
             "model": self.model,
             "messages": to_ollama_messages(messages),
