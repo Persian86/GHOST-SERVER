@@ -187,6 +187,8 @@
           <label><input type="checkbox" data-k="unplugged" style="width:auto"> Unplugged</label>
           <label>Whisper (speech-to-text) address</label><input data-k="wyoming_stt" placeholder="empty = Ollama's PC, port 10300">
           <label>Piper (text-to-speech) address</label><input data-k="wyoming_tts" placeholder="empty = Ollama's PC, port 10200">
+          <label>Room screens' hat while unplugged</label>
+          <select data-k="unplugged_hat"><option value="plug_beanie">Plug beanie</option><option value="tinfoil_hat">Tinfoil hat</option><option value="bucket_hat">Off-grid bucket hat</option><option value="miner_helmet">Miner's lamp helmet</option><option value="none">No hat</option></select>
           <label>Piper voice</label><input data-k="piper_voice" placeholder="e.g. en_GB-alan-medium (empty = Piper's default)">
           <div class="status" id="brainProof" style="color:#ffc77a">Who's answering: …</div>
           <div class="row" style="margin-top:10px"><button class="b" onclick="test('speech', this)">Test</button> <button class="b" onclick="brainProof()">Check who's answering</button></div>

@@ -313,6 +313,7 @@ async def modes_get(dev: dict = Depends(device_auth)):
     st = guard.state()
     return {"guard": st["on"], "guard_auto": guard.settings()["auto_away"], "guard_since": st["since"],
             "guard_people": len(st["people"]), "unplugged": bool(store.get("unplugged")),
+            "unplugged_hat": str(store.get("unplugged_hat") or "plug_beanie"),
             "brain": cloudlog.status(), "brain_summary": cloudlog.summary()}
 
 
@@ -1475,6 +1476,9 @@ def _check_settings(body: dict) -> None:
         raise HTTPException(400, "Direct camera playback must be on or off")
     if "local_llm_mode" in body and body["local_llm_mode"] not in ("off", "fallback", "only"):
         raise HTTPException(400, "Local AI mode must be off, fallback or only")
+    if "unplugged_hat" in body and body["unplugged_hat"] not in ("plug_beanie", "tinfoil_hat", "bucket_hat",
+                                                                 "miner_helmet", "none"):
+        raise HTTPException(400, "Unknown unplugged hat")
     if "unplugged" in body and type(body["unplugged"]) is not bool:
         raise HTTPException(400, "Unplugged must be on or off")
 

@@ -170,3 +170,8 @@ def test_family_map_is_google_and_key_is_sanitised(env):
 def test_fire_radius_default_is_5_km(env):
     from ghost_server import firewatch
     assert firewatch.radius() == 5.0
+
+
+def test_room_screens_may_read_modes():
+    from ghost_server import access
+    assert ("GET", "/api/v1/modes") in access.PUBLIC_ROUTES and ("POST", "/api/v1/modes") not in access.PUBLIC_ROUTES

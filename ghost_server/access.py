@@ -19,6 +19,7 @@ PUBLIC_ROUTES = {("GET", "/api/v1/session"), ("GET", "/api/v1/key"),
                  ("POST", "/api/v1/assist"), ("POST", "/api/v1/llm"),
                  ("POST", "/api/v1/turns"), ("POST", "/api/v1/events"),
                  ("GET", "/api/v1/fires"),
+                 ("GET", "/api/v1/modes"),          # room screens read Guard/Unplugged to pick Ghost's hat
                  # family locations: each handler also refuses guests (HOUSEHOLD_TOOLS)
                  ("GET", "/api/v1/people"), ("POST", "/api/v1/people/track")}
 SCHEMA = """CREATE TABLE IF NOT EXISTS device_access(device_id TEXT PRIMARY KEY,role TEXT NOT NULL);
