@@ -291,7 +291,7 @@ static void build_hat(int kind)
         shape(hat,cx+77,HY(-10),3,10,0xe6b850,1);shape(hat,cx+88,HY(-10),3,10,0xe6b850,1);
         break;}
     case HAT_TINFOIL:                                  // a stack of foil tiers making a cone
-        for(int i=0;i<6;i++) {int w=140-i*22;shape(hat,cx-w/2,HY(8-i*8),w,10,i%2?0xdde0e8:0xc4c8d2,4);}
+        for(int i=0;i<7;i++) {int w=128-i*18;shape(hat,cx-w/2,HY(10-i*7),w,9,i%2?0xdde0e8:0xc4c8d2,3);}
         shape(hat,cx-76,HY(16),152,8,0xc4c8d2,4);
         break;
     case HAT_BUCKET:                                   // off-grid bucket hat
