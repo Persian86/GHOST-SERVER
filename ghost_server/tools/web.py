@@ -90,13 +90,13 @@ def weather(args: dict, ctx: Ctx) -> str:
     return weather_text(str(args.get("city") or store.get("city") or "Melbourne"))
 
 
-@tool("fires_near_me", """Bushfires, grass fires and official emergency warnings (Advice, Watch and Act,
+@tool("fires_near_me", """Bushfires, grass fires, flooding and official emergency warnings (Advice, Watch and Act,
       Emergency Warning — fire, flood, storm) near home, live from VicEmergency. Use for "any fires near me?",
-      "is there a bushfire warning?", "what's that smoke?". Read the most serious items first, with distance
+      "is there a bushfire warning?", "what's that smoke?", "any flooding near us?". Read the most serious items first, with distance
       and direction. In a real Watch and Act or Emergency Warning, tell them to follow the official warning
       and call 000 if they're in danger.""",
       {"type": "OBJECT", "properties": {
-          "radius_km": {"type": "NUMBER", "description": "How far from home to look (default: the house setting, 20 km)"},
+          "radius_km": {"type": "NUMBER", "description": "How far from home to look (default: the house setting, 5 km)"},
           "fires_only": {"type": "BOOLEAN", "description": "Only fires, not flood or storm warnings"}}})
 def fires_near_me(args: dict, ctx: Ctx) -> str:
     from .. import firewatch

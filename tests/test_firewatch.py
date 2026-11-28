@@ -87,7 +87,7 @@ def test_flood_warning_named_by_its_event(env):
 
 def test_summary_when_quiet(env, monkeypatch):
     monkeypatch.setattr(firewatch, "fetch", lambda max_age=120: [])
-    assert firewatch.summary(20).startswith("No fires or emergency warnings within 20 km")
+    assert firewatch.summary(20).startswith("No fires, floods or emergency warnings within 20 km")
 
 
 def test_alerts_are_announced_once_and_again_when_escalated(env, monkeypatch):
@@ -166,3 +166,16 @@ def test_home_status_survives_feeds_being_down(monkeypatch):
     monkeypatch.setattr(firewatch, "items_near", boom)
     out = firewatch.home_status()
     assert out["rating"] == "" and out["total_fire_ban"] is False and "near" not in out
+
+
+def test_flood_incidents_near_home_are_reported(env, monkeypatch):
+    flood = feat("incident", -37.59, 144.73, id=40, category1="Flooding", category2="Flash Flooding",
+                 location="Jacksons Creek")
+    storm = feat("incident", -37.59, 144.73, id=41, category1="Storm", category2="Building Damage", location="Elm St")
+    monkeypatch.setattr(firewatch, "fetch", lambda max_age=120: [flood, storm])
+    items = firewatch.items_near(5, at=HOME)
+    assert [i["id"] for i in items] == ["incident:40"] and items[0]["flood"] and not items[0]["fire"]
+    assert "flood incident" in firewatch.summary(5) and "Jacksons Creek" in firewatch.summary(5)
+    msgs = firewatch.check_once(now=5000)
+    assert len(msgs) == 1 and msgs[0]["text"].startswith("Flooding nearby.")
+    assert firewatch.summary(5, fires_only=True).startswith("No fires")

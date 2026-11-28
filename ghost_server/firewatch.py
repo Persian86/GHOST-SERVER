@@ -25,7 +25,7 @@ from . import store
 
 FEED = "https://emergency.vic.gov.au/public/osom-geojson.json"
 CHECK_EVERY = 300            # s between background checks
-FIRE_ALERT_KM = 10           # fires (not official warnings) are announced only this close
+FIRE_ALERT_KM = 10           # fire and flood incidents (not official warnings) are announced only this close
 SEEN_KEEP = 3 * 86400        # forget announced items after three days
 
 LEVELS = {"emergency warning": 3, "evacuate immediately": 3, "evacuate now": 3, "watch and act": 2,
@@ -156,6 +156,11 @@ def is_fire(p: dict) -> bool:
     return "fire" in t or "burn" in t or "smoke" in t
 
 
+def is_flood(p: dict) -> bool:
+    t = _text(p.get("category1"), p.get("category2"), (p.get("cap") or {}).get("event"), p.get("sourceTitle"))
+    return "flood" in t
+
+
 def is_planned(p: dict) -> bool:
     return "planned burn" in _text(p.get("category1"), p.get("category2"))
 
@@ -176,10 +181,11 @@ def items_near(radius_km: float, feats: list[dict] | None = None, at: tuple[floa
         if not pt:
             continue
         fire = is_fire(p)
+        flood = not fire and is_flood(p)
         if fires_only and not fire:
             continue
-        if kind == "incident" and not fire:
-            continue                                     # incidents: only fires (no tree-down / traffic noise)
+        if kind == "incident" and not (fire or flood):
+            continue                                     # incidents: fires and floods only (no tree-down / traffic noise)
         km = distance_km(at, pt)
         covers = kind == "warning" and inside(f.get("geometry"), at)
         if km > radius_km and not covers:
@@ -193,7 +199,7 @@ def items_near(radius_km: float, feats: list[dict] | None = None, at: tuple[floa
         out.append({"id": f"{kind}:{p.get('id') or p.get('sourceId') or name}", "kind": kind, "level": level,
                     "level_name": LEVEL_NAMES[level], "what": what, "where": name, "status": str(p.get("status") or ""),
                     "size": str(p.get("sizeFmt") or ""), "km": round(km, 1), "dir": direction(at, pt),
-                    "covers_home": covers, "fire": fire, "planned": is_planned(p),
+                    "covers_home": covers, "fire": fire, "flood": flood, "planned": is_planned(p),
                     "updated": str(p.get("updated") or p.get("created") or "")})
     out.sort(key=lambda i: (not i["covers_home"], -i["level"], i["km"]))
     return out
@@ -215,9 +221,10 @@ def describe(i: dict) -> str:
 def summary(radius_km: float, fires_only: bool = False) -> str:
     items = items_near(radius_km, fires_only=fires_only)
     if not items:
-        return (f"No fires or emergency warnings within {radius_km:.0f} km of home on VicEmergency right now.")
+        return (f"No fires, floods or emergency warnings within {radius_km:.0f} km of home on VicEmergency right now.")
     warnings = [i for i in items if i["kind"] == "warning"]
-    fires = [i for i in items if i["kind"] == "incident" and not i["planned"]]
+    fires = [i for i in items if i["kind"] == "incident" and i["fire"] and not i["planned"]]
+    floods = [i for i in items if i["kind"] == "incident" and i.get("flood")]
     planned = [i for i in items if i["planned"]]
     lines = []
     if warnings:
@@ -226,6 +233,9 @@ def summary(radius_km: float, fires_only: bool = False) -> str:
     if fires:
         lines.append(f"{len(fires)} fire{'s' * (len(fires) != 1)} reported within {radius_km:.0f} km:")
         lines += ["  " + describe(i) for i in fires[:6]]
+    if floods:
+        lines.append(f"{len(floods)} flood incident{'s' * (len(floods) != 1)} reported within {radius_km:.0f} km:")
+        lines += ["  " + describe(i) for i in floods[:6]]
     if planned:
         lines.append(f"Also {len(planned)} planned burn{'s' * (len(planned) != 1)} nearby, the closest "
                      f"{planned[0]['km']:.0f} km {planned[0]['dir']}.")
@@ -277,10 +287,12 @@ def check_once(now: float | None = None) -> list[dict]:
             calm.append(item)
             continue
         text = describe(item) + " Check VicEmergency now and follow the warning."
-        msgs.append({"type": "notify", "title": "⚠ VicEmergency " + ("fire warning" if item["fire"] else "warning"),
+        msgs.append({"type": "notify", "title": "⚠ VicEmergency " + ("fire warning" if item["fire"] else
+                                                                   "flood warning" if item.get("flood") else "warning"),
                      "text": text, "level": "fire", "urgent": True, "fire": True, "at": now})
     if calm:                       # everything that isn't urgent goes out as one message
-        head = "Fire nearby. " if len(calm) == 1 else f"{len(calm)} new fire and emergency reports near home. "
+        head = (("Flooding nearby. " if calm[0].get("flood") else "Fire nearby. ") if len(calm) == 1
+                else f"{len(calm)} new emergency reports near home. ")
         text = head + " ".join(describe(i) for i in calm[:4]) + (" And more on VicEmergency." if len(calm) > 4 else "")
         msgs.append({"type": "notify", "title": "VicEmergency", "text": text, "level": "fire", "urgent": False, "fire": True, "at": now})
     return msgs
