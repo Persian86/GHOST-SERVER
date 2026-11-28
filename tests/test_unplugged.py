@@ -120,3 +120,18 @@ def test_room_voice_unplugged_round_trip(env, monkeypatch):
     asyncio.run(local_voice.serve(ws, row, lambda: row, event, asyncio.Lock()))
     assert events == ["ready", "thinking", "speaking", "done"]
     assert sum(map(len, ws.out)) == 5000 and all(len(b) <= 2048 for b in ws.out)
+
+
+def test_modes_snapshot_and_broadcast(env, monkeypatch):
+    from ghost_server import guard, modes
+    from ghost_server.hub import hub
+    sent = []
+    monkeypatch.setattr(hub, "conns", {"phone": object(), "kid": object()})
+    monkeypatch.setattr(hub, "send_sync", lambda did, msg: sent.append((did, msg)))
+    from ghost_server import access
+    monkeypatch.setattr(access, "limited", lambda did: did == "kid")
+    store.put("unplugged", True)
+    guard._status["on"] = False
+    assert modes.snapshot() == {"type": "modes", "guard": False, "unplugged": True}
+    modes.broadcast()
+    assert sent == [("phone", {"type": "modes", "guard": False, "unplugged": True})]

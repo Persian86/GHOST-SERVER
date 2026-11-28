@@ -33,7 +33,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
-from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, photos,
+from . import (__version__, cameras, chat, config, dashboard, door, faces, household, live, meals, modes, photos,
                prompt, quiet, security, store, theme, tools, voices)
 from . import news_feed  # registers the server-only, masked GNews setting
 from .hub import AgentConn, hub
@@ -328,6 +328,7 @@ async def modes_set(body: dict, dev: dict = Depends(device_auth)):
         if body["unplugged"] and not str(store.get("local_llm_url") or "").strip():
             raise HTTPException(400, "Set the local model's address on the admin page first")
         store.put("unplugged", body["unplugged"])
+        modes.broadcast()
     if "guard_auto" in body:
         guard.save_settings({"auto_away": body["guard_auto"]})
     if "guard" in body:
@@ -1248,7 +1249,7 @@ async def agent_ws(ws: WebSocket, key: str = ""):
     if not access.limited(row["id"]):
         await ws.send_json(quiet.snapshot(row["kind"], row["name"]))
     for snap in (household.timers_snapshot, household.lists_snapshot, household.notes_snapshot, meals.snapshot,
-                 theme.current):
+                 theme.current, modes.snapshot):
         try:
             if access.limited(row["id"]): continue
             await ws.send_json(await asyncio.to_thread(snap))
@@ -1489,6 +1490,8 @@ def _apply_settings(body: dict, request: Request, how: str = "Settings changed")
         handoff.clear()
     if any(k.startswith("theme_") for k in changed):
         theme.push_soon()                 # the new look on every screen now
+    if "unplugged" in body:
+        modes.broadcast()                 # Ghost changes hats
     if "household_access" in changed:
         access.invalidate()
         for conn in list(hub.conns.values()):

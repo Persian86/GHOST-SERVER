@@ -277,6 +277,8 @@ def start(by: str = "", auto: bool = False) -> dict:
             t = threading.Thread(target=_watch, args=(c,), daemon=True, name=f"guard-{c.id}")
             _threads.append(t)
             t.start()
+    from . import modes
+    modes.broadcast()                                    # Ghost puts on the guard's cap
     _announce(f"Guard mode is on. I'm watching {len(cams)} camera{'s' if len(cams) != 1 else ''} "
               "and I'll tell you about anyone I don't recognise.", quiet=auto)
     return state()
@@ -288,6 +290,8 @@ def stop(by: str = "") -> dict:
         _stop.set()
         _status.update(on=False, auto=False)
         store.put("guard_on", None)
+    from . import modes
+    modes.broadcast()
     if was:
         n = _status.get("sightings", 0)
         _announce("Guard mode is off." + (f" I reported {n} sighting{'s' if n != 1 else ''} while it was on." if n else

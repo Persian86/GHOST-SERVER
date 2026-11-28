@@ -58,10 +58,14 @@ def unplugged_mode(args: dict, ctx: Ctx) -> str:
         if not (store.get("local_llm_url") or "").strip():
             return "I can't go unplugged yet — the local model's address isn't set on the admin page."
         store.put("unplugged", True)
+        from .. import modes
+        modes.broadcast()
         return ("I'm unplugged now: thinking, hearing and speaking all stay on the AI PC. This conversation finishes "
                 "on the cloud voice; the next one uses the local voice. Say 'plug back in' to go back.")
     if act in ("off", "stop", "disable"):
         store.put("unplugged", False)
+        from .. import modes
+        modes.broadcast()
         return "Plugged back in — Claude and Gemini are back from the next conversation."
     st = local_voice.status()
     return ("I'm unplugged — everything runs on the AI PC." if st["unplugged"]
