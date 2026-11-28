@@ -15,7 +15,20 @@ calendar, documents, multi-step tasks, and the ability for one device to use ano
 
 ---
 
-## Install on the Asustor
+## Install on the AI PC (current)
+
+Ghost runs on the AI PC (Pop!_OS, RTX 3060) from `/opt/ghost`, with this repository cloned to `/opt/ghost/src`
+and [`docker-compose.yml`](docker-compose.yml) beside it (Ghost Server, Home Assistant, Whisper and Piper,
+all on host networking). Ollama runs on the PC itself.
+
+```bash
+cd /opt/ghost && sudo git -C src pull --rebase && docker compose up -d --build ghost-server
+```
+
+Open `http://192.168.80.165:8780` for the admin page. Ghost Unplugged setup: [`docs/UNPLUGGED.md`](docs/UNPLUGGED.md).
+Old handover notes are in [`docs/history/`](docs/history/).
+
+## Install on the Asustor (old setup)
 
 Ports 8000/8001 are taken by ADM and 8123 by Home Assistant, so Ghost Server uses **8780**.
 
@@ -23,8 +36,8 @@ Ports 8000/8001 are taken by ADM and 8123 by Home Assistant, so Ghost Server use
 2. **ADM → File Explorer**: create the folder `Docker/ghost-server`. It holds the database and the documents Ghost makes, so back it up.
 3. Get the image. Pick one:
    * **From GitHub** (same flow as Marquee): push this folder to `github.com/Persian86/ghost-server`. The included workflow tests it and publishes `ghcr.io/persian86/ghost-server:latest`. Make the package public, or log Portainer in to ghcr.io.
-   * **Build on the NAS:** in `docker-compose.yml`, comment out `image:` and uncomment `build: .`, then deploy from the folder.
-4. **Portainer → Stacks → Add stack**: paste in `docker-compose.yml` and click **Deploy**.
+   * **Build on the NAS:** in `docker-compose.nas.yml`, comment out `image:` and uncomment `build: .`, then deploy from the folder.
+4. **Portainer → Stacks → Add stack**: paste in `docker-compose.nas.yml` and click **Deploy**.
 5. Open `http://192.168.80.244:8780`, choose an admin password, then go to **Brain & keys** and fill in:
    * **Anthropic key**, used for Claude
    * **Gemini key**. Devices never see it; they get short-lived session tokens.

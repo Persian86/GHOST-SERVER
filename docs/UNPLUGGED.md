@@ -1,7 +1,8 @@
 # Ghost Unplugged — setting up the AI PC
 
-Unplugged needs three things on the AI PC. Ollama (the local brain) is already there.
-The other two are Home Assistant's standard voice services:
+Unplugged needs three things on the AI PC: Ollama (the local brain), Whisper and Piper. **On the AI PC all three are
+already set up** (Whisper and Piper are in `docker-compose.yml`). To set them up somewhere else, Home Assistant's
+standard voice services work — for example with the GPU:
 
 ```yaml
 # add to /opt/ghost/docker-compose.yml (or a compose file of their own)
